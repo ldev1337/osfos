@@ -1,0 +1,18 @@
+# Build outputs
+*.o
+os.bin
+os.iso
+disk.img
+iso/
+kernel.profdata
+kernel.afdo
+perf.data
+
+# Rust build output
+rust/**/target/
+
+# Proprietary Doom game data; provide your own legally obtained IWAD.
+*.wad
+
+# Local editor and tool state
+compile_commands.json
