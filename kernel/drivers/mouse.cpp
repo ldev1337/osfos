@@ -79,7 +79,7 @@ void Mouse::init() {
 
 void Mouse::handle_interrupt() {
     uint8_t status = inb(PS2_STATUS_PORT);
-    
+
     if (!(status & 0x01) || !(status & 0x20)) {
         return;
     }
@@ -89,7 +89,7 @@ void Mouse::handle_interrupt() {
     switch (cycle_) {
         case 0:
             bytes_[0] = data;
-            if (!(data & 0x08)) return; 
+            if (!(data & 0x08)) return;
             cycle_++;
             break;
         case 1:
@@ -103,7 +103,7 @@ void Mouse::handle_interrupt() {
             left_pressed_   = bytes_[0] & 0x01;
             right_pressed_  = (bytes_[0] & 0x02) >> 1;
             middle_pressed_ = (bytes_[0] & 0x04) >> 2;
-            
+
             int x_rel = bytes_[1];
             int y_rel = bytes_[2];
 
@@ -122,9 +122,9 @@ void Mouse::handle_interrupt() {
             if (x_ >= max_w) x_ = max_w - 1;
             if (y_ < 0) y_ = 0;
             if (y_ >= max_h) y_ = max_h - 1;
-            
+
             break;
     }
 }
 
-} 
+}

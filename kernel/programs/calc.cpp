@@ -2,6 +2,7 @@
 #include <kernel/drivers/keyboard.h>
 #include <kernel/graphics/vfb.h>
 #include <kernel/lib/appcommon.h>
+#include <kernel/scheduler.h>
 #include <arch/x86_64/string.h>
 #include <stdint.h>
 #include <stddef.h>
@@ -269,7 +270,7 @@ private:
             if (strcmp(ident, "sin") == 0 || strcmp(ident, "cos") == 0 ||
                 strcmp(ident, "tan") == 0 || strcmp(ident, "sqrt") == 0 ||
                 strcmp(ident, "log10") == 0) {
-                
+
                 skip_whitespace();
                 if (*p != '(') { error_flag = true; return 0.0; }
                 p++;
@@ -413,8 +414,10 @@ static void draw_highlighted_expression(Kernel::Graphics::VirtualFramebuffer& vf
 void run() {
     if (!Kernel::Drivers::Framebuffer::valid()) return;
 
-    const int32_t w = static_cast<int32_t>(width());
-    const int32_t h = static_cast<int32_t>(height());
+    uint32_t actual_w = 0, actual_h = 0;
+    if (!Kernel::AppCommon::request_window_size(600, 460, actual_w, actual_h)) return;
+    const int32_t w = static_cast<int32_t>(actual_w);
+    const int32_t h = static_cast<int32_t>(actual_h);
     if (w < 300 || h < 200) return;
 
     Kernel::Graphics::VirtualFramebuffer vfb(
@@ -427,7 +430,7 @@ void run() {
     bool error = false;
     bool running = true;
 
-    while (running) {
+    while (running && !Kernel::Scheduler::should_stop()) {
         while (Keyboard::available()) {
             char c = Keyboard::getchar();
 
@@ -475,7 +478,7 @@ void run() {
             if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
                 (c >= '0' && c <= '9') || c == '.' || c == '+' || c == '-' ||
                 c == '*' || c == '/' || c == '(' || c == ')' || c == '^' || c == ',') {
-                
+
                 if (evaluated) {
                     if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
                         expression[0] = '\0';

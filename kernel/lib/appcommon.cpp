@@ -1,6 +1,8 @@
 #include <kernel/lib/appcommon.h>
 #include <kernel/drivers/pit.h>
 #include <kernel/drivers/keyboard.h>
+#include <kernel/scheduler.h>
+#include <kernel/graphics/window_manager.h>
 #include <arch/x86_64/string.h>
 
 namespace Kernel::AppCommon {
@@ -18,17 +20,16 @@ void number(Kernel::Graphics::VirtualFramebuffer& vfb, int32_t x, int32_t y, int
 }
 
 void delay(uint32_t speed) {
-    const uint32_t target_ticks = 1000 / (20 * speed); 
-    
-    static uint32_t last_tick = 0;
-    uint32_t current_tick = Kernel::Drivers::PIT::get_ticks();
-    
-    while ((current_tick - last_tick) < target_ticks) {
-        asm volatile("pause");
-        current_tick = Kernel::Drivers::PIT::get_ticks();
-    }
-    
-    last_tick = current_tick;
+    if (!speed) speed = 1;
+    const uint32_t target_ticks = (1000 / (60 * speed)) ? (1000 / (60 * speed)) : 1;
+    Kernel::Scheduler::thread_sleep_ms(target_ticks);
 }
 
-} 
+bool request_window_size(uint32_t requested_width, uint32_t requested_height,
+                         uint32_t& actual_width, uint32_t& actual_height) {
+    return Kernel::Graphics::WindowManager::request_window_size(
+        Kernel::Scheduler::current_thread_id(), requested_width, requested_height,
+        &actual_width, &actual_height);
+}
+
+}

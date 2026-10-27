@@ -55,7 +55,7 @@ uint32_t isqrt_u32(uint32_t x) {
 }
 
 int32_t lerp_q16(int32_t a, int32_t b, uint32_t t) {
-    
+
     return a + static_cast<int32_t>((static_cast<int64_t>(b - a) * t) >> 16);
 }
 
@@ -79,7 +79,7 @@ Vector3D mat4_mul_vec3(const Matrix4x4& mat, const Vector3D& v) {
     int64_t y = mat.m[1][0] * v.x + mat.m[1][1] * v.y + mat.m[1][2] * v.z + mat.m[1][3] * Q16_ONE;
     int64_t z = mat.m[2][0] * v.x + mat.m[2][1] * v.y + mat.m[2][2] * v.z + mat.m[2][3] * Q16_ONE;
     int64_t w = mat.m[3][0] * v.x + mat.m[3][1] * v.y + mat.m[3][2] * v.z + mat.m[3][3] * Q16_ONE;
-    
+
     if (w == 0) w = Q16_ONE;
     return {
         static_cast<int32_t>((x << 16) / w),
@@ -102,4 +102,4 @@ Matrix4x4 mat4_multiply(const Matrix4x4& a, const Matrix4x4& b) {
     return res;
 }
 
-} 
+}

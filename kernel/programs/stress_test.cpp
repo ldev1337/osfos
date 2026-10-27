@@ -2,6 +2,7 @@
 #include <kernel/drivers/keyboard.h>
 #include <kernel/graphics/vfb.h>
 #include <kernel/lib/appcommon.h>
+#include <kernel/scheduler.h>
 #include <stdint.h>
 
 namespace Kernel::Apps {
@@ -21,8 +22,10 @@ constexpr uint32_t YELLOW = 0xf9e2af;
 void run_stress_test() {
     if (!Kernel::Drivers::Framebuffer::valid()) return;
 
-    int32_t w = static_cast<int32_t>(width());
-    int32_t h = static_cast<int32_t>(height());
+    uint32_t actual_w = 0, actual_h = 0;
+    if (!Kernel::AppCommon::request_window_size(800, 600, actual_w, actual_h)) return;
+    int32_t w = static_cast<int32_t>(actual_w);
+    int32_t h = static_cast<int32_t>(actual_h);
     if (w < 200 || h < 150) return;
 
     Kernel::Graphics::VirtualFramebuffer vfb(0, 0, static_cast<uint32_t>(w), static_cast<uint32_t>(h));
@@ -32,7 +35,7 @@ void run_stress_test() {
     bool running = true;
     uint32_t frame_count = 0;
 
-    while (running) {
+    while (running && !Kernel::Scheduler::should_stop()) {
         while (Keyboard::available()) {
             char c = Keyboard::getchar();
             if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
@@ -88,9 +91,9 @@ void run_stress_test() {
         delay(1);
     }
 }
-} 
+}
 
 void stress_test_run() {
     run_stress_test();
 }
-} 
+}

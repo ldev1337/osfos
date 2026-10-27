@@ -1,7 +1,9 @@
 #include <kernel/drivers/framebuffer.h>
 #include <kernel/drivers/keyboard.h>
 #include <kernel/lib/appcommon.h>
+#include <kernel/scheduler.h>
 #include <kernel/graphics/vfb.h>
+#include <kernel/graphics/window_manager.h>
 #include <stdint.h>
 
 namespace Kernel::Games::Breakout {
@@ -333,20 +335,28 @@ static void update() {
         return;
     }
 }
-} 
+}
 
 void run() {
     if (!Kernel::Drivers::Framebuffer::valid()) return;
-    sw = static_cast<int>(width());
-    sh = static_cast<int>(height());
+    uint32_t screen_w = 0, screen_h = 0;
+    if (!Kernel::AppCommon::request_window_size(640, 480, screen_w, screen_h)) return;
+    sw = static_cast<int>(screen_w);
+    sh = static_cast<int>(screen_h);
     if (sw < 240 || sh < 220) return;
 
-    vfb.init(0, 0, static_cast<uint32_t>(sw), static_cast<uint32_t>(sh));
+    if (!vfb.init(0, 0, static_cast<uint32_t>(sw), static_cast<uint32_t>(sh))) return;
     reset_game();
 
     bool space_prev = false;
 
     for (;;) {
+        if (Kernel::Scheduler::should_stop()) return;
+        if (!Kernel::Graphics::WindowManager::has_keyboard_focus(
+                Kernel::Scheduler::current_thread_id())) {
+            Kernel::AppCommon::delay(10);
+            continue;
+        }
         if (Keyboard::is_pressed(KEY_Q)) return;
 
         if (Keyboard::is_pressed(KEY_A) || Keyboard::is_pressed(KEY_J))
@@ -377,4 +387,4 @@ void run() {
         Kernel::AppCommon::delay(2);
     }
 }
-} 
+}

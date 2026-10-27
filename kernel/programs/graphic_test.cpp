@@ -2,6 +2,7 @@
 #include <kernel/drivers/keyboard.h>
 #include <kernel/graphics/vfb.h>
 #include <kernel/lib/appcommon.h>
+#include <kernel/scheduler.h>
 #include <stdint.h>
 
 namespace Kernel::Apps {
@@ -23,8 +24,10 @@ constexpr uint32_t PURPLE = 0xD489FA;
 void run_graphic_test() {
     if (!Kernel::Drivers::Framebuffer::valid()) return;
 
-    int32_t w = static_cast<int32_t>(width());
-    int32_t h = static_cast<int32_t>(height());
+    uint32_t actual_w = 0, actual_h = 0;
+    if (!Kernel::AppCommon::request_window_size(800, 600, actual_w, actual_h)) return;
+    int32_t w = static_cast<int32_t>(actual_w);
+    int32_t h = static_cast<int32_t>(actual_h);
     if (w < 200 || h < 150) return;
 
     Kernel::Graphics::VirtualFramebuffer vfb(0, 0, static_cast<uint32_t>(w), static_cast<uint32_t>(h));
@@ -35,7 +38,7 @@ void run_graphic_test() {
     bool running = true;
     uint32_t anim_counter = 0;
 
-    while (running) {
+    while (running && !Kernel::Scheduler::should_stop()) {
         while (Keyboard::available()) {
             char c = Keyboard::getchar();
             if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
@@ -51,7 +54,6 @@ void run_graphic_test() {
 
         vfb.clear(BG);
 
-        
         text(vfb, 20, 15, "GRAPHIC TEST SUITE - DIVERSE MODULES", BLUE);
         text(vfb, 20, h - 25, "SPACE: NEXT PAGE    Q: QUIT", FG);
         number(vfb, w - 60, 15, page + 1, GREEN);
@@ -59,7 +61,7 @@ void run_graphic_test() {
 
         if (page == 0) {
             text(vfb, 20, 45, "1. Basic Lines, Rectangles & Triangles", YELLOW);
-            
+
             vfb.draw_line(50, 80, 160, 130, GREEN);
             vfb.draw_line(160, 80, 50, 130, RED);
 
@@ -137,9 +139,9 @@ void run_graphic_test() {
         delay(2);
     }
 }
-} 
+}
 
 void graphic_test_run() {
     run_graphic_test();
 }
-} 
+}

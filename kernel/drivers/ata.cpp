@@ -2,9 +2,7 @@
 #include <kernel/cpu.h>
 #include <kernel/shell/shell.h>
 
-
 namespace Kernel::Drivers {
-
 
 constexpr uint16_t ATA_DATA         = 0x1F0;
 constexpr uint16_t ATA_FEATURE      = 0x1F1;
@@ -17,18 +15,15 @@ constexpr uint16_t ATA_COMMAND      = 0x1F7;
 constexpr uint16_t ATA_STATUS       = 0x1F7;
 constexpr uint16_t ATA_ALT_STATUS   = 0x3F6;
 
-
-constexpr uint8_t ATA_SR_BSY  = 0x80; 
-constexpr uint8_t ATA_SR_DRDY = 0x40; 
-constexpr uint8_t ATA_SR_DF   = 0x20; 
-constexpr uint8_t ATA_SR_DSC  = 0x10; 
-constexpr uint8_t ATA_SR_DRQ  = 0x08; 
-constexpr uint8_t ATA_SR_ERR  = 0x01; 
-
+constexpr uint8_t ATA_SR_BSY  = 0x80;
+constexpr uint8_t ATA_SR_DRDY = 0x40;
+constexpr uint8_t ATA_SR_DF   = 0x20;
+constexpr uint8_t ATA_SR_DSC  = 0x10;
+constexpr uint8_t ATA_SR_DRQ  = 0x08;
+constexpr uint8_t ATA_SR_ERR  = 0x01;
 
 constexpr uint8_t ATA_CMD_READ_SECTORS  = 0x20;
 constexpr uint8_t ATA_CMD_WRITE_SECTORS = 0x30;
-
 
 static inline void ata_delay() {
     for (int i = 0; i < 4; i++) {
@@ -36,14 +31,12 @@ static inline void ata_delay() {
     }
 }
 
-
 static inline bool ata_wait_not_busy(int timeout = 100000) {
     while ((inb(ATA_STATUS) & ATA_SR_BSY) && --timeout > 0) {
-        
+
     }
     return timeout > 0;
 }
-
 
 static inline bool ata_wait_drq(int timeout = 100000) {
     while (--timeout > 0) {
@@ -56,7 +49,7 @@ static inline bool ata_wait_drq(int timeout = 100000) {
 }
 
 void ATADriver::init() {
-    outb(ATA_DEVICE, 0xA0); 
+    outb(ATA_DEVICE, 0xA0);
 }
 
 bool ATADriver::read_sectors(uint32_t lba, uint8_t sector_count, void* buf) {
@@ -67,7 +60,6 @@ bool ATADriver::read_sectors(uint32_t lba, uint8_t sector_count, void* buf) {
         return false;
     }
 
-    
     outb(ATA_DEVICE, 0xE0 | ((lba >> 24) & 0x0F));
     ata_delay();
 
@@ -102,7 +94,6 @@ bool ATADriver::read_sectors(uint32_t lba, uint8_t sector_count, void* buf) {
             return false;
         }
 
-        
         insw(ATA_DATA, ptr, 256);
         ptr += 256;
     }
@@ -118,7 +109,6 @@ bool ATADriver::write_sectors(uint32_t lba, uint8_t sector_count, const void* bu
         return false;
     }
 
-    
     outb(ATA_DEVICE, 0xE0 | ((lba >> 24) & 0x0F));
     ata_delay();
 
@@ -144,7 +134,6 @@ bool ATADriver::write_sectors(uint32_t lba, uint8_t sector_count, const void* bu
             return false;
         }
 
-        
         outsw(ATA_DATA, ptr, 256);
         ptr += 256;
     }

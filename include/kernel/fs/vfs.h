@@ -4,26 +4,22 @@
 
 namespace Kernel::FS {
 
-
-
-
 #ifndef VFS_START_LBA
 #define VFS_START_LBA 0u
 #endif
 #ifndef VFS_MAX_SECTORS
-#define VFS_MAX_SECTORS 131072u  
+#define VFS_MAX_SECTORS 131072u
 #endif
 
 constexpr uint32_t VFS_SECTOR_SIZE = 512;
-constexpr uint32_t VFS_MAX_PATH = 112; 
+constexpr uint32_t VFS_MAX_PATH = 112;
 constexpr uint32_t VFS_MAX_ENTRIES = 256;
 constexpr uint32_t VFS_MAX_OPEN_FILES = 32;
 
 struct VFSFile {
     char name[VFS_MAX_PATH];
     uint32_t size;
-    
-    
+
     uint32_t start_lba;
     bool exists;
     uint32_t entry_index;
@@ -55,8 +51,7 @@ public:
     static bool get_file_at(uint32_t index, VFSFile* out_file);
 };
 
-} 
-
+}
 
 extern "C" {
 void* kernel_vfs_open(const char* path, const char* mode);

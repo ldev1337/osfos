@@ -42,4 +42,4 @@ bool prompt_filename(Kernel::Graphics::VirtualFramebuffer& vfb, const char* prom
     }
 }
 
-} 
+}

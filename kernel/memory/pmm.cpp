@@ -46,7 +46,7 @@ void* PMM::allocate_page_block(size_t count) {
             pages_found = 0;
         }
     }
-    return nullptr; 
+    return nullptr;
 }
 
 void PMM::free_page_block(void* ptr, size_t count) {

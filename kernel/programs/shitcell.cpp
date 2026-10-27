@@ -4,6 +4,7 @@
 #include <kernel/graphics/vfb.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/lib/uicommon.h>
+#include <kernel/scheduler.h>
 #include <kernel/fs/vfs.h>
 #include <stdint.h>
 #include <arch/x86_64/string.h>
@@ -191,7 +192,6 @@ void get_col_name(int32_t c, char* buf, size_t max_len) {
     buf[rev_idx] = '\0';
 }
 
-
 void evaluate_formula(SparseGrid& grid, int current_r, int current_c, const char* formula, char* result_buf, size_t max_len);
 
 double get_cell_or_number_val(SparseGrid& grid, const char* token, int current_r, int current_c) {
@@ -281,7 +281,6 @@ void evaluate_formula(SparseGrid& grid, int current_r, int current_c, const char
     char active_ops[16];
     for (int k = 0; k < op_count; ++k) active_ops[k] = ops[k];
 
-    
     for (int k = 0; k < op_count; ++k) {
         if (active_ops[k] == '*' || active_ops[k] == '/') {
             double res = 0.0;
@@ -296,7 +295,6 @@ void evaluate_formula(SparseGrid& grid, int current_r, int current_c, const char
         }
     }
 
-    
     double final_val = values[0];
     for (int k = 0; k < op_count; ++k) {
         if (active_ops[k] == '+') final_val += values[k + 1];
@@ -379,7 +377,9 @@ bool load_from_vfs(SparseGrid& grid, const char* filepath) {
 
 void run_shitty_excel() {
     if (!Kernel::Drivers::Framebuffer::valid()) return;
-    int32_t w = static_cast<int32_t>(width()), h = static_cast<int32_t>(height());
+    uint32_t actual_w = 0, actual_h = 0;
+    if (!Kernel::AppCommon::request_window_size(800, 600, actual_w, actual_h)) return;
+    int32_t w = static_cast<int32_t>(actual_w), h = static_cast<int32_t>(actual_h);
     if (w < 400 || h < 300) return;
 
     Kernel::Graphics::VirtualFramebuffer vfb(0, 0, static_cast<uint32_t>(w), static_cast<uint32_t>(h));
@@ -391,7 +391,7 @@ void run_shitty_excel() {
     grid.set_text(0, 2, "Price"); grid.set_color(0, 2, SHITCELL_HEADER_BG, SHITCELL_HEADER_TEXT);
     grid.set_text(0, 3, "Total"); grid.set_color(0, 3, SHITCELL_HEADER_BG, SHITCELL_HEADER_TEXT);
     grid.set_text(0, 4, "Formula");grid.set_color(0, 4, SHITCELL_HEADER_BG, SHITCELL_HEADER_TEXT);
-    
+
     grid.set_text(1, 0, "Coffee"); grid.set_text(1, 1, "10"); grid.set_text(1, 2, "5");   grid.set_text(1, 3, "=B2*C2"); grid.set_text(1, 4, "=B2*5*0.5");
     grid.set_text(2, 0, "Donut");  grid.set_text(2, 1, "24"); grid.set_text(2, 2, "2");   grid.set_text(2, 3, "=B3*C3"); grid.set_text(2, 4, "=B3*2*0.5");
     grid.set_text(3, 0, "RAM");    grid.set_text(3, 1, "2");  grid.set_text(3, 2, "35");  grid.set_text(3, 3, "=B4*C4"); grid.set_text(3, 4, "=B4*35*0.5");
@@ -408,7 +408,7 @@ void run_shitty_excel() {
     bool prev_up = false, prev_down = false, prev_left = false, prev_right = false;
     bool mouse_down_prev = false;
 
-    while (running) {
+    while (running && !Kernel::Scheduler::should_stop()) {
         int mx = Mouse::get_x();
         int my = Mouse::get_y();
         bool m_left = Mouse::is_left_pressed();
@@ -416,24 +416,23 @@ void run_shitty_excel() {
         int gx = 50, gy = 74, rh = 28, cw = 90;
         int v_rows = (h - gy - 22) / rh, v_cols = (w - gx - 10) / cw;
 
-        
         if (m_left && !mouse_down_prev) {
             if (my >= 28 && my < 50) {
-                
-                if (mx >= 10 && mx < 70) { 
+
+                if (mx >= 10 && mx < 70) {
                     if (Kernel::UICommon::prompt_filename(vfb, "Save filename:", current_filepath, sizeof(current_filepath))) {
                         status_msg = save_to_vfs(grid, current_filepath) ? "Saved file successfully" : "Save failed";
                     }
-                } else if (mx >= 75 && mx < 135) { 
+                } else if (mx >= 75 && mx < 135) {
                     if (Kernel::UICommon::prompt_filename(vfb, "Open filename:", current_filepath, sizeof(current_filepath))) {
                         status_msg = load_from_vfs(grid, current_filepath) ? "Loaded file successfully" : "Load failed";
                     }
-                } else if (mx >= 140 && mx < 190) { 
+                } else if (mx >= 140 && mx < 190) {
                     running = false;
-                } else if (mx >= 195 && mx < 255) { 
+                } else if (mx >= 195 && mx < 255) {
                     grid.remove(sel_r, sel_c);
                     status_msg = "Cell cleared";
-                } else if (mx >= 260 && mx < 320) { 
+                } else if (mx >= 260 && mx < 320) {
                     bg_idx = (bg_idx + 1) % 7;
                     CellData* cell = grid.find(sel_r, sel_c);
                     grid.set_color(sel_r, sel_c, bg_pal[bg_idx], cell ? cell->text_color : SHITCELL_TEXT_COLOR);
@@ -451,7 +450,6 @@ void run_shitty_excel() {
         }
         mouse_down_prev = m_left;
 
-        
         bool u = Keyboard::is_extended_pressed(0x48), l = Keyboard::is_extended_pressed(0x4B);
         bool r = Keyboard::is_extended_pressed(0x4D), d = Keyboard::is_extended_pressed(0x50);
 
@@ -522,14 +520,12 @@ void run_shitty_excel() {
         if (sel_c < view_c) view_c = sel_c;
         if (sel_c >= view_c + v_cols) view_c = sel_c - v_cols + 1;
 
-        
         vfb.clear(SHITCELL_GRID_BG);
         vfb.fill_rect(0, 0, w, 28, SHITCELL_PRIMARY);
         text(vfb, 12, 10, "ShitCell - FeatureRich Spreadsheet [OSFOS]", 0xFFFFFF);
         vfb.fill_rect(0, 28, w, 22, SHITCELL_DARK);
         text(vfb, 12, 34, "Mouse Click | Save | Open | Formulas: =A1*2, =A1*A2*0.5", 0xE0E0E0);
 
-        
         Kernel::UICommon::draw_button(vfb, 10, 31, 60, 18, "Save", 0xFF45475A, 0xFFFFFF, 0);
         Kernel::UICommon::draw_button(vfb, 75, 31, 60, 18, "Open", 0xFF45475A, 0xFFFFFF, 0);
         Kernel::UICommon::draw_button(vfb, 140, 31, 50, 18, "Quit", 0xFFF38BA8, 0xFF1E1E2E, 0);
@@ -628,10 +624,10 @@ void run_shitty_excel() {
     }
 }
 
-} 
+}
 
 void shitty_excel_run() {
     run_shitty_excel();
 }
 
-} 
+}

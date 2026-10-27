@@ -289,7 +289,7 @@ FILE* fopen(const char* filename, const char* mode) {
     (void)mode;
     void* handle = Kernel::FS::VFS::vfs_open(filename);
     if (!handle) {
-        errno_val = 2; 
+        errno_val = 2;
         return nullptr;
     }
     FILE* f = new FILE{handle, false, false};
@@ -298,7 +298,7 @@ FILE* fopen(const char* filename, const char* mode) {
 
 int fclose(FILE* stream) {
     if (!stream || stream->is_stdout || stream->is_stderr) {
-        errno_val = 9; 
+        errno_val = 9;
         return -1;
     }
     int res = Kernel::FS::VFS::vfs_close(stream->stream);
@@ -308,7 +308,7 @@ int fclose(FILE* stream) {
 
 size_t fread(void* ptr, size_t size, size_t nmemb, FILE* stream) {
     if (!stream || stream->is_stdout || stream->is_stderr) {
-        errno_val = 9; 
+        errno_val = 9;
         return 0;
     }
     return Kernel::FS::VFS::vfs_read(ptr, size, nmemb, stream->stream);
@@ -316,7 +316,7 @@ size_t fread(void* ptr, size_t size, size_t nmemb, FILE* stream) {
 
 size_t fwrite(const void* ptr, size_t size, size_t nmemb, FILE* stream) {
     if (!stream) {
-        errno_val = 9; 
+        errno_val = 9;
         return 0;
     }
     if (stream->is_stdout || stream->is_stderr) {
@@ -332,7 +332,7 @@ size_t fwrite(const void* ptr, size_t size, size_t nmemb, FILE* stream) {
 
 int fseek(FILE* stream, long offset, int whence) {
     if (!stream || stream->is_stdout || stream->is_stderr) {
-        errno_val = 9; 
+        errno_val = 9;
         return -1;
     }
     return Kernel::FS::VFS::vfs_seek(stream->stream, offset, whence);
@@ -340,7 +340,7 @@ int fseek(FILE* stream, long offset, int whence) {
 
 long ftell(FILE* stream) {
     if (!stream || stream->is_stdout || stream->is_stderr) {
-        errno_val = 9; 
+        errno_val = 9;
         return -1;
     }
     return Kernel::FS::VFS::vfs_tell(stream->stream);
@@ -400,7 +400,7 @@ long strtol(const char* nptr, char** endptr, int base) {
         if (acc > cutoff || (acc == cutoff && c > static_cast<unsigned long>(cutlim))) {
             any = -1;
             acc = neg ? static_cast<unsigned long>(LONG_MIN) : static_cast<unsigned long>(LONG_MAX);
-            errno_val = 34; 
+            errno_val = 34;
         } else {
             any = 1;
             acc *= base;
@@ -431,7 +431,7 @@ void exit(int status) {
 
 int system(const char* command) {
     (void)command;
-    errno_val = 38; 
+    errno_val = 38;
     return -1;
 }
 

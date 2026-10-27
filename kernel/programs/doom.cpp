@@ -3,7 +3,9 @@
 #include <kernel/drivers/framebuffer.h>
 #include <kernel/drivers/keyboard.h>
 #include <kernel/drivers/pit.h>
-
+#include <kernel/graphics/vfb.h>
+#include <kernel/graphics/window_manager.h>
+#include <kernel/scheduler.h>
 
 extern "C" {
     void* kernel_vfs_open(const char* path, const char* mode);
@@ -44,17 +46,30 @@ extern "C" {
     void doomgeneric_Create(int argc, char** argv);
     void doomgeneric_Tick();
 
+    static Kernel::Graphics::VirtualFramebuffer doom_window;
+    static uint32_t doom_width = 640, doom_height = 400;
+
     void DG_Init() {
+        Kernel::Graphics::WindowManager::request_window_size(
+            Kernel::Scheduler::current_thread_id(), 640, 400, &doom_width, &doom_height);
+        doom_window.init(0, 0, doom_width, doom_height);
     }
 
     void DG_DrawFrame() {
-        Kernel::Drivers::Framebuffer::blit(DG_ScreenBuffer, 0, 0, 640, 400, 640 * sizeof(uint32_t));
+        if (doom_window.valid()) {
+            uint32_t* dst = doom_window.buffer();
+            for (uint32_t y = 0; y < doom_height; ++y) {
+                const uint32_t sy = static_cast<uint32_t>(static_cast<uint64_t>(y) * 400 / doom_height);
+                for (uint32_t x = 0; x < doom_width; ++x) {
+                    const uint32_t sx = static_cast<uint32_t>(static_cast<uint64_t>(x) * 640 / doom_width);
+                    dst[static_cast<size_t>(y) * doom_width + x] = DG_ScreenBuffer[static_cast<size_t>(sy) * 640 + sx];
+                }
+            }
+            doom_window.flush();
+        }
     }
     void DG_SleepMs(uint32_t ms) {
-        uint32_t start = Kernel::Drivers::PIT::get_ticks();
-        while (Kernel::Drivers::PIT::get_ticks() - start < ms) {
-            __asm__ volatile("hlt");
-        }
+        Kernel::Scheduler::thread_sleep_ms(ms);
     }
 
     uint32_t DG_GetTicksMs() {
@@ -78,7 +93,7 @@ extern "C" {
         static bool last_ext_states[16] = {false};
 
         for (size_t i = 0; i < sizeof(mappings) / sizeof(mappings[0]); ++i) {
-            bool current = mappings[i].extended ? 
+            bool current = mappings[i].extended ?
                 Kernel::Drivers::Keyboard::is_extended_pressed(mappings[i].scancode) :
                 Kernel::Drivers::Keyboard::is_pressed(mappings[i].scancode);
 
@@ -98,16 +113,16 @@ extern "C" {
 }
 
 namespace Kernel::Games::Doom {
-    void run() {
+    void run(const char* wad) {
         char* argv[] = {
-            (char*)"doom", 
-            (char*)"-iwad", (char*)"/doom.wad", 
-            (char*)"-mb", (char*)"24",
+            (char*)"doom",
+            (char*)"-iwad", const_cast<char*>(wad),
+            (char*)"-mb", (char*)"12",
             (char*)"-savedir", (char*)"/bin/doom/saves"
         };
-        doomgeneric_Create(sizeof(argv) / sizeof(argv[0]), argv); 
+        doomgeneric_Create(sizeof(argv) / sizeof(argv[0]), argv);
         bool running = true;
-        while (running) {
+        while (running && !Kernel::Scheduler::should_stop()) {
             doomgeneric_Tick();
         }
     }

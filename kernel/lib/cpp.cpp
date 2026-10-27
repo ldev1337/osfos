@@ -23,7 +23,7 @@ extern "C" {
         g_atexit_lock.lock();
         if (g_destructor_count >= MAX_DESTRUCTORS) {
             g_atexit_lock.unlock();
-            return -1; 
+            return -1;
         }
 
         g_destructors[g_destructor_count++] = DestructorEntry{destructor, arg, dso_handle};

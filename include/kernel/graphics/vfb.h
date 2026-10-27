@@ -40,7 +40,6 @@ public:
 
     void flush() const;
 
-    
     void put_pixel(uint32_t px, uint32_t py, uint32_t color);
     void clear(uint32_t color);
     void fill(uint32_t color);
@@ -52,11 +51,9 @@ public:
     void fill_rect_alpha(int32_t rx, int32_t ry, int32_t w, int32_t h, uint32_t color, uint8_t alpha);
     void fill_circle_alpha(int32_t xc, int32_t yc, int32_t r, uint32_t color, uint8_t alpha);
 
-    
     void draw_glyph(int32_t gx, int32_t gy, char ch, uint32_t color);
     void draw_glyph_bg(int32_t gx, int32_t gy, char ch, uint32_t fg, uint32_t bg);
 
-    
     void blit(const uint32_t* src, uint32_t bx, uint32_t by, uint32_t bw, uint32_t bh, uint32_t src_pitch);
     void blit_transparent(const uint32_t* src, uint32_t bx, uint32_t by, uint32_t bw, uint32_t bh, uint32_t src_pitch, uint32_t transparent_color);
     void blit_alpha(const uint32_t* src, uint32_t bx, uint32_t by, uint32_t bw, uint32_t bh, uint32_t src_pitch, uint8_t global_alpha);
@@ -69,4 +66,4 @@ public:
     void fill_rounded_rect(int32_t rx, int32_t ry, int32_t w, int32_t h, int32_t radius, uint32_t color);
 };
 
-} 
+}

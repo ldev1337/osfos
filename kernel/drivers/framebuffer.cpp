@@ -18,6 +18,22 @@ constexpr uint8_t bytes_per_pixel(Format f) {
     return 0;
 }
 
+static inline uint32_t swap_red_blue(uint32_t color) {
+    return (color & 0xFF00FF00u) |
+           ((color & 0x000000FFu) << 16) |
+           ((color & 0x00FF0000u) >> 16);
+}
+
+static void copy_bytes(uint8_t* dst, const uint8_t* src, size_t size) {
+    while (size >= sizeof(uint64_t)) {
+        *reinterpret_cast<uint64_t*>(dst) = *reinterpret_cast<const uint64_t*>(src);
+        dst += sizeof(uint64_t);
+        src += sizeof(uint64_t);
+        size -= sizeof(uint64_t);
+    }
+    while (size--) *dst++ = *src++;
+}
+
 bool init(const Config& config) {
     initialized = false;
     const uint8_t bpp = bytes_per_pixel(config.format);
@@ -154,19 +170,58 @@ void blit(const uint32_t* src, uint32_t x, uint32_t y, uint32_t w, uint32_t h, u
     if (h > fb.height - y) h = fb.height - y;
     if (w == 0 || h == 0) return;
 
-    auto* dst_base = static_cast<volatile uint8_t*>(fb.address);
-    size_t dst_offset = static_cast<size_t>(y) * fb.pitch + static_cast<size_t>(x) * 4;
+    const uint8_t bpp = bytes_per_pixel(fb.format);
+    auto* dst_base = reinterpret_cast<uint8_t*>(const_cast<uint8_t*>(
+        static_cast<const volatile uint8_t*>(fb.address)));
+    size_t dst_offset = static_cast<size_t>(y) * fb.pitch + static_cast<size_t>(x) * bpp;
     const uint8_t* src_curr = reinterpret_cast<const uint8_t*>(src);
 
     for (uint32_t row = 0; row < h; ++row) {
-        auto* d = reinterpret_cast<volatile uint32_t*>(dst_base + dst_offset);
-        auto* s = reinterpret_cast<const uint32_t*>(src_curr);
-        for (uint32_t px = 0; px < w; ++px) {
-            d[px] = s[px];
+        auto* d = dst_base + dst_offset;
+        const auto* s = reinterpret_cast<const uint32_t*>(src_curr);
+
+        switch (fb.format) {
+            case Format::BGR32:
+                copy_bytes(d, src_curr, static_cast<size_t>(w) * sizeof(uint32_t));
+                break;
+            case Format::RGB32:
+                for (uint32_t px = 0; px < w; ++px)
+                    reinterpret_cast<uint32_t*>(d)[px] = swap_red_blue(s[px]);
+                break;
+            case Format::RGB24:
+            case Format::BGR24: {
+                const bool rgb = fb.format == Format::RGB24;
+                for (uint32_t px = 0; px < w; ++px) {
+                    const uint32_t color = s[px];
+                    uint8_t* pixel = d + static_cast<size_t>(px) * 3;
+                    const uint8_t r = static_cast<uint8_t>(color >> 16);
+                    const uint8_t g = static_cast<uint8_t>(color >> 8);
+                    const uint8_t b = static_cast<uint8_t>(color);
+                    pixel[0] = rgb ? r : b;
+                    pixel[1] = g;
+                    pixel[2] = rgb ? b : r;
+                }
+                break;
+            }
+            case Format::RGB565:
+            case Format::BGR565: {
+                const bool rgb = fb.format == Format::RGB565;
+                auto* pixels = reinterpret_cast<uint16_t*>(d);
+                for (uint32_t px = 0; px < w; ++px) {
+                    const uint32_t color = s[px];
+                    const uint8_t r = static_cast<uint8_t>(color >> 16);
+                    const uint8_t g = static_cast<uint8_t>(color >> 8);
+                    const uint8_t b = static_cast<uint8_t>(color);
+                    pixels[px] = rgb
+                        ? uint16_t(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3))
+                        : uint16_t(((b >> 3) << 11) | ((g >> 2) << 5) | (r >> 3));
+                }
+                break;
+            }
         }
         dst_offset += fb.pitch;
         src_curr += src_pitch;
     }
 }
 
-} 
+}

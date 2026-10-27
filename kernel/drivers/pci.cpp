@@ -77,7 +77,7 @@ static const char* pci_capability_name(uint8_t id) {
 }
 
 static void print_capabilities(uint8_t b, uint8_t s, uint8_t f, uint8_t ptr) {
-    
+
     for (unsigned n = 0; ptr >= 0x40 && ptr <= 0xFC && n < 48; ++n) {
         uint32_t item = pci_read_config(b, s, f, ptr);
         uint8_t id = (uint8_t)item, next = (uint8_t)(item >> 8);

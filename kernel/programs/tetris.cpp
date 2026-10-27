@@ -1,6 +1,7 @@
 #include <kernel/drivers/framebuffer.h>
 #include <kernel/drivers/keyboard.h>
 #include <kernel/drivers/pit.h>
+#include <kernel/scheduler.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/graphics/vfb.h>
 #include <kernel/lib/random.h>
@@ -10,79 +11,64 @@ namespace Kernel::Games::Tetris {
 namespace {
     static Kernel::Graphics::VirtualFramebuffer vfb;
     static Kernel::Lib::Random rng(Kernel::Lib::Random::rdtsc());
-
-    
     constexpr int BOARD_W = 10;
     constexpr int BOARD_H = 20;
-    constexpr int BLOCK_SIZE = 26;
-
-    
+    int block_size = 26;
     constexpr uint32_t COLOR_BG = 0x101018;
     constexpr uint32_t COLOR_BOARD_BG = 0x08080C;
     constexpr uint32_t COLOR_GRID = 0x222233;
     constexpr uint32_t COLOR_BORDER = 0x444466;
     constexpr uint32_t COLOR_TEXT = 0xFFFFFF;
     constexpr uint32_t COLOR_DIM_TEXT = 0xAAAAAA;
-
-    
     constexpr uint32_t TETROMINO_COLORS[8] = {
-        0x000000, 
-        0x00F0F0, 
-        0x0000F0, 
-        0xF0A000, 
-        0xF0F000, 
-        0x00F000, 
-        0xA000F0, 
-        0xF00000  
+        0x000000,
+        0x00F0F0,
+        0x0000F0,
+        0xF0A000,
+        0xF0F000,
+        0x00F000,
+        0xA000F0,
+        0xF00000
     };
 
-    
     const int TETROMINOES[8][4][4][4] = {
-        
         {{{0}}},
-        
         {
             {{0,0,0,0},{1,1,1,1},{0,0,0,0},{0,0,0,0}},
             {{0,0,1,0},{0,0,1,0},{0,0,1,0},{0,0,1,0}},
             {{0,0,0,0},{0,0,0,0},{1,1,1,1},{0,0,0,0}},
             {{0,1,0,0},{0,1,0,0},{0,1,0,0},{0,1,0,0}}
         },
-        
         {
             {{2,0,0,0},{2,2,2,0},{0,0,0,0},{0,0,0,0}},
             {{0,2,2,0},{0,2,0,0},{0,2,0,0},{0,0,0,0}},
             {{0,0,0,0},{2,2,2,0},{0,0,2,0},{0,0,0,0}},
             {{0,2,0,0},{0,2,0,0},{2,2,0,0},{0,0,0,0}}
         },
-        
         {
             {{0,0,3,0},{3,3,3,0},{0,0,0,0},{0,0,0,0}},
             {{0,3,0,0},{0,3,0,0},{0,3,3,0},{0,0,0,0}},
             {{0,0,0,0},{3,3,3,0},{3,0,0,0},{0,0,0,0}},
             {{3,3,0,0},{0,3,0,0},{0,3,0,0},{0,0,0,0}}
         },
-        
         {
             {{0,4,4,0},{0,4,4,0},{0,0,0,0},{0,0,0,0}},
             {{0,4,4,0},{0,4,4,0},{0,0,0,0},{0,0,0,0}},
             {{0,4,4,0},{0,4,4,0},{0,0,0,0},{0,0,0,0}},
             {{0,4,4,0},{0,4,4,0},{0,0,0,0},{0,0,0,0}}
         },
-        
         {
             {{0,5,5,0},{5,5,0,0},{0,0,0,0},{0,0,0,0}},
             {{0,5,0,0},{0,5,5,0},{0,0,5,0},{0,0,0,0}},
             {{0,0,0,0},{0,5,5,0},{5,5,0,0},{0,0,0,0}},
             {{5,0,0,0},{5,5,0,0},{0,5,0,0},{0,0,0,0}}
         },
-        
         {
             {{0,6,0,0},{6,6,6,0},{0,0,0,0},{0,0,0,0}},
             {{0,6,0,0},{0,6,6,0},{0,6,0,0},{0,0,0,0}},
             {{0,0,0,0},{6,6,6,0},{0,6,0,0},{0,0,0,0}},
             {{0,6,0,0},{6,6,0,0},{0,6,0,0},{0,0,0,0}}
         },
-        
         {
             {{7,7,0,0},{0,7,7,0},{0,0,0,0},{0,0,0,0}},
             {{0,0,7,0},{0,7,7,0},{0,7,0,0},{0,0,0,0}},
@@ -91,7 +77,6 @@ namespace {
         }
     };
 
-    
     int bag[7];
     int bag_index = 7;
 
@@ -115,7 +100,6 @@ namespace {
         return bag[bag_index++];
     }
 
-    
     int board[BOARD_H][BOARD_W];
     int score = 0;
     int lines = 0;
@@ -143,7 +127,6 @@ namespace {
         current_piece.x = BOARD_W / 2 - 2;
         current_piece.y = 0;
 
-        
         auto& shape = TETROMINOES[current_piece.type][current_piece.rot];
         for (int r = 0; r < 4; ++r) {
             for (int c = 0; c < 4; ++c) {
@@ -193,7 +176,6 @@ namespace {
             }
         }
 
-        
         int cleared = 0;
         for (int r = BOARD_H - 1; r >= 0; --r) {
             bool full = true;
@@ -213,7 +195,7 @@ namespace {
                 for (int c = 0; c < BOARD_W; ++c) {
                     board[0][c] = 0;
                 }
-                r++; 
+                r++;
             }
         }
 
@@ -229,32 +211,30 @@ namespace {
 
     void draw_block(int x, int y, int type, int ox, int oy) {
         uint32_t col = TETROMINO_COLORS[type];
-        int px = ox + x * BLOCK_SIZE;
-        int py = oy + y * BLOCK_SIZE;
-        vfb.fill_rect(px + 1, py + 1, BLOCK_SIZE - 2, BLOCK_SIZE - 2, col);
-        vfb.draw_rect(px, py, BLOCK_SIZE, BLOCK_SIZE, COLOR_GRID);
+        int px = ox + x * block_size;
+        int py = oy + y * block_size;
+        vfb.fill_rect(px + 1, py + 1, block_size - 2, block_size - 2, col);
+        vfb.draw_rect(px, py, block_size, block_size, COLOR_GRID);
     }
 
     void render(int ox, int oy) {
         vfb.fill(COLOR_BG);
 
-        int board_w_px = BOARD_W * BLOCK_SIZE;
-        int board_h_px = BOARD_H * BLOCK_SIZE;
+        int board_w_px = BOARD_W * block_size;
+        int board_h_px = BOARD_H * block_size;
         vfb.fill_rect(ox - 2, oy - 2, board_w_px + 4, board_h_px + 4, COLOR_BORDER);
         vfb.fill_rect(ox, oy, board_w_px, board_h_px, COLOR_BOARD_BG);
 
-        
         for (int r = 0; r < BOARD_H; ++r) {
             for (int c = 0; c < BOARD_W; ++c) {
                 if (board[r][c] != 0) {
                     draw_block(c, r, board[r][c], ox, oy);
                 } else {
-                    vfb.draw_rect(ox + c * BLOCK_SIZE, oy + r * BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE, COLOR_GRID);
+                    vfb.draw_rect(ox + c * block_size, oy + r * block_size, block_size, block_size, COLOR_GRID);
                 }
             }
         }
 
-        
         auto& shape = TETROMINOES[current_piece.type][current_piece.rot];
         for (int r = 0; r < 4; ++r) {
             for (int c = 0; c < 4; ++c) {
@@ -268,14 +248,11 @@ namespace {
             }
         }
 
-        
         int sb_x = ox + board_w_px + 20;
         int sb_y = oy;
 
         Kernel::AppCommon::text(vfb, sb_x, sb_y, "TETRIS", 0x00FFFF);
         vfb.draw_line(sb_x, sb_y + 12, sb_x + 140, sb_y + 12, COLOR_BORDER);
-
-        
         Kernel::AppCommon::text(vfb, sb_x, sb_y + 22, "SCORE:", COLOR_DIM_TEXT);
         char score_buf[32];
         int s = score;
@@ -307,8 +284,6 @@ namespace {
                 }
             }
         }
-
-        
         Kernel::AppCommon::text(vfb, sb_x, sb_y + 162, "LEVEL:", COLOR_DIM_TEXT);
         char lvl_buf[16] = { static_cast<char>('0' + (level / 10)), static_cast<char>('0' + (level % 10)), 0 };
         Kernel::AppCommon::text(vfb, sb_x, sb_y + 174, lvl_buf, COLOR_TEXT);
@@ -327,7 +302,6 @@ namespace {
         }
         Kernel::AppCommon::text(vfb, sb_x, sb_y + 212, lns_buf, COLOR_TEXT);
 
-        
         int ctrl_y = sb_y + 245;
         Kernel::AppCommon::text(vfb, sb_x, ctrl_y, "CONTROLS:", 0x8888AA);
         Kernel::AppCommon::text(vfb, sb_x, ctrl_y + 16, "LEFT/RIGHT: Move", COLOR_DIM_TEXT);
@@ -337,7 +311,6 @@ namespace {
         Kernel::AppCommon::text(vfb, sb_x, ctrl_y + 72, "SPACE: Hard Drop", COLOR_DIM_TEXT);
         Kernel::AppCommon::text(vfb, sb_x, ctrl_y + 86, "ESC: Quit", COLOR_DIM_TEXT);
 
-        
         if (game_over) {
             int ov_w = 260;
             int ov_h = 100;
@@ -357,12 +330,17 @@ namespace {
 void run() {
     if (!Kernel::Drivers::Framebuffer::valid()) return;
 
-    int sw = static_cast<int>(Kernel::Drivers::Framebuffer::width());
-    int sh = static_cast<int>(Kernel::Drivers::Framebuffer::height());
-    vfb.init(0, 0, static_cast<uint32_t>(sw), static_cast<uint32_t>(sh));
+    uint32_t actual_w = 0, actual_h = 0;
+    if (!Kernel::AppCommon::request_window_size(500, 560, actual_w, actual_h)) return;
+    int sw = static_cast<int>(actual_w), sh = static_cast<int>(actual_h);
+    if (sw < 260 || sh < 180 || !vfb.init(0, 0, actual_w, actual_h)) return;
 
-    int board_w_px = BOARD_W * BLOCK_SIZE;
-    int board_h_px = BOARD_H * BLOCK_SIZE;
+    block_size = (sw - 220) / BOARD_W;
+    if (block_size > sh / BOARD_H) block_size = sh / BOARD_H;
+    if (block_size > 26) block_size = 26;
+    if (block_size < 8) block_size = 8;
+    int board_w_px = BOARD_W * block_size;
+    int board_h_px = BOARD_H * block_size;
     int total_w = board_w_px + 180 + 30;
     int ox = (sw - total_w) / 2;
     int oy = (sh - board_h_px) / 2;
@@ -384,16 +362,16 @@ void run() {
     uint32_t last_key_tick = 0;
 
     for (;;) {
+        if (Kernel::Scheduler::should_stop()) return;
         uint32_t current_tick = Kernel::Drivers::PIT::get_ticks();
 
-        
         if (Kernel::Drivers::Keyboard::is_pressed(0x01)) {
             break;
         }
 
         if (game_over) {
             render(ox, oy);
-            if (Kernel::Drivers::Keyboard::is_pressed(0x13)) { 
+            if (Kernel::Drivers::Keyboard::is_pressed(0x13)) {
                 reset_board();
                 score = 0;
                 lines = 0;
@@ -407,22 +385,20 @@ void run() {
             continue;
         }
 
-        
         if (current_tick - last_key_tick > 4) {
             bool moved = false;
             Piece test_p = current_piece;
 
-            
             if (Kernel::Drivers::Keyboard::is_extended_pressed(0x4B)) {
                 test_p.x--;
                 if (!check_collision(test_p)) { current_piece = test_p; moved = true; }
             }
-            
+
             else if (Kernel::Drivers::Keyboard::is_extended_pressed(0x4D)) {
                 test_p.x++;
                 if (!check_collision(test_p)) { current_piece = test_p; moved = true; }
             }
-            
+
             else if (Kernel::Drivers::Keyboard::is_extended_pressed(0x50)) {
                 test_p.y++;
                 if (!check_collision(test_p)) {
@@ -433,14 +409,14 @@ void run() {
                     lock_piece();
                 }
             }
-            
+
             else if (Kernel::Drivers::Keyboard::is_extended_pressed(0x48) || Kernel::Drivers::Keyboard::is_pressed(0x2D)) {
                 test_p.rot = (test_p.rot + 1) % 4;
                 if (!check_collision(test_p)) {
                     current_piece = test_p;
                     moved = true;
                 } else {
-                    
+
                     test_p.x--;
                     if (!check_collision(test_p)) { current_piece = test_p; moved = true; }
                     else {
@@ -449,12 +425,12 @@ void run() {
                     }
                 }
             }
-            
+
             else if (Kernel::Drivers::Keyboard::is_pressed(0x2C)) {
                 test_p.rot = (test_p.rot + 3) % 4;
                 if (!check_collision(test_p)) { current_piece = test_p; moved = true; }
             }
-            
+
             else if (Kernel::Drivers::Keyboard::is_pressed(0x39)) {
                 int drop_dist = 0;
                 while (!check_collision(test_p)) {
@@ -492,4 +468,4 @@ void run() {
     }
 }
 
-} 
+}

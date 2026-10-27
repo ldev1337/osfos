@@ -6,6 +6,7 @@
 #include <kernel/memory/heap.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/lib/uicommon.h>
+#include <kernel/scheduler.h>
 #include <arch/x86_64/string.h>
 
 using Kernel::Drivers::Framebuffer::width;
@@ -331,7 +332,9 @@ inline void flood_fill(uint32_t* canvas, uint32_t cw, uint32_t ch, int start_x, 
 }
 
 void run() {
-    int32_t sw = static_cast<int32_t>(width()), sh = static_cast<int32_t>(height());
+    uint32_t actual_w = 0, actual_h = 0;
+    if (!Kernel::AppCommon::request_window_size(800, 600, actual_w, actual_h)) return;
+    int32_t sw = static_cast<int32_t>(actual_w), sh = static_cast<int32_t>(actual_h);
     const uint32_t canvas_w = sw, canvas_h = sh > 100 ? sh - 100 : sh;
     Kernel::Graphics::VirtualFramebuffer vfb(0, 0, static_cast<uint32_t>(sw), static_cast<uint32_t>(sh));
 
@@ -340,6 +343,7 @@ void run() {
 
     uint32_t* canvas = static_cast<uint32_t*>(kmalloc(canvas_w * canvas_h * sizeof(uint32_t)));
     uint32_t* backup_canvas = static_cast<uint32_t*>(kmalloc(canvas_w * canvas_h * sizeof(uint32_t)));
+    if (!canvas || !backup_canvas) { if (canvas) kfree(canvas); if (backup_canvas) kfree(backup_canvas); return; }
     for (size_t i = 0; i < canvas_w * canvas_h; ++i) canvas[i] = COLOR_CANVAS;
     memcpy(backup_canvas, canvas, canvas_w * canvas_h * sizeof(uint32_t));
 
@@ -353,7 +357,7 @@ void run() {
     bool dragging = false;
 
     bool running = true;
-    while (running) {
+    while (running && !Kernel::Scheduler::should_stop()) {
         int mx = Mouse::get_x();
         int my = Mouse::get_y();
         bool m_left = Mouse::is_left_pressed();
@@ -417,7 +421,7 @@ void run() {
             }
         } else {
             if (m_left && !mouse_down_prev) {
-                
+
                 if (my >= static_cast<int>(canvas_h) + 5 && my <= static_cast<int>(canvas_h) + 30) {
                     if (mx >= 10 && mx < 70) { current_tool = Tool::Pencil; strcpy(status_msg, "Tool: Pencil"); }
                     else if (mx >= 75 && mx < 135) { current_tool = Tool::Eraser; strcpy(status_msg, "Tool: Eraser"); }
@@ -429,15 +433,15 @@ void run() {
                     else if (mx >= 480 && mx < 545) { current_tool = Tool::FloodFill; strcpy(status_msg, "Tool: Bucket Fill"); }
                     else if (mx >= 550 && mx < 620) { current_tool = Tool::Eyedropper; strcpy(status_msg, "Tool: Eyedropper"); }
                 }
-                
+
                 else if (my >= static_cast<int>(canvas_h) + 35 && my <= static_cast<int>(canvas_h) + 60) {
-                    if (mx >= 10 && mx < 70) { 
+                    if (mx >= 10 && mx < 70) {
                         char filename[64] = "drawing.png";
                         if (Kernel::UICommon::prompt_filename(vfb, "Save filename:", filename, sizeof(filename))) {
                             save_png(filename, canvas, canvas_w, canvas_h);
                             strcpy(status_msg, "File saved successfully.");
                         }
-                    } else if (mx >= 75 && mx < 135) { 
+                    } else if (mx >= 75 && mx < 135) {
                         char filename[64] = "drawing.png";
                         if (Kernel::UICommon::prompt_filename(vfb, "Open filename:", filename, sizeof(filename))) {
                             if (load_png(filename, canvas, canvas_w, canvas_h)) {
@@ -449,9 +453,9 @@ void run() {
                         }
                     } else if (mx >= 140 && mx < 180) { brush_width = brush_width > 1 ? brush_width - 1 : 1; }
                     else if (mx >= 185 && mx < 225) { brush_width = brush_width < 20 ? brush_width + 1 : 20; }
-                    else if (mx >= 230 && mx < 280) { running = false; } 
+                    else if (mx >= 230 && mx < 280) { running = false; }
                 }
-                
+
                 else if (my >= static_cast<int>(canvas_h) + 65) {
                     int cp_x = 10;
                     if (mx >= cp_x && mx < cp_x + 200 && my >= static_cast<int>(canvas_h) + 65 && my < static_cast<int>(canvas_h) + 90) {
@@ -483,21 +487,19 @@ void run() {
         int btn_x = 10;
         for (int i = 0; i < 9; ++i) {
             bool active = (static_cast<int>(current_tool) == i);
-            Kernel::UICommon::draw_button(vfb, btn_x, canvas_h + 5, 55, 24, tool_names[i], 
-                active ? 0xFF89B4FA : 0xFF45475A, 
-                active ? 0xFF1E1E2E : COLOR_TEXT, 
+            Kernel::UICommon::draw_button(vfb, btn_x, canvas_h + 5, 55, 24, tool_names[i],
+                active ? 0xFF89B4FA : 0xFF45475A,
+                active ? 0xFF1E1E2E : COLOR_TEXT,
                 0);
             btn_x += 65;
         }
 
-        
         Kernel::UICommon::draw_button(vfb, 10, canvas_h + 35, 60, 24, "Save", 0xFF45475A, COLOR_TEXT, 0);
         Kernel::UICommon::draw_button(vfb, 75, canvas_h + 35, 60, 24, "Open", 0xFF45475A, COLOR_TEXT, 0);
         Kernel::UICommon::draw_button(vfb, 140, canvas_h + 35, 38, 24, "-", 0xFF45475A, COLOR_TEXT, 0);
         Kernel::UICommon::draw_button(vfb, 185, canvas_h + 38, 38, 24, "+", 0xFF45475A, COLOR_TEXT, 0);
         Kernel::UICommon::draw_button(vfb, 230, canvas_h + 35, 50, 24, "Quit", 0xFFF38BA8, 0xFF1E1E2E, 0);
 
-        
         char width_buf[32] = "W:";
         int idx = 2;
         if (brush_width >= 10) {
@@ -509,7 +511,6 @@ void run() {
         width_buf[idx] = '\0';
         Kernel::AppCommon::text(vfb, 290, canvas_h + 41, width_buf, COLOR_TEXT);
 
-        
         int cp_x = 10;
         for (int i = 0; i < 200; ++i) {
             float ratio = static_cast<float>(i) / 200.0f;
@@ -542,4 +543,4 @@ void run() {
     kfree(backup_canvas);
 }
 
-} 
+}

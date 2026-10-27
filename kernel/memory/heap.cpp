@@ -1,9 +1,11 @@
 #include <kernel/memory/heap.h>
 #include <arch/x86_64/string.h>
+#include <arch/x86_64/spinlock.h>
 
 namespace Kernel::Memory {
 
 KernelHeap g_kheap;
+static Spinlock heap_lock;
 
 void KernelHeap::init(void* heap_start_addr, size_t initial_size) {
     start_node = (HeapNode*)heap_start_addr;
@@ -14,8 +16,12 @@ void KernelHeap::init(void* heap_start_addr, size_t initial_size) {
 }
 
 void* KernelHeap::kmalloc(size_t size) {
-    if (size == 0) return nullptr;
-    size = (size + 7) & ~7; 
+    const uint64_t flags = heap_lock.lock_irqsave();
+    if (size == 0) {
+        heap_lock.unlock_irqrestore(flags);
+        return nullptr;
+    }
+    size = (size + 7) & ~7;
     HeapNode* current = start_node;
     while (current != nullptr) {
         if (current->is_free && current->size >= size) {
@@ -29,19 +35,22 @@ void* KernelHeap::kmalloc(size_t size) {
                 current->next = new_node;
             }
             current->is_free = false;
-            return (void*)((size_t)current + sizeof(HeapNode));
+            void* result = (void*)((size_t)current + sizeof(HeapNode));
+            heap_lock.unlock_irqrestore(flags);
+            return result;
         }
         current = current->next;
     }
-    return nullptr; 
+    heap_lock.unlock_irqrestore(flags);
+    return nullptr;
 }
 
 void KernelHeap::kfree(void* ptr) {
     if (!ptr) return;
+    const uint64_t flags = heap_lock.lock_irqsave();
     HeapNode* node = (HeapNode*)((size_t)ptr - sizeof(HeapNode));
     node->is_free = true;
-    
-    
+
     HeapNode* current = start_node;
     while (current != nullptr) {
         while (current->is_free && current->next && current->next->is_free) {
@@ -50,6 +59,7 @@ void KernelHeap::kfree(void* ptr) {
         }
         current = current->next;
     }
+    heap_lock.unlock_irqrestore(flags);
 }
 
 void* KernelHeap::krealloc(void* ptr, size_t size) {
@@ -124,7 +134,7 @@ bool KernelHeap::validate() const {
     return true;
 }
 
-} 
+}
 
 extern "C" {
     void* kmalloc(size_t size) { return Kernel::Memory::g_kheap.kmalloc(size); }

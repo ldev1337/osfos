@@ -7,7 +7,6 @@
 #define PCI_MAX_SLOTS      32
 #define PCI_MAX_FUNCTIONS  8
 
-
 #define PCI_CLASS_UNCLASSIFIED 0x00
 #define PCI_CLASS_STORAGE      0x01
 #define PCI_CLASS_NETWORK      0x02

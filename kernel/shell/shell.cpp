@@ -2,6 +2,8 @@
 #include <kernel/drivers/keyboard.h>
 #include <kernel/drivers/framebuffer.h>
 #include <kernel/graphics/vfb.h>
+#include <kernel/graphics/window_manager.h>
+#include <kernel/scheduler.h>
 #include <kernel/drivers/pci.h>
 #include <kernel/memory/heap.h>
 #include <kernel/memory/pmm.h>
@@ -19,7 +21,7 @@
 namespace Kernel::Games {
     namespace Spong { void run(uint32_t speed, bool ai); }
     namespace Breakout { void run(); }
-    namespace Doom { void run(); }
+    namespace Doom { void run(const char* wad); }
     namespace Tetris { void run(); }
 }
 
@@ -58,6 +60,44 @@ namespace {
     size_t cols = 0, rows = 0, col = 0, row = 0;
     uint32_t screen_w = 0, screen_h = 0;
 
+    struct AppLaunch { void (*entry)(); };
+
+    void app_thread_entry(void* argument) {
+        AppLaunch* launch = static_cast<AppLaunch*>(argument);
+        void (*entry)() = launch ? launch->entry : nullptr;
+        if (launch) kfree(launch);
+        while (!Kernel::Scheduler::should_stop() &&
+               !Kernel::Graphics::WindowManager::has_window(Kernel::Scheduler::current_thread_id()))
+            Kernel::Scheduler::thread_sleep_ms(1);
+        if (entry) entry();
+        Kernel::Graphics::WindowManager::unregister_window(Kernel::Scheduler::current_thread_id());
+    }
+
+    bool launch_app(const char* title, void (*entry)()) {
+        if (Kernel::Graphics::WindowManager::title_is_open(title)) return false;
+        AppLaunch* launch = static_cast<AppLaunch*>(kmalloc(sizeof(AppLaunch)));
+        if (!launch) return false;
+        launch->entry = entry;
+        int id = Kernel::Scheduler::thread_create(app_thread_entry, launch);
+        if (id < 0) { kfree(launch); return false; }
+        if (Kernel::Graphics::WindowManager::register_window(static_cast<uint64_t>(id), title) < 0) {
+            Kernel::Scheduler::terminate_thread(static_cast<uint64_t>(id));
+            return false;
+        }
+        return true;
+    }
+
+    void run_spong() { Kernel::Games::Spong::run(2, true); }
+    void run_breakout() { Kernel::Games::Breakout::run(); }
+    void run_doom1() { Kernel::Games::Doom::run("/bin/doom/doom1.wad"); }
+    void run_doom2() { Kernel::Games::Doom::run("/bin/doom/doom2.wad"); }
+    void run_tetris() { Kernel::Games::Tetris::run(); }
+    void run_graphic_test() { Kernel::Apps::graphic_test_run(); }
+    void run_stress_test() { Kernel::Apps::stress_test_run(); }
+    void run_shitty_excel() { Kernel::Apps::shitty_excel_run(); }
+    void run_pain() { Kernel::Apps::Pain::run(); }
+    void run_calc() { Kernel::Apps::Calc::run(); }
+
     inline void draw_glyph(uint32_t x, uint32_t y, char ch, uint32_t fg) {
         term_vfb.draw_glyph_bg(static_cast<int32_t>(x), static_cast<int32_t>(y), ch, fg, BG);
     }
@@ -72,7 +112,7 @@ namespace {
     void draw_header() {
         term_vfb.fill_rect(0, 0, static_cast<int32_t>(screen_w), static_cast<int32_t>(TOP_H), PANEL);
         term_vfb.fill_rect(0, static_cast<int32_t>(TOP_H - 2), static_cast<int32_t>(screen_w), 1, BLUE);
-        draw_text_at(12, 2, "BSOS / KERNEL SHELL", GREEN);
+        draw_text_at(12, 2, "OSFOS / KERNEL SHELL", GREEN);
     }
 
     void clear_row(size_t r) {
@@ -185,7 +225,7 @@ void print_int(long long value, int base, bool uppercase, bool signed_val, int w
 namespace {
     // --- Command Implementations ---
     void prompt() {
-        print("root@bsos", GREEN);
+        print("root@osfos", GREEN);
         print(":~", BLUE);
         print("$ ", FG);
     }
@@ -202,10 +242,12 @@ namespace {
         kernel_printf("  disk-init             Initialize ATA driver and VFS\n");
         kernel_printf("  disk-check <file>     Check if a file exists on disk and print info\n");
         kernel_printf("  spong                 Play Shitty Pong\n");
-        kernel_printf("  doom                  YES, DOOM!\n");
+        kernel_printf("  doom1                 Launch Doom I\n");
+        kernel_printf("  doom2                 Launch Doom II\n");
         kernel_printf("  tetris                The Tetrominoes\n");
         kernel_printf("  breakout              Play Breakout\n");
         kernel_printf("  gtest                 Run Graphic test app suite\n");
+        kernel_printf("  stress                Run the stress test\n");
         kernel_printf("  shitcell              Run The Shitty Excel spreadsheet\n");
         kernel_printf("  pain                  Run THE PAIN PNG Image Viewer and Paint shits\n");
         kernel_printf("  calc                  Use your brain, a pen and a paper before this\n");
@@ -330,7 +372,7 @@ namespace {
             row = col = 0;
             term_vfb.flush();
         } else if (equals(line, "echo")) kernel_printf("%s\n", args);
-        else if (equals(line, "about")) kernel_printf("BSOS kernel shell\nFramebuffer text UI with Virtual Framebuffer abstraction.\n");
+        else if (equals(line, "about")) kernel_printf("OSFOS kernel shell\nFramebuffer text UI with Virtual Framebuffer abstraction.\n");
         else if (equals(line, "mem")) kernel_printf("Memory APIs available in this build:\n  KernelHeap::kmalloc/kfree\n  PMM::allocate_page_block/free_page_block\n");
         else if (equals(line, "heap-test")) run_heap_test(args);
         else if (equals(line, "pmm-test")) run_pmm_test(args);
@@ -339,20 +381,30 @@ namespace {
         else if (equals(line, "ls")) run_ls(args);
         else if (equals(line, "cat")) run_cat(args);
         else if (equals(line, "exit")) kernel_printf("The kernel shell runs in ring 0; there is no userspace process to exit.\n");
-        else if (equals(line, "spong")) { Kernel::Games::Spong::run(2, true); reset_terminal_view(); }
-        else if (equals(line, "breakout")) { Kernel::Games::Breakout::run(); reset_terminal_view(); }
-        else if (equals(line, "doom")) { Kernel::Games::Doom::run(); reset_terminal_view(); }
-        else if (equals(line, "tetris")) { Kernel::Games::Tetris::run(); reset_terminal_view(); }
-        else if (equals(line, "gtest")) { Kernel::Apps::graphic_test_run(); term_vfb.clear(BG); Kernel::Apps::stress_test_run(); reset_terminal_view(); }
-        else if (equals(line, "shitcell")) { Kernel::Apps::shitty_excel_run(); reset_terminal_view(); }
-        else if (equals(line, "pain")) { Kernel::Apps::Pain::run(); reset_terminal_view(); }
-        else if (equals(line, "calc")) { Kernel::Apps::Calc::run(); reset_terminal_view(); }
+        else if (equals(line, "spong")) { if (!launch_app("Spong", run_spong)) kernel_printf("Could not launch Spong.\n"); }
+        else if (equals(line, "breakout")) { if (!launch_app("Breakout", run_breakout)) kernel_printf("Could not launch Breakout.\n"); }
+        else if (equals(line, "doom1")) { if (!launch_app("Doom I", run_doom1)) kernel_printf("Could not launch Doom I.\n"); }
+        else if (equals(line, "doom2")) { if (!launch_app("Doom II", run_doom2)) kernel_printf("Could not launch Doom II.\n"); }
+        else if (equals(line, "tetris")) { if (!launch_app("Tetris", run_tetris)) kernel_printf("Could not launch Tetris.\n"); }
+        else if (equals(line, "gtest")) { if (!launch_app("Graphics test", run_graphic_test)) kernel_printf("Could not launch graphics test.\n"); }
+        else if (equals(line, "stress")) { if (!launch_app("Stress test", run_stress_test)) kernel_printf("Could not launch stress test.\n"); }
+        else if (equals(line, "shitcell")) { if (!launch_app("Shitcell", run_shitty_excel)) kernel_printf("Could not launch Shitcell.\n"); }
+        else if (equals(line, "pain")) { if (!launch_app("Pain", run_pain)) kernel_printf("Could not launch Pain.\n"); }
+        else if (equals(line, "calc")) { if (!launch_app("Calculator", run_calc)) kernel_printf("Could not launch calculator.\n"); }
         else kernel_printf("command not found: %s\nType 'help' to list commands.\n", line);
     }
 
     void initialize_screen() {
         screen_w = Kernel::Drivers::Framebuffer::width();
         screen_h = Kernel::Drivers::Framebuffer::height();
+        uint32_t actual_w = 0, actual_h = 0;
+        if (Kernel::Graphics::WindowManager::has_window(Kernel::Scheduler::current_thread_id())) {
+            if (!Kernel::Graphics::WindowManager::request_window_size(
+                    Kernel::Scheduler::current_thread_id(), screen_w > 48 ? screen_w - 48 : screen_w,
+                    screen_h > 100 ? screen_h - 100 : screen_h, &actual_w, &actual_h)) return;
+            screen_w = actual_w;
+            screen_h = actual_h;
+        }
         if (screen_w == 0 || screen_h <= TOP_H) return;
 
         cols = screen_w / CELL_W;
@@ -368,12 +420,13 @@ namespace {
         detect_pci_devices();
         run_xhci_init("1");
         run_vector_benchmark();
-        kernel_printf("BSOS kernel shell ready.\nType 'help' to get started.\n");
+        kernel_printf("OSFOS kernel shell ready.\nType 'help' to get started.\n");
     }
 }
 
 void run() {
     if (!Kernel::Drivers::Framebuffer::valid()) return;
+    Kernel::Graphics::WindowManager::register_window(Kernel::Scheduler::current_thread_id(), "Shell", true);
     initialize_screen();
     if (!cols || !rows) return;
 
@@ -389,6 +442,10 @@ void run() {
                 term_vfb.put_pixel(cx + x, cy + CELL_H - 1, BLUE);
         term_vfb.flush();
 
+        if (!Kernel::Graphics::WindowManager::has_keyboard_focus(Kernel::Scheduler::current_thread_id())) {
+            Kernel::Scheduler::thread_sleep_ms(4);
+            continue;
+        }
         char ch = Kernel::Drivers::Keyboard::getchar();
         if (col < cols && row < rows) draw_glyph(cx, cy, screen[row][col], screen_fg[row][col]);
         term_vfb.flush();

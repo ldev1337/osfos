@@ -1,10 +1,11 @@
 #include <kernel/graphics/vfb.h>
+#include <kernel/graphics/window_manager.h>
+#include <kernel/scheduler.h>
 #include <kernel/graphics/font8x8.h>
 #include <kernel/memory/heap.h>
 #include <arch/x86_64/string.h>
 #include <kernel/lib/math.h>
 #include <utility>
-#include <type_traits>
 
 namespace Kernel::Graphics {
 
@@ -79,6 +80,8 @@ void VirtualFramebuffer::destroy() {
 
 void VirtualFramebuffer::flush() const {
     if (!initialized_ || !buffer_) return;
+    if (Kernel::Graphics::WindowManager::present(
+            Kernel::Scheduler::current_thread_id(), buffer_, width_, height_, pitch_)) return;
     Kernel::Drivers::Framebuffer::blit(buffer_, static_cast<uint32_t>(x_), static_cast<uint32_t>(y_), width_, height_, pitch_);
 }
 
@@ -113,9 +116,11 @@ void VirtualFramebuffer::fill_rect(int32_t rx, int32_t ry, int32_t rw, int32_t r
 
     for (uint32_t py = 0; py < uh; ++py) {
         uint32_t* row = buffer_ + (uy + py) * width_ + ux;
-        for (uint32_t px = 0; px < uw; ++px) {
-            row[px] = color;
-        }
+        uint32_t px = 0;
+        const uint64_t pair = uint64_t(color) | (uint64_t(color) << 32);
+        for (; px + 1 < uw; px += 2)
+            *reinterpret_cast<uint64_t*>(row + px) = pair;
+        if (px < uw) row[px] = color;
     }
 }
 
@@ -286,10 +291,7 @@ void VirtualFramebuffer::blit(const uint32_t* src, uint32_t bx, uint32_t by, uin
     uint32_t* dst_curr = buffer_ + by * width_ + bx;
 
     for (uint32_t row = 0; row < bh; ++row) {
-        auto* s = reinterpret_cast<const uint32_t*>(src_curr);
-        for (uint32_t px = 0; px < bw; ++px) {
-            dst_curr[px] = s[px];
-        }
+        memcpy(dst_curr, src_curr, static_cast<size_t>(bw) * sizeof(uint32_t));
         dst_curr += width_;
         src_curr += src_pitch;
     }
@@ -466,4 +468,4 @@ void VirtualFramebuffer::fill_rounded_rect(int32_t rx, int32_t ry, int32_t w, in
     }
 }
 
-} 
+}

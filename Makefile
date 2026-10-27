@@ -101,9 +101,12 @@ endef
 
 all: os.iso disk.img
 
-ifneq ($(wildcard doom.wad),)
-disk.img: doom.wad tools/mkosfosfs.py
-	@python3 tools/mkosfosfs.py $@ --add /bin/doom/doom.wad=doom.wad
+DOOM1_WAD = $(firstword $(wildcard doom1.wad doom.wad))
+DOOM2_WAD = $(wildcard doom2.wad)
+DOOM_WADS = $(DOOM1_WAD) $(DOOM2_WAD)
+ifneq ($(DOOM_WADS),)
+disk.img: $(DOOM_WADS) tools/mkosfosfs.py
+	@python3 tools/mkosfosfs.py $@ $(if $(DOOM1_WAD),--add /bin/doom/doom1.wad=$(DOOM1_WAD)) $(if $(DOOM2_WAD),--add /bin/doom/doom2.wad=$(DOOM2_WAD))
 else
 disk.img: tools/mkosfosfs.py
 	@python3 tools/mkosfosfs.py $@

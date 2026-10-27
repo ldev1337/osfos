@@ -64,7 +64,7 @@ public:
     }
 };
 
-} 
-} 
+}
+}
 
-#endif 
+#endif

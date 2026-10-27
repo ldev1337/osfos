@@ -30,8 +30,8 @@ static struct GDTPtr gdt_ptr;
 struct IDTEntry {
     uint16_t offset_low;
     uint16_t selector;
-    uint8_t  ist;         
-    uint8_t  type_attr;   
+    uint8_t  ist;
+    uint8_t  type_attr;
     uint16_t offset_middle;
     uint32_t offset_high;
     uint32_t zero;
@@ -46,6 +46,7 @@ static struct IDTEntry idt_entries[256];
 static struct IDTPtr idt_ptr;
 
 struct InterruptFrame {
+    uint64_t xstate_ptr;
     uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
     uint64_t rbp, rdi, rsi, rdx, rcx, rbx, rax;
     uint64_t interrupt_number;
@@ -61,9 +62,13 @@ extern "C" uint64_t c_interrupt_handler(struct InterruptFrame* frame) {
 
     if (vector == 0x20) {
         Kernel::Drivers::PIT::tick();
+        if (Kernel::Scheduler::should_preempt())
+            next_rsp = Kernel::Scheduler::schedule((uint64_t)frame);
+    } else if (vector == 0x30) {
+        // Dedicated software interrupt for cooperative yield; it is not a PIT tick.
         next_rsp = Kernel::Scheduler::schedule((uint64_t)frame);
     }
-    
+
     if (vector == 0x21) {
         Kernel::Drivers::Keyboard::handle_interrupt();
     }
@@ -104,12 +109,12 @@ static void set_idt_entry(int vector, uint64_t handler, uint16_t selector, uint8
 static void gdt_flush(uint64_t gdt_ptr_addr) {
     __asm__ volatile(
         "lgdt (%0)\n\t"
-        "pushq $0x08\n\t"          
-        "leaq 1f(%%rip), %%rax\n\t"  
+        "pushq $0x08\n\t"
+        "leaq 1f(%%rip), %%rax\n\t"
         "pushq %%rax\n\t"
-        "lretq\n\t"                
+        "lretq\n\t"
         "1:\n\t"
-        "movw $0x10, %%ax\n\t"     
+        "movw $0x10, %%ax\n\t"
         "movw %%ax, %%ds\n\t"
         "movw %%ax, %%es\n\t"
         "movw %%ax, %%fs\n\t"
@@ -242,7 +247,7 @@ static void test_routine_sse2_context_switch(uint8_t* save_area, size_t iteratio
             "movaps %%xmm10, 160(%0)\n\t""movaps %%xmm11, 176(%0)\n\t"
             "movaps %%xmm12, 192(%0)\n\t""movaps %%xmm13, 208(%0)\n\t"
             "movaps %%xmm14, 224(%0)\n\t""movaps %%xmm15, 240(%0)\n\t"
-            
+
             "movaps 0(%0), %%xmm0\n\t"   "movaps 16(%0), %%xmm1\n\t"
             "movaps 32(%0), %%xmm2\n\t"  "movaps 48(%0), %%xmm3\n\t"
             "movaps 64(%0), %%xmm4\n\t"  "movaps 80(%0), %%xmm5\n\t"
@@ -271,7 +276,7 @@ static void test_routine_avx2_context_switch(uint8_t* save_area, size_t iteratio
             "vmovaps %%ymm10, 320(%0)\n\t""vmovaps %%ymm11, 352(%0)\n\t"
             "vmovaps %%ymm12, 384(%0)\n\t""vmovaps %%ymm13, 416(%0)\n\t"
             "vmovaps %%ymm14, 448(%0)\n\t""vmovaps %%ymm15, 480(%0)\n\t"
-            
+
             "vmovaps 0(%0), %%ymm0\n\t"   "vmovaps 32(%0), %%ymm1\n\t"
             "vmovaps 64(%0), %%ymm2\n\t"  "vmovaps 96(%0), %%ymm3\n\t"
             "vmovaps 128(%0), %%ymm4\n\t" "vmovaps 160(%0), %%ymm5\n\t"

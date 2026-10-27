@@ -8,7 +8,6 @@
 extern "C" {
 #endif
 
-
 void *memcpy(void *__restrict dest, const void *__restrict src, size_t n);
 void *memmove(void *dest, const void *src, size_t n);
 void *memset(void *s, int c, size_t n);
@@ -19,7 +18,6 @@ void *memrchr(const void *s, int c, size_t n);
 void *memccpy(void *__restrict dest, const void *__restrict src, int c, size_t n);
 void *rawmemchr(const void *s, int c);
 void *explicit_memset(void *s, int c, size_t n);
-
 
 size_t strlen(const char *s);
 size_t strnlen(const char *s, size_t maxlen);
@@ -63,4 +61,4 @@ size_t strxfrm(char *__restrict dest, const char *__restrict src, size_t n);
 }
 #endif
 
-#endif 
+#endif

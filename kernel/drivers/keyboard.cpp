@@ -1,9 +1,29 @@
 #include <kernel/drivers/keyboard.h>
 #include <kernel/cpu.h>
+#include <kernel/graphics/window_manager.h>
+#include <kernel/scheduler.h>
 
 namespace Kernel::Drivers {
 
-    
+static inline uint64_t keyboard_irq_save() {
+    uint64_t flags;
+    __asm__ volatile("pushfq; popq %0; cli" : "=r"(flags) : : "memory");
+    return flags;
+}
+
+static inline void keyboard_irq_restore(uint64_t flags) {
+    if (flags & (1ull << 9))
+        __asm__ volatile("sti" : : : "memory");
+}
+
+static bool keyboard_focus_allows_input() {
+    const uint64_t tid = Kernel::Scheduler::current_thread_id();
+    return !Kernel::Graphics::WindowManager::has_window(tid) ||
+           Kernel::Graphics::WindowManager::has_keyboard_focus(tid);
+}
+
+bool Keyboard::rx_buffer_empty() { return rx_buffer.empty(); }
+
     Keyboard::RingBuffer Keyboard::rx_buffer = {
         {0},
         0,
@@ -25,7 +45,6 @@ namespace Kernel::Drivers {
     bool Keyboard::key_states[128] = {false};
     bool Keyboard::extended_key_states[128] = {false};
 
-    
     const char kbd_US[128] = {
         0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
       '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
@@ -142,20 +161,26 @@ namespace Kernel::Drivers {
     }
 
     bool Keyboard::available() {
-        return !rx_buffer.empty();
+        if (!keyboard_focus_allows_input())
+            return false;
+        uint64_t flags = keyboard_irq_save();
+        bool result = !rx_buffer.empty();
+        keyboard_irq_restore(flags);
+        return result;
     }
 
     char Keyboard::getchar() {
         while (true) {
-            __asm__ volatile("cli" ::: "memory");
-
-            if (!rx_buffer.empty()) {
+            if (!keyboard_focus_allows_input()) {
+                Kernel::Scheduler::thread_sleep_ms(4);
+                continue;
+            }
+            if (!Kernel::Scheduler::thread_block_if(rx_buffer_empty)) {
+                uint64_t flags = keyboard_irq_save();
                 char c = rx_buffer.pop();
-                __asm__ volatile("sti" ::: "memory");
+                keyboard_irq_restore(flags);
                 return c;
             }
-
-            __asm__ volatile("sti; hlt" ::: "memory");
         }
     }
 
@@ -198,13 +223,13 @@ namespace Kernel::Drivers {
         }
 
         if (extended_code) {
-            if (base_scancode == 0x1D) { 
+            if (base_scancode == 0x1D) {
                 right_ctrl_pressed = !is_release;
                 ctrl_pressed = right_ctrl_pressed || ctrl_pressed;
                 extended_code = false;
                 return;
             }
-            if (base_scancode == 0x38) { 
+            if (base_scancode == 0x38) {
                 right_alt_pressed = !is_release;
                 alt_pressed = right_alt_pressed || alt_pressed;
                 extended_code = false;
@@ -287,6 +312,7 @@ namespace Kernel::Drivers {
 
             if (ascii != 0) {
                 rx_buffer.push(ascii);
+                Kernel::Scheduler::unblock_io_threads();
             }
         }
 
@@ -295,11 +321,13 @@ namespace Kernel::Drivers {
 
     bool Keyboard::is_pressed(uint8_t scancode) {
         if (scancode >= 128) return false;
+        if (!keyboard_focus_allows_input()) return false;
         return key_states[scancode];
     }
 
     bool Keyboard::is_extended_pressed(uint8_t scancode) {
         if (scancode >= 128) return false;
+        if (!keyboard_focus_allows_input()) return false;
         return extended_key_states[scancode];
     }
 
@@ -354,4 +382,4 @@ namespace Kernel::Drivers {
         if (timeout) inb(0x60);
     }
 
-} 
+}

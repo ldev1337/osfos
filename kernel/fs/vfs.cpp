@@ -343,7 +343,7 @@ bool truncate_entry(uint32_t index) {
     g_dir[index].size = 0;
     g_dir[index].first_cluster = 0;
     if (!flush_dir_entry(index)) { g_dir[index] = old; return false; }
-    if (old_first && !free_chain(old_first)) return false; 
+    if (old_first && !free_chain(old_first)) return false;
     return true;
 }
 
@@ -533,7 +533,7 @@ bool parse_mode(const char* mode, bool& readable, bool& writable, bool& append, 
     }
     return true;
 }
-} 
+}
 
 void VFS::init() {
     Kernel::Drivers::ATADriver::init();
@@ -719,7 +719,7 @@ bool VFS::get_file_at(uint32_t index, VFSFile* out_file) {
     if (index >= VFS_MAX_ENTRIES || !g_mounted) return false;
     return fill_public_file(index, out_file);
 }
-} 
+}
 
 extern "C" {
 void* kernel_vfs_open(const char* path, const char* mode) { return Kernel::FS::VFS::vfs_open(path, mode); }

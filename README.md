@@ -10,7 +10,7 @@ Requirements: Clang/Clang++, LLD, NASM, GNU Make, Python 3, and GRUB rescue-imag
 make
 ```
 
-This creates `os.bin`, a bootable `os.iso`, and a 64 MiB `disk.img`. The disk image builds without game data. To include Doom data, place a legally obtained `doom.wad` in the repository root and rebuild the image with `rm -f disk.img && make disk.img`. Doom WAD files are ignored by Git and are not distributed here. Run `make clean` to remove build outputs.
+This creates `os.bin`, a bootable `os.iso`, and a 64 MiB `disk.img`. The disk image builds without game data. To include Doom I or Doom II, place legally obtained `doom1.wad` and/or `doom2.wad` files in the repository root and rebuild the image with `rm -f disk.img && make disk.img`. Launch them with `doom1` and `doom2` from the shell. Doom WAD files are ignored by Git and are not distributed here. Run `make clean` to remove build outputs.
 
 ## Source layout
 

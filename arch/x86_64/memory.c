@@ -17,12 +17,20 @@ void *memset(void *d, int c, size_t sz) {
 void *memcpy(void *__restrict d, const void *__restrict s, size_t sz) {
     unsigned char *dest = (unsigned char *)d;
     const unsigned char *src = (const unsigned char *)s;
-    for (size_t i = 0; i < sz; ++i) {
-        dest[i] = src[i];
+
+    while (sz && ((uintptr_t)dest & (sizeof(uint64_t) - 1))) {
+        *dest++ = *src++;
+        --sz;
     }
+    while (sz >= sizeof(uint64_t)) {
+        *(uint64_t *)dest = *(const uint64_t *)src;
+        dest += sizeof(uint64_t);
+        src += sizeof(uint64_t);
+        sz -= sizeof(uint64_t);
+    }
+    while (sz--) *dest++ = *src++;
     return d;
 }
-
 
 void *memmove(void *d, const void *s, size_t sz) {
     unsigned char *dst = (unsigned char *)d;

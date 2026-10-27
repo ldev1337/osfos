@@ -1,8 +1,10 @@
 #include <kernel/drivers/framebuffer.h>
+#include <kernel/scheduler.h>
 #include <kernel/drivers/keyboard.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/lib/random.h>
 #include <kernel/graphics/vfb.h>
+#include <kernel/graphics/window_manager.h>
 #include <stdint.h>
 
 namespace Kernel::Games::Spong {
@@ -18,8 +20,7 @@ constexpr uint32_t BLUE = 0xFAB489;
 constexpr uint32_t GREEN = 0xA1E3A6;
 constexpr uint32_t RED = 0xA88BF3;
 
-constexpr int32_t PW = 10, PH = 76, BW = 10;
-
+constexpr int32_t PW = 10, BW = 10;
 
 constexpr uint8_t KEY_Q = 0x10;
 constexpr uint8_t KEY_W = 0x11;
@@ -29,6 +30,7 @@ constexpr uint8_t KEY_K = 0x25;
 
 struct Game {
     int32_t w, h, p1, p2, bx, by, vx, vy;
+    int32_t paddle_h;
     int32_t score1, score2, speed;
     int32_t ai_target;
     int32_t ai_timer;
@@ -43,7 +45,7 @@ void reset_ball(Game& g, int32_t direction) {
     g.vy = static_cast<int32_t>(g.rng.next_range(2, 4 + g.speed));
     if (g.rng.next_range(0, 1)) g.vy = -g.vy;
 
-    g.ai_target = g.h / 2 - PH / 2;
+    g.ai_target = g.h / 2 - g.paddle_h / 2;
     g.ai_timer = 0;
 }
 
@@ -53,8 +55,8 @@ void render(const Game& g, Kernel::Graphics::VirtualFramebuffer& vfb) {
     for (int32_t y = 0; y < g.h; y += 24)
         vfb.fill_rect(g.w / 2 - 1, y, 2, 12, 0x2E1E1E);
 
-    vfb.fill_rect(20, g.p1, PW, PH, GREEN);
-    vfb.fill_rect(g.w - 20 - PW, g.p2, PW, PH, RED);
+    vfb.fill_rect(20, g.p1, PW, g.paddle_h, GREEN);
+    vfb.fill_rect(g.w - 20 - PW, g.p2, PW, g.paddle_h, RED);
     vfb.fill_rect(g.bx, g.by, BW, BW, FG);
 
     text(vfb, g.w / 2 - 80, 20, "SPONG", BLUE);
@@ -69,13 +71,13 @@ void update_ai(Game& g) {
     if (!g.ai) return;
     if (++g.ai_timer > 10) {
         g.ai_timer = 0;
-        int32_t raw_target = g.by + BW / 2 - PH / 2;
+    int32_t raw_target = g.by + BW / 2 - g.paddle_h / 2;
         int32_t error_margin = static_cast<int32_t>(g.rng.next_range(-22, 22));
         g.ai_target = raw_target + error_margin;
     }
 
     if (g.ai_target < 0) g.ai_target = 0;
-    if (g.ai_target > g.h - PH) g.ai_target = g.h - PH;
+    if (g.ai_target > g.h - g.paddle_h) g.ai_target = g.h - g.paddle_h;
 
     int32_t delta = g.ai_target - g.p2;
     int32_t tracking_speed = 2 + (g.speed > 1 ? 1 : 0);
@@ -108,18 +110,21 @@ void input(Game& g, bool& running) {
 
     if (g.p1 < 0) g.p1 = 0;
     if (g.p2 < 0) g.p2 = 0;
-    if (g.p1 > g.h - PH) g.p1 = g.h - PH;
-    if (g.p2 > g.h - PH) g.p2 = g.h - PH;
+    if (g.p1 > g.h - g.paddle_h) g.p1 = g.h - g.paddle_h;
+    if (g.p2 > g.h - g.paddle_h) g.p2 = g.h - g.paddle_h;
 }
-} 
+}
 
 void run(uint32_t speed, bool ai) {
     Game g{};
-    g.w = static_cast<int32_t>(width());
-    g.h = static_cast<int32_t>(height());
-    if (g.w < 120 || g.h < 100) return;
+    uint32_t screen_w = 0, screen_h = 0;
+    if (!Kernel::AppCommon::request_window_size(640, 480, screen_w, screen_h)) return;
+    g.w = static_cast<int32_t>(screen_w);
+    g.h = static_cast<int32_t>(screen_h);
+    if (g.w < 168 || g.h < 200) return;
+    g.paddle_h = g.h < 300 ? g.h / 5 : 76;
 
-    Kernel::Graphics::VirtualFramebuffer vfb(0, 0, static_cast<uint32_t>(g.w), static_cast<uint32_t>(g.h));
+    Kernel::Graphics::VirtualFramebuffer vfb(0, 0, screen_w, screen_h);
     if (!vfb.valid()) return;
 
     if (speed < 1) speed = 1;
@@ -127,7 +132,7 @@ void run(uint32_t speed, bool ai) {
 
     g.speed = static_cast<int32_t>(speed);
     g.ai = ai;
-    g.p1 = g.p2 = (g.h - PH) / 2;
+    g.p1 = g.p2 = (g.h - g.paddle_h) / 2;
     g.score1 = g.score2 = 0;
     g.rng = Kernel::Lib::Random(
         Kernel::Lib::Random::rdtsc() ^
@@ -138,6 +143,12 @@ void run(uint32_t speed, bool ai) {
 
     bool running = true;
     while (running) {
+        if (Kernel::Scheduler::should_stop()) break;
+        if (!Kernel::Graphics::WindowManager::has_keyboard_focus(
+                Kernel::Scheduler::current_thread_id())) {
+            delay(10);
+            continue;
+        }
         input(g, running);
         if (!running) break;
 
@@ -154,14 +165,14 @@ void run(uint32_t speed, bool ai) {
 
         if (g.vx < 0 && g.bx <= 20 + PW &&
             g.bx + BW >= 20 && g.by + BW >= g.p1 &&
-            g.by <= g.p1 + PH) {
+            g.by <= g.p1 + g.paddle_h) {
             g.bx = 20 + PW;
             g.vx = -g.vx;
         }
 
         if (g.vx > 0 && g.bx + BW >= g.w - 20 - PW &&
             g.bx <= g.w - 20 && g.by + BW >= g.p2 &&
-            g.by <= g.p2 + PH) {
+            g.by <= g.p2 + g.paddle_h) {
             g.bx = g.w - 20 - PW - BW;
             g.vx = -g.vx;
         }
@@ -178,4 +189,4 @@ void run(uint32_t speed, bool ai) {
         delay(g.speed);
     }
 }
-} 
+}
