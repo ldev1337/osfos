@@ -333,7 +333,7 @@ inline void flood_fill(uint32_t* canvas, uint32_t cw, uint32_t ch, int start_x, 
 
 void run() {
     uint32_t actual_w = 0, actual_h = 0;
-    if (!Kernel::AppCommon::request_window_size(800, 600, actual_w, actual_h)) return;
+    if (!Kernel::AppCommon::request_window_size(1024, 720, actual_w, actual_h)) return;
     int32_t sw = static_cast<int32_t>(actual_w), sh = static_cast<int32_t>(actual_h);
     const uint32_t canvas_w = sw, canvas_h = sh > 100 ? sh - 100 : sh;
     Kernel::Graphics::VirtualFramebuffer vfb(0, 0, static_cast<uint32_t>(sw), static_cast<uint32_t>(sh));

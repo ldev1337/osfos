@@ -378,7 +378,7 @@ bool load_from_vfs(SparseGrid& grid, const char* filepath) {
 void run_shitty_excel() {
     if (!Kernel::Drivers::Framebuffer::valid()) return;
     uint32_t actual_w = 0, actual_h = 0;
-    if (!Kernel::AppCommon::request_window_size(800, 600, actual_w, actual_h)) return;
+    if (!Kernel::AppCommon::request_window_size(1024, 720, actual_w, actual_h)) return;
     int32_t w = static_cast<int32_t>(actual_w), h = static_cast<int32_t>(actual_h);
     if (w < 400 || h < 300) return;
 
