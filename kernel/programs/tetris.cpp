@@ -1,4 +1,3 @@
-#include <kernel/drivers/framebuffer.h>
 #include <kernel/drivers/keyboard.h>
 #include <kernel/drivers/pit.h>
 #include <kernel/scheduler.h>
@@ -328,12 +327,8 @@ namespace {
 }
 
 void run() {
-    if (!Kernel::Drivers::Framebuffer::valid()) return;
-
-    uint32_t actual_w = 0, actual_h = 0;
-    if (!Kernel::AppCommon::request_window_size(500, 560, actual_w, actual_h)) return;
-    int sw = static_cast<int>(actual_w), sh = static_cast<int>(actual_h);
-    if (sw < 260 || sh < 180 || !vfb.init(0, 0, actual_w, actual_h)) return;
+    if (!vfb.open_window(500, 560, 260, 180)) return;
+    const int sw = static_cast<int>(vfb.width()), sh = static_cast<int>(vfb.height());
 
     block_size = (sw - 220) / BOARD_W;
     if (block_size > sh / BOARD_H) block_size = sh / BOARD_H;

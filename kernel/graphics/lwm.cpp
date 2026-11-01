@@ -28,7 +28,7 @@ struct Window {
     uint8_t write_index;
     uint32_t width, height;
     int x, y;
-    bool alive, launcher, has_frame;
+    bool alive, has_frame;
 };
 
 struct RenderWindow {
@@ -39,12 +39,15 @@ struct RenderWindow {
     uint32_t width, height;
     int x, y;
     uint8_t buffer_index;
-    bool has_frame, focused;
+    bool focused;
 };
 
 Window windows[MAX_WINDOWS]{};
 size_t window_count = 0;
-size_t focused = 0;
+// Z-order indirection table: z_order[0] is bottom-most, z_order[window_count - 1] is top-most (focused)
+size_t z_order[MAX_WINDOWS]{};
+size_t focused_index_in_z = 0;
+
 uint32_t screen_w = 0, screen_h = 0;
 VirtualFramebuffer desktop;
 int drag_x = 0, drag_y = 0;
@@ -67,20 +70,44 @@ void draw_text(int x, int y, const char* s, uint32_t color) {
     }
 }
 
+void free_window_pixels(Window& w) {
+    for (uint32_t*& pixels : w.pixels) {
+        kfree(pixels);
+        pixels = nullptr;
+    }
+}
+
+bool allocate_frames(uint32_t width, uint32_t height,
+                     uint32_t* (&frames)[FRAME_BUFFER_COUNT]) {
+    const size_t bytes = static_cast<size_t>(width) * height * sizeof(uint32_t);
+    size_t count = 0;
+    for (; count < FRAME_BUFFER_COUNT; ++count) {
+        frames[count] = static_cast<uint32_t*>(kmalloc(bytes));
+        if (!frames[count]) break;
+    }
+    if (count < FRAME_BUFFER_COUNT) {
+        while (count) {
+            kfree(frames[--count]);
+            frames[count] = nullptr;
+        }
+        return false;
+    }
+    for (uint32_t* frame : frames) memset(frame, 0, bytes);
+    return true;
+}
+
 void mark_dirty(int left, int top, int right, int bottom) {
     if (left >= right || top >= bottom) return;
-    if (damage_valid) {
-        if (left < damage_left) damage_left = left;
-        if (top < damage_top) damage_top = top;
-        if (right > damage_right) damage_right = right;
-        if (bottom > damage_bottom) damage_bottom = bottom;
+    if (!damage_valid) {
+        damage_left = left; damage_top = top;
+        damage_right = right; damage_bottom = bottom;
+        damage_valid = true;
         return;
     }
-    damage_valid = true;
-    damage_left = left;
-    damage_top = top;
-    damage_right = right;
-    damage_bottom = bottom;
+    if (left < damage_left) damage_left = left;
+    if (top < damage_top) damage_top = top;
+    if (right > damage_right) damage_right = right;
+    if (bottom > damage_bottom) damage_bottom = bottom;
 }
 
 void mark_window_dirty(const Window& w) {
@@ -104,12 +131,16 @@ void fill_rect_clipped(int x, int y, int width, int height, uint32_t color,
                           clipped_right - clipped_left, clipped_bottom - clipped_top, color);
 }
 
-void blit_desktop_region(int left, int top, int right, int bottom) {
+bool clip_to_screen(int& left, int& top, int& right, int& bottom) {
     if (left < 0) left = 0;
     if (top < 0) top = 0;
     if (right > static_cast<int>(screen_w)) right = static_cast<int>(screen_w);
     if (bottom > static_cast<int>(screen_h)) bottom = static_cast<int>(screen_h);
-    if (left >= right || top >= bottom) return;
+    return left < right && top < bottom;
+}
+
+void blit_desktop_region(int left, int top, int right, int bottom) {
+    if (!clip_to_screen(left, top, right, bottom)) return;
 
     const uint32_t width = static_cast<uint32_t>(right - left);
     const uint32_t height = static_cast<uint32_t>(bottom - top);
@@ -119,14 +150,36 @@ void blit_desktop_region(int left, int top, int right, int bottom) {
                                        desktop.pitch());
 }
 
+// Moves window index 'w_idx' to the top of the z-order (most recently focused)
+void bring_to_front(size_t w_idx) {
+    size_t pos = 0;
+    while (pos < window_count && z_order[pos] != w_idx) ++pos;
+    if (pos >= window_count) return;
+
+    for (size_t j = pos; j + 1 < window_count; ++j) {
+        z_order[j] = z_order[j + 1];
+    }
+    z_order[window_count - 1] = w_idx;
+    focused_index_in_z = window_count - 1;
+}
+
+void remove_from_z_order(size_t window_index) {
+    size_t pos = 0;
+    while (pos < window_count && z_order[pos] != window_index) ++pos;
+    if (pos == window_count) return;
+    for (size_t i = pos; i + 1 < window_count; ++i) z_order[i] = z_order[i + 1];
+    focused_index_in_z = --window_count ? window_count - 1 : 0;
+}
+
+Window* find_window(uint64_t thread_id) {
+    for (size_t i = 0; i < window_count; ++i)
+        if (windows[i].alive && windows[i].thread_id == thread_id) return &windows[i];
+    return nullptr;
+}
+
 void render_region(const RenderWindow* rendered_windows, size_t rendered_count,
                    int left, int top, int right, int bottom) {
-    if (!desktop.valid()) return;
-    if (left < 0) left = 0;
-    if (top < 0) top = 0;
-    if (right > static_cast<int>(screen_w)) right = static_cast<int>(screen_w);
-    if (bottom > static_cast<int>(screen_h)) bottom = static_cast<int>(screen_h);
-    if (left >= right || top >= bottom) return;
+    if (!desktop.valid() || !clip_to_screen(left, top, right, bottom)) return;
 
     desktop.fill_rect(left, top, right - left, bottom - top, DESKTOP);
     fill_rect_clipped(0, 0, static_cast<int>(screen_w), 30, 0x22313E,
@@ -148,7 +201,7 @@ void render_region(const RenderWindow* rendered_windows, size_t rendered_count,
         desktop.draw_glyph(w.x + static_cast<int>(w.width) - 18, w.y + 8, 'X', TEXT);
         fill_rect_clipped(w.x, w.y + TITLE_H, static_cast<int>(w.width), static_cast<int>(w.height),
                           0x101820, left, top, right, bottom);
-        if (w.has_frame && w.pixels) {
+        if (w.pixels) {
             const int body_top = w.y + TITLE_H;
             const int copy_left = w.x > left ? w.x : left;
             const int copy_top = body_top > top ? body_top : top;
@@ -176,34 +229,34 @@ void render_region(const RenderWindow* rendered_windows, size_t rendered_count,
     blit_desktop_region(left, top, right, bottom);
 }
 
-bool mouse_update() {
+void mouse_update() {
     const bool left = Kernel::Drivers::Mouse::raw_left_pressed();
+    const bool left_changed = left != old_left;
     const int mx = Kernel::Drivers::Mouse::get_x();
     const int my = Kernel::Drivers::Mouse::get_y();
-    bool changed = left != old_left || mx != cursor_x || my != cursor_y;
     const int previous_cursor_x = cursor_x;
     const int previous_cursor_y = cursor_y;
     cursor_x = mx;
     cursor_y = my;
+
     if (left && !old_left) {
+        // Iterate z-order from top to bottom for hit testing
         for (size_t n = window_count; n > 0; --n) {
-            const size_t i = n - 1;
+            const size_t z_idx = n - 1;
+            const size_t i = z_order[z_idx];
             Window& w = windows[i];
             if (!w.alive) continue;
             const int ow = static_cast<int>(w.width) + 2;
             const int oh = static_cast<int>(w.height) + TITLE_H + 2;
             if (mx < w.x - 1 || mx >= w.x + ow || my < w.y - 1 || my >= w.y + oh) continue;
-            if (focused < window_count && windows[focused].alive)
-                mark_window_dirty(windows[focused]);
-            focused = i;
-            if (i + 1 != window_count) {
-                Window selected = w;
-                for (size_t j = i; j + 1 < window_count; ++j) windows[j] = windows[j + 1];
-                windows[window_count - 1] = selected;
-                focused = window_count - 1;
-            }
-            Window& selected = windows[focused];
+
+            if (window_count > 0 && windows[z_order[focused_index_in_z]].alive)
+                mark_window_dirty(windows[z_order[focused_index_in_z]]);
+
+            bring_to_front(i);
+            Window& selected = windows[i];
             mark_window_dirty(selected);
+
             if (my >= selected.y && my < selected.y + TITLE_H &&
                 mx >= selected.x + static_cast<int>(selected.width) - 24) {
                 selected.alive = false;
@@ -216,8 +269,8 @@ bool mouse_update() {
             break;
         }
     }
-    if (left && dragging && focused < window_count) {
-        Window& w = windows[focused];
+    if (left && dragging && window_count > 0) {
+        Window& w = windows[z_order[focused_index_in_z]];
         const int previous_x = w.x;
         const int previous_y = w.y;
         w.x = mx - drag_x;
@@ -233,41 +286,38 @@ bool mouse_update() {
     }
     if (!left) dragging = false;
     old_left = left;
-    if (changed) {
+    if (left_changed || mx != previous_cursor_x || my != previous_cursor_y) {
         mark_dirty(previous_cursor_x - 7, previous_cursor_y - 7,
                    previous_cursor_x + 8, previous_cursor_y + 8);
         mark_dirty(mx - 7, my - 7, mx + 8, my + 8);
     }
-    return changed;
 }
 
-bool take_damage_locked(RenderWindow* rendered_windows, size_t& rendered_count,
+void take_damage_locked(RenderWindow* rendered_windows, size_t& rendered_count,
                         int& left, int& top, int& right, int& bottom) {
-    if (!damage_valid) return false;
+    if (!damage_valid) return;
     left = damage_left;
     top = damage_top;
     right = damage_right;
     bottom = damage_bottom;
     rendered_count = 0;
-    for (size_t i = 0; i < window_count; ++i) {
+
+    // Iterate using z-order sequence
+    for (size_t z_idx = 0; z_idx < window_count; ++z_idx) {
+        const size_t i = z_order[z_idx];
         Window& w = windows[i];
         if (!w.alive) continue;
         RenderWindow& snapshot = rendered_windows[rendered_count++];
-        snapshot.owner = &w;
-        snapshot.thread_id = w.thread_id;
+        snapshot.owner = &w; snapshot.thread_id = w.thread_id;
         copy_name(snapshot.title, w.title);
         snapshot.pixels = w.has_frame ? w.pixels[w.front_index] : nullptr;
-        snapshot.width = w.width;
-        snapshot.height = w.height;
-        snapshot.x = w.x;
-        snapshot.y = w.y;
+        snapshot.width = w.width; snapshot.height = w.height;
+        snapshot.x = w.x; snapshot.y = w.y;
         snapshot.buffer_index = w.front_index;
-        snapshot.has_frame = w.has_frame;
-        snapshot.focused = (i == focused);
+        snapshot.focused = (z_idx == focused_index_in_z);
         w.render_index = w.front_index;
     }
     damage_valid = false;
-    return true;
 }
 
 void release_render_buffers(const RenderWindow* rendered_windows, size_t rendered_count) {
@@ -278,6 +328,9 @@ void release_render_buffers(const RenderWindow* rendered_windows, size_t rendere
         if (w.thread_id == snapshot.thread_id &&
             w.render_index == snapshot.buffer_index) {
             w.render_index = INVALID_BUFFER;
+        }
+        if (!w.alive && w.render_index == INVALID_BUFFER && w.write_index == INVALID_BUFFER) {
+            free_window_pixels(w);
         }
     }
 }
@@ -295,10 +348,19 @@ int register_window(uint64_t thread_id, const char* title, bool launcher,
                     uint32_t width, uint32_t height) {
     SpinlockGuard guard(compositor_lock);
     if (!desktop.valid() || !thread_id) return -1;
+
     size_t slot = window_count;
-    for (size_t i = 0; i < window_count; ++i)
-        if (windows[i].thread_id == thread_id && windows[i].alive) return static_cast<int>(i);
-        else if (!windows[i].alive && slot == window_count) slot = i;
+    for (size_t i = 0; i < window_count; ++i) {
+        if (windows[i].thread_id == thread_id && windows[i].alive) {
+            // Find its current z-order position to return focus index
+            for (size_t z = 0; z < window_count; ++z) {
+                if (z_order[z] == i) return static_cast<int>(z);
+            }
+            return static_cast<int>(i);
+        } else if (!windows[i].alive && slot == window_count) {
+            slot = i;
+        }
+    }
     if (slot == window_count && window_count == MAX_WINDOWS) return -1;
 
     const uint32_t margin = launcher ? 24 : 0;
@@ -308,57 +370,45 @@ int register_window(uint64_t thread_id, const char* title, bool launcher,
     const uint32_t max_height = screen_h > TITLE_H + 2 ? screen_h - TITLE_H - 2 : screen_h;
     if (width > max_width) width = max_width;
     if (height > max_height) height = max_height;
-    Window recycled = windows[slot];
+
     uint32_t* frames[FRAME_BUFFER_COUNT]{};
+    Window& recycled = windows[slot];
     const bool can_reuse = slot < window_count && recycled.width == width &&
                            recycled.height == height &&
                            recycled.render_index == INVALID_BUFFER &&
                            recycled.write_index == INVALID_BUFFER;
     if (can_reuse) {
-        for (size_t i = 0; i < FRAME_BUFFER_COUNT; ++i)
-            frames[i] = recycled.pixels[i];
+        for (size_t i = 0; i < FRAME_BUFFER_COUNT; ++i) frames[i] = recycled.pixels[i];
     } else {
-        const size_t bytes = static_cast<size_t>(width) * height * sizeof(uint32_t);
-        for (size_t i = 0; i < FRAME_BUFFER_COUNT; ++i) {
-            frames[i] = static_cast<uint32_t*>(kmalloc(bytes));
-            if (!frames[i]) {
-                for (size_t j = 0; j < i; ++j) kfree(frames[j]);
-                return -1;
-            }
-        }
+        if (slot < window_count) free_window_pixels(recycled);
+        if (!allocate_frames(width, height, frames)) return -1;
     }
     const size_t frame_bytes = static_cast<size_t>(width) * height * sizeof(uint32_t);
-    for (size_t i = 0; i < FRAME_BUFFER_COUNT; ++i)
-        memset(frames[i], 0, frame_bytes);
+    if (can_reuse)
+        for (uint32_t* frame : frames) memset(frame, 0, frame_bytes);
 
-    if (slot < window_count && slot + 1 < window_count) {
-        Window recycled = windows[slot];
-        for (size_t i = slot; i + 1 < window_count; ++i) windows[i] = windows[i + 1];
-        windows[window_count - 1] = recycled;
-        slot = window_count - 1;
-    }
     Window& w = windows[slot];
     w.thread_id = thread_id;
     copy_name(w.title, title);
     for (size_t i = 0; i < FRAME_BUFFER_COUNT; ++i)
         w.pixels[i] = frames[i];
-    w.front_index = 0;
-    w.render_index = INVALID_BUFFER;
-    w.write_index = INVALID_BUFFER;
-    w.width = width;
-    w.height = height;
+    w.front_index = 0; w.render_index = w.write_index = INVALID_BUFFER;
+    w.width = width; w.height = height;
     const int offset = static_cast<int>(slot * 26);
     w.x = margin + offset;
     w.y = (launcher ? 42 : 48) + offset;
     if (w.x + static_cast<int>(width) > static_cast<int>(screen_w)) w.x = 0;
     if (w.y + static_cast<int>(height) + TITLE_H > static_cast<int>(screen_h)) w.y = 30;
     w.alive = true;
-    w.launcher = launcher;
     w.has_frame = false;
-    if (slot == window_count) ++window_count;
-    focused = slot;
+
+    if (slot == window_count) {
+        z_order[window_count] = slot;
+        ++window_count;
+    }
+    bring_to_front(slot);
     mark_window_dirty(w);
-    return static_cast<int>(focused);
+    return static_cast<int>(focused_index_in_z);
 }
 
 bool request_window_size(uint64_t thread_id, uint32_t requested_width,
@@ -366,9 +416,7 @@ bool request_window_size(uint64_t thread_id, uint32_t requested_width,
                          uint32_t* actual_height) {
     if (!thread_id || !requested_width || !requested_height || !actual_width || !actual_height) return false;
     SpinlockGuard guard(compositor_lock);
-    Window* window = nullptr;
-    for (size_t i = 0; i < window_count; ++i)
-        if (windows[i].thread_id == thread_id && windows[i].alive) { window = &windows[i]; break; }
+    Window* window = find_window(thread_id);
     if (!window) return false;
 
     uint32_t width = requested_width;
@@ -391,18 +439,7 @@ bool request_window_size(uint64_t thread_id, uint32_t requested_width,
 
     uint32_t* frames[FRAME_BUFFER_COUNT]{};
     while (width >= 120 && height >= 80) {
-        size_t allocated = 0;
-        const size_t bytes = static_cast<size_t>(width) * height * sizeof(uint32_t);
-        for (; allocated < FRAME_BUFFER_COUNT; ++allocated) {
-            frames[allocated] = static_cast<uint32_t*>(kmalloc(bytes));
-            if (!frames[allocated]) break;
-        }
-        if (allocated == FRAME_BUFFER_COUNT) break;
-        while (allocated) {
-            --allocated;
-            kfree(frames[allocated]);
-            frames[allocated] = nullptr;
-        }
+        if (allocate_frames(width, height, frames)) break;
         if (width >= height && width > 120) width = width * 3 / 4;
         else if (height > 80) height = height * 3 / 4;
         else break;
@@ -417,7 +454,6 @@ bool request_window_size(uint64_t thread_id, uint32_t requested_width,
     for (size_t i = 0; i < FRAME_BUFFER_COUNT; ++i) {
         kfree(window->pixels[i]);
         window->pixels[i] = frames[i];
-        memset(frames[i], 0, static_cast<size_t>(width) * height * sizeof(uint32_t));
     }
     window->width = width;
     window->height = height;
@@ -434,15 +470,14 @@ bool request_window_size(uint64_t thread_id, uint32_t requested_width,
 void unregister_window(uint64_t thread_id) {
     SpinlockGuard guard(compositor_lock);
     for (size_t i = 0; i < window_count; ++i) {
-        if (windows[i].thread_id != thread_id || !windows[i].alive) continue;
+        if (windows[i].thread_id != thread_id) continue;
         mark_window_dirty(windows[i]);
         windows[i].alive = false;
-        if (focused == i) {
-            focused = 0;
-            for (size_t j = window_count; j > 0; --j) {
-                if (windows[j - 1].alive) { focused = j - 1; break; }
-            }
+        if (windows[i].render_index == INVALID_BUFFER && windows[i].write_index == INVALID_BUFFER) {
+            free_window_pixels(windows[i]);
         }
+
+        remove_from_z_order(i);
         return;
     }
 }
@@ -453,6 +488,8 @@ bool present(uint64_t thread_id, const uint32_t* pixels, uint32_t width, uint32_
     uint32_t* destination = nullptr;
     uint32_t destination_width = 0;
     int write_index = -1;
+    Window* target_window = nullptr;
+
     {
         SpinlockGuard guard(compositor_lock);
         for (size_t i = 0; i < window_count; ++i) {
@@ -467,39 +504,34 @@ bool present(uint64_t thread_id, const uint32_t* pixels, uint32_t width, uint32_
                     break;
                 }
             }
-            // A renderer may temporarily pin two buffers. Drop this frame
-            // rather than falling back to direct framebuffer writes.
             if (write_index < 0) return true;
             destination = w.pixels[write_index];
             destination_width = w.width;
             w.write_index = static_cast<uint8_t>(write_index);
+            target_window = &w;
             break;
         }
     }
-    if (write_index < 0 || !destination) return false;
+    if (write_index < 0 || !destination || !target_window) return false;
 
     memcpy(destination, pixels, static_cast<size_t>(destination_width) * height * sizeof(uint32_t));
 
     SpinlockGuard guard(compositor_lock);
-    for (size_t i = 0; i < window_count; ++i) {
-        Window& w = windows[i];
-        if (w.thread_id != thread_id || w.write_index != write_index ||
-            w.pixels[write_index] != destination)
-            continue;
-        w.front_index = static_cast<uint8_t>(write_index);
-        w.write_index = INVALID_BUFFER;
-        w.has_frame = true;
-        mark_window_dirty(w);
-        return true;
+    if (target_window->write_index == write_index &&
+        target_window->pixels[write_index] == destination) {
+        target_window->write_index = INVALID_BUFFER;
+        if (target_window->alive) {
+            target_window->front_index = static_cast<uint8_t>(write_index);
+            target_window->has_frame = true;
+            mark_window_dirty(*target_window);
+        } else if (target_window->render_index == INVALID_BUFFER) free_window_pixels(*target_window);
     }
     return true;
 }
 
 bool has_window(uint64_t thread_id) {
     SpinlockGuard guard(compositor_lock);
-    for (size_t i = 0; i < window_count; ++i)
-        if (windows[i].thread_id == thread_id && windows[i].alive) return true;
-    return false;
+    return find_window(thread_id);
 }
 
 bool title_is_open(const char* title) {
@@ -516,7 +548,19 @@ bool title_is_open(const char* title) {
 
 bool has_keyboard_focus(uint64_t thread_id) {
     SpinlockGuard guard(compositor_lock);
-    return focused < window_count && windows[focused].alive && windows[focused].thread_id == thread_id;
+    return window_count > 0 && focused_index_in_z < window_count &&
+           windows[z_order[focused_index_in_z]].alive &&
+           windows[z_order[focused_index_in_z]].thread_id == thread_id;
+}
+
+bool get_window_position(uint64_t thread_id, int* x, int* y) {
+    if (!thread_id || !x || !y) return false;
+    SpinlockGuard guard(compositor_lock);
+    Window* window = find_window(thread_id);
+    if (!window) return false;
+    *x = window->x;
+    *y = window->y + TITLE_H;
+    return true;
 }
 
 void run() {
@@ -532,11 +576,7 @@ void run() {
                 mark_full_dirty();
             }
             mouse_update();
-            if (take_damage_locked(rendered_windows, rendered_count,
-                                   left, top, right, bottom)) {
-                // Rendering happens after the lock is released. The selected
-                // frame buffers are pinned until release_render_buffers().
-            }
+            take_damage_locked(rendered_windows, rendered_count, left, top, right, bottom);
         }
         if (rendered_count) {
             render_region(rendered_windows, rendered_count, left, top, right, bottom);

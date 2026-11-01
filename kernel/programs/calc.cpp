@@ -1,4 +1,3 @@
-#include <kernel/drivers/framebuffer.h>
 #include <kernel/drivers/keyboard.h>
 #include <kernel/graphics/vfb.h>
 #include <kernel/lib/appcommon.h>
@@ -8,36 +7,58 @@
 #include <stddef.h>
 
 namespace Kernel::Apps::Calc {
-using Kernel::Drivers::Framebuffer::width;
-using Kernel::Drivers::Framebuffer::height;
 using Kernel::Drivers::Keyboard;
 using namespace Kernel::AppCommon;
 
-// -----------------------------------------------------------------------------
-// Mathematical Constants & Precise Approximations
-// -----------------------------------------------------------------------------
-
 static const double PI_VAL = 3.141592653589793;
 
-static double fmod_custom(double a, double b) {
-    return a - static_cast<int>(a / b) * b;
+inline double fmod_custom(double a, double b) {
+    #if defined(__x86_64__) || defined(_M_X64)
+        return a - __builtin_trunc(a / b) * b;
+    #elif defined(__ARM_ARCH) || defined(__aarch64__)
+        return a - __builtin_trunc(a / b) * b;
+    #else
+        double quotient = a / b;
+        double magic = (quotient < 0.0) ? -4503599627370496.0 : 4503599627370496.0;
+        double trc = (quotient + magic) - magic;
+        if ((quotient > 0.0 && trc > quotient) || (quotient < 0.0 && trc < quotient)) {
+            trc += (quotient < 0.0) ? 1.0 : -1.0;
+        }
+        return a - trc * b;
+    #endif
 }
 
 static double sin_approx(double x) {
     x = fmod_custom(x + PI_VAL, 2.0 * PI_VAL) - PI_VAL;
     double x2 = x * x;
-    return x * (1.0 - x2 / 6.0 * (1.0 - x2 / 20.0 * (1.0 - x2 / 42.0 * (1.0 - x2 / 72.0))));
+    double term = x;
+    double sum = term;
+    double sign = -1.0;
+    for (int i = 3; i <= 15; i += 2) {
+        term *= x2 / (static_cast<double>(i - 1) * i);
+        sum += sign * term;
+        sign = -sign;
+    }
+    return sum;
 }
 
 static double cos_approx(double x) {
     x = fmod_custom(x + PI_VAL, 2.0 * PI_VAL) - PI_VAL;
     double x2 = x * x;
-    return 1.0 - x2 / 2.0 * (1.0 - x2 / 12.0 * (1.0 - x2 / 30.0 * (1.0 - x2 / 56.0)));
+    double term = 1.0;
+    double sum = term;
+    double sign = -1.0;
+    for (int i = 2; i <= 14; i += 2) {
+        term *= x2 / (static_cast<double>(i - 1) * i);
+        sum += sign * term;
+        sign = -sign;
+    }
+    return sum;
 }
 
 static double tan_approx(double x) {
     double c = cos_approx(x);
-    if (c == 0.0) return 1e12;
+    if (c > -1e-12 && c < 1e-12) return 1e12;
     return sin_approx(x) / c;
 }
 
@@ -53,16 +74,57 @@ static double sqrt_approx(double x) {
 }
 
 static double ln_approx(double x) {
-    if (x <= 0) return -1e12;
+    if (x <= 0.0) return -1e12;
+    int k = 0;
+    while (x < 0.7071067811865476) { x *= 2.0; k--; }
+    while (x >= 1.4142135623730951) { x *= 0.5; k++; }
+
     double y = (x - 1.0) / (x + 1.0);
     double y2 = y * y;
     double term = y;
     double sum = term;
-    for (int i = 3; i <= 15; i += 2) {
+    double denom = 3.0;
+    for (int i = 0; i < 15; ++i) {
         term *= y2;
-        sum += term / i;
+        sum += term / denom;
+        denom += 2.0;
     }
-    return 2.0 * sum;
+    const double LN2 = 0.69314718055994530942;
+    return 2.0 * sum + static_cast<double>(k) * LN2;
+}
+
+static double exp_approx(double x) {
+    if (x > 709.0) return 1.0e12;
+    if (x < -709.0) return 0.0;
+
+    const double INV_LN2 = 1.4426950408889634074;
+    const double LN2 = 0.69314718055994530942;
+
+    long long k = static_cast<long long>(x * INV_LN2);
+    if (x < 0.0 && (x * INV_LN2) != static_cast<double>(k)) {
+        k--;
+    }
+    double r = x - static_cast<double>(k) * LN2;
+
+    double sum = 1.0;
+    double term = 1.0;
+    for (int i = 1; i <= 20; ++i) {
+        term *= r / static_cast<double>(i);
+        sum += term;
+    }
+
+    // Compute 2^k scaling factor
+    double scale = 1.0;
+    long long abs_k = k < 0 ? -k : k;
+    double base_2 = 2.0;
+    while (abs_k > 0) {
+        if (abs_k & 1) scale *= base_2;
+        base_2 *= base_2;
+        abs_k >>= 1;
+    }
+    if (k < 0) scale = 1.0 / scale;
+
+    return sum * scale;
 }
 
 static double log10_approx(double x) {
@@ -79,13 +141,7 @@ static double power(double base, double exp) {
     if (exp == 0.0) return 1.0;
     if (base == 0.0) return 0.0;
     if (base > 0.0) {
-        double z = exp * ln_approx(base);
-        double sum = 1.0, term = 1.0;
-        for (int i = 1; i <= 20; ++i) {
-            term *= z / i;
-            sum += term;
-        }
-        return sum;
+        return exp_approx(exp * ln_approx(base));
     } else {
         int iexp = static_cast<int>(exp);
         if (static_cast<double>(iexp) == exp) {
@@ -412,17 +468,10 @@ static void draw_highlighted_expression(Kernel::Graphics::VirtualFramebuffer& vf
 // -----------------------------------------------------------------------------
 
 void run() {
-    if (!Kernel::Drivers::Framebuffer::valid()) return;
-
-    uint32_t actual_w = 0, actual_h = 0;
-    if (!Kernel::AppCommon::request_window_size(600, 460, actual_w, actual_h)) return;
-    const int32_t w = static_cast<int32_t>(actual_w);
-    const int32_t h = static_cast<int32_t>(actual_h);
-    if (w < 300 || h < 200) return;
-
-    Kernel::Graphics::VirtualFramebuffer vfb(
-        0, 0, static_cast<uint32_t>(w), static_cast<uint32_t>(h));
-    if (!vfb.valid()) return;
+    Kernel::Graphics::VirtualFramebuffer vfb;
+    if (!vfb.open_window(600, 460, 300, 200)) return;
+    const int32_t w = static_cast<int32_t>(vfb.width());
+    const int32_t h = static_cast<int32_t>(vfb.height());
 
     char expression[96] = "";
     char display[64] = "0";
@@ -434,9 +483,9 @@ void run() {
         while (Keyboard::available()) {
             char c = Keyboard::getchar();
 
-            if (c == 'q' || c == 27) { running = false; break; }
+            if (c == 27) { running = false; break; }
 
-            if (c == 'c' || c == 'C') {
+            if (c == '`') {
                 expression[0] = '\0';
                 strcpy(display, "0");
                 evaluated = false;
@@ -502,10 +551,8 @@ void run() {
 
         if (!running) break;
 
-        // Dark theme background (Catppuccin Mocha)
         vfb.clear(0xFF1E1E2E);
 
-        // Borderless filled block display panel
         vfb.fill_rect(20, 20, w - 40, 60, 0xFF313244);
         if (strlen(expression) > 0) {
             draw_highlighted_expression(vfb, 32, 42, expression);
@@ -515,7 +562,7 @@ void run() {
 
         // Minimalist help guide
         text(vfb, 20, 100, "Functions: sin, cos, tan, sqrt, root, log10, logn, pi", 0xFF6C7086);
-        text(vfb, 20, 118, "Exponents: ^-1, ^-2 | Enter: = | C: Clear | Q: Quit", 0xFF6C7086);
+        text(vfb, 20, 118, "Exponents: ^-1, ^-2 | Enter: = | `: Clear | ESC: Quit", 0xFF6C7086);
 
         vfb.flush();
         delay(10);

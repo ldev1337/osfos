@@ -1,5 +1,5 @@
 
-#include <kernel/fs/vfs.h>
+#include <kernel/fs/laziofs.h>
 #include <kernel/shell/shell.h>
 #include <stdarg.h>
 #include <stddef.h>

@@ -1,4 +1,5 @@
 #include <kernel/memory/heap.h>
+#include <kernel/memory/pmm.h>
 #include <arch/x86_64/string.h>
 #include <arch/x86_64/spinlock.h>
 
@@ -8,11 +9,16 @@ KernelHeap g_kheap;
 static Spinlock heap_lock;
 
 void KernelHeap::init(void* heap_start_addr, size_t initial_size) {
+    const uint64_t flags = heap_lock.lock_irqsave();
     start_node = (HeapNode*)heap_start_addr;
     total_heap_size = initial_size;
     start_node->size = initial_size - sizeof(HeapNode);
     start_node->is_free = true;
     start_node->next = nullptr;
+    
+    used_bytes_count = sizeof(HeapNode); // Initial sentinel block metadata overhead
+    peak_used_size = used_bytes_count;
+    heap_lock.unlock_irqrestore(flags);
 }
 
 void* KernelHeap::kmalloc(size_t size) {
@@ -33,8 +39,17 @@ void* KernelHeap::kmalloc(size_t size) {
 
                 current->size = size;
                 current->next = new_node;
+                
+                // Extra header created
+                used_bytes_count += sizeof(HeapNode);
             }
             current->is_free = false;
+            used_bytes_count += current->size;
+
+            if (used_bytes_count > peak_used_size) {
+                peak_used_size = used_bytes_count;
+            }
+
             void* result = (void*)((size_t)current + sizeof(HeapNode));
             heap_lock.unlock_irqrestore(flags);
             return result;
@@ -49,13 +64,22 @@ void KernelHeap::kfree(void* ptr) {
     if (!ptr) return;
     const uint64_t flags = heap_lock.lock_irqsave();
     HeapNode* node = (HeapNode*)((size_t)ptr - sizeof(HeapNode));
-    node->is_free = true;
+    if (!node->is_free) {
+        node->is_free = true;
+        if (used_bytes_count >= node->size) {
+            used_bytes_count -= node->size;
+        }
+    }
 
     HeapNode* current = start_node;
     while (current != nullptr) {
         while (current->is_free && current->next && current->next->is_free) {
             current->size += sizeof(HeapNode) + current->next->size;
             current->next = current->next->next;
+            // Merging blocks reclaims one HeapNode header space
+            if (used_bytes_count >= sizeof(HeapNode)) {
+                used_bytes_count -= sizeof(HeapNode);
+            }
         }
         current = current->next;
     }
@@ -99,39 +123,32 @@ void* KernelHeap::kzalloc(size_t size) {
     return kcalloc(1, size);
 }
 
-size_t KernelHeap::get_used_size() const {
-    size_t used = 0;
-    HeapNode* current = start_node;
-    while (current != nullptr) {
-        if (!current->is_free) {
-            used += current->size + sizeof(HeapNode);
-        }
-        current = current->next;
-    }
-    return used;
-}
-
-size_t KernelHeap::get_free_size() const {
-    size_t free_bytes = 0;
-    HeapNode* current = start_node;
-    while (current != nullptr) {
-        if (current->is_free) {
-            free_bytes += current->size;
-        }
-        current = current->next;
-    }
-    return free_bytes;
-}
-
 bool KernelHeap::validate() const {
+    const uint64_t flags = heap_lock.lock_irqsave();
     HeapNode* current = start_node;
     while (current != nullptr) {
         if (current->next && (size_t)current >= (size_t)current->next) {
+            heap_lock.unlock_irqrestore(flags);
             return false;
         }
         current = current->next;
     }
+    heap_lock.unlock_irqrestore(flags);
     return true;
+}
+
+SystemMemoryInfo KernelHeap::get_system_memory_info() const {
+    SystemMemoryInfo info;
+    info.pmm_total_memory = g_pmm.get_total_memory();
+    info.pmm_used_memory = g_pmm.get_used_memory();
+    info.pmm_free_memory = g_pmm.get_free_memory();
+
+    info.heap_total_size = total_heap_size;
+    info.heap_used_size = used_bytes_count;
+    info.heap_free_size = total_heap_size - used_bytes_count;
+    info.heap_peak_size = peak_used_size;
+
+    return info;
 }
 
 }

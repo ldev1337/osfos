@@ -8,10 +8,28 @@
 extern "C" {
 #endif
 
+#ifndef BUILDING_KERNEL_MEMORY
+__attribute__((always_inline)) static inline void *memcpy(void *__restrict d, const void *__restrict s, size_t sz) {
+    return __builtin_memcpy(d, s, sz);
+}
+
+__attribute__((always_inline)) static inline void *memset(void *d, int c, size_t sz) {
+    return __builtin_memset(d, c, sz);
+}
+
+__attribute__((always_inline)) static inline void *memmove(void *d, const void *s, size_t sz) {
+    return __builtin_memmove(d, s, sz);
+}
+
+__attribute__((always_inline)) static inline int memcmp(const void *s1, const void *s2, size_t sz) {
+    return __builtin_memcmp(s1, s2, sz);
+}
+#else
 void *memcpy(void *__restrict dest, const void *__restrict src, size_t n);
 void *memmove(void *dest, const void *src, size_t n);
 void *memset(void *s, int c, size_t n);
 int memcmp(const void *s1, const void *s2, size_t n);
+#endif
 void *memchr(const void *s, int c, size_t n);
 
 void *memrchr(const void *s, int c, size_t n);

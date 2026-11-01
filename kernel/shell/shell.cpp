@@ -9,7 +9,7 @@
 #include <kernel/memory/pmm.h>
 #include <arch/x86_64/string.h>
 #include <kernel/drivers/ata.h>
-#include <kernel/fs/vfs.h>
+#include <kernel/fs/laziofs.h>
 #include <kernel/drivers/usb/xhci.h>
 
 #include <stddef.h>
@@ -29,6 +29,7 @@ namespace Kernel::Apps {
     void graphic_test_run();
     void stress_test_run();
     void shitty_excel_run();
+    void memory_analyzer_run();
     namespace Pain { void run(); }
     namespace Calc { void run(); }
 }
@@ -239,7 +240,7 @@ namespace {
         kernel_printf("  mem                   Memory-manager test commands\n");
         kernel_printf("  heap-test [bytes]     Allocate/free a heap block (default 64)\n");
         kernel_printf("  pmm-test [pages]      Allocate/free physical pages (default 1)\n");
-        kernel_printf("  disk-init             Initialize ATA driver and VFS\n");
+        kernel_printf("  disk-init             Initialize LazIOfs disk\n");
         kernel_printf("  disk-check <file>     Check if a file exists on disk and print info\n");
         kernel_printf("  spong                 Play Shitty Pong\n");
         kernel_printf("  doom1                 Launch Doom I\n");
@@ -376,6 +377,7 @@ namespace {
         else if (equals(line, "mem")) kernel_printf("Memory APIs available in this build:\n  KernelHeap::kmalloc/kfree\n  PMM::allocate_page_block/free_page_block\n");
         else if (equals(line, "heap-test")) run_heap_test(args);
         else if (equals(line, "pmm-test")) run_pmm_test(args);
+        else if (equals(line, "mema")) { if (!launch_app("Memoery Analyzer", Apps::memory_analyzer_run)) kernel_printf("Could not launch graphics test.\n"); }
         else if (equals(line, "disk-init")) run_disk_init(args);
         else if (equals(line, "disk-check")) run_disk_check(args);
         else if (equals(line, "ls")) run_ls(args);
@@ -397,14 +399,15 @@ namespace {
     void initialize_screen() {
         screen_w = Kernel::Drivers::Framebuffer::width();
         screen_h = Kernel::Drivers::Framebuffer::height();
-        uint32_t actual_w = 0, actual_h = 0;
-        if (Kernel::Graphics::WindowManager::has_window(Kernel::Scheduler::current_thread_id())) {
-            if (!Kernel::Graphics::WindowManager::request_window_size(
-                    Kernel::Scheduler::current_thread_id(), screen_w > 48 ? screen_w - 48 : screen_w,
-                    screen_h > 100 ? screen_h - 100 : screen_h, &actual_w, &actual_h)) return;
-            screen_w = actual_w;
-            screen_h = actual_h;
-        }
+        const bool has_window = Kernel::Graphics::WindowManager::has_window(
+            Kernel::Scheduler::current_thread_id());
+        if (has_window) {
+            if (!term_vfb.open_window(screen_w > 48 ? screen_w - 48 : screen_w,
+                                      screen_h > 100 ? screen_h - 100 : screen_h,
+                                      CELL_W, TOP_H + LINE_H)) return;
+            screen_w = term_vfb.width();
+            screen_h = term_vfb.height();
+        } else if (!term_vfb.init(0, 0, screen_w, screen_h)) return;
         if (screen_w == 0 || screen_h <= TOP_H) return;
 
         cols = screen_w / CELL_W;
@@ -413,7 +416,6 @@ namespace {
         if (rows > MAX_ROWS) rows = MAX_ROWS;
         if (cols == 0 || rows == 0) return;
 
-        term_vfb.init(0, 0, screen_w, screen_h);
         memset(screen, ' ', sizeof(screen));
         reset_terminal_view();
 
@@ -442,7 +444,7 @@ void run() {
                 term_vfb.put_pixel(cx + x, cy + CELL_H - 1, BLUE);
         term_vfb.flush();
 
-        if (!Kernel::Graphics::WindowManager::has_keyboard_focus(Kernel::Scheduler::current_thread_id())) {
+        if (!term_vfb.has_focus()) {
             Kernel::Scheduler::thread_sleep_ms(4);
             continue;
         }

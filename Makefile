@@ -93,7 +93,7 @@ define PRINT_TUI
 	[ $$PAD_LEN -lt 0 ] && PAD_LEN=0; \
 	PADDING=$$(printf "%*s" $$PAD_LEN ""); \
 	FILE_WIDTH=$(FILE_WIDTH); \
-	printf "\033[1;36m%s\033[0m%s\033[37m%-*s\033[0m \033[1;30m│\033[0m \033[1;32m%10s\033[0m\n" "$$TAG_RAW" "$$PADDING" "$$FILE_WIDTH" "$(2)" "$$SZ_FMT" \
+	printf "\033[1;36m%s\033[0m%s\033[37m%-*s\033[0m \033[1;90m│\033[0m \033[1;32m%10s\033[0m\n" "$$TAG_RAW" "$$PADDING" "$$FILE_WIDTH" "$(2)" "$$SZ_FMT" \
 	'
 endef
 

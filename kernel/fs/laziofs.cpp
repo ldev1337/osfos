@@ -1,4 +1,4 @@
-#include <kernel/fs/vfs.h>
+#include <kernel/fs/laziofs.h>
 #include <kernel/drivers/ata.h>
 #include <stdint.h>
 #include <stddef.h>
@@ -16,7 +16,7 @@ constexpr uint32_t FAT_DIRTY_COUNT = (VFS_MAX_SECTORS + FAT_ENTRIES_PER_SECTOR -
 constexpr uint32_t DIR_ENTRY_SIZE = 128;
 constexpr uint32_t DIR_ENTRIES_PER_SECTOR = VFS_SECTOR_SIZE / DIR_ENTRY_SIZE;
 constexpr uint32_t DIR_SECTORS = (VFS_MAX_ENTRIES * DIR_ENTRY_SIZE) / VFS_SECTOR_SIZE;
-constexpr char FS_MAGIC[8] = {'O','S','F','O','S','F','S','1'};
+constexpr char FS_MAGIC[8] = {'L','A','Z','I','O','F','S','1'};
 
 #pragma pack(push, 1)
 struct Superblock {

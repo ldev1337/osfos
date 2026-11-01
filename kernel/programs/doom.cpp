@@ -1,21 +1,10 @@
 #include <stdint.h>
 #include <stddef.h>
-#include <kernel/drivers/framebuffer.h>
 #include <kernel/drivers/keyboard.h>
 #include <kernel/drivers/pit.h>
 #include <kernel/graphics/vfb.h>
-#include <kernel/graphics/window_manager.h>
 #include <kernel/scheduler.h>
-
-extern "C" {
-    void* kernel_vfs_open(const char* path, const char* mode);
-    size_t kernel_vfs_read(void* ptr, size_t size, size_t nmemb, void* stream);
-    size_t kernel_vfs_write(const void* ptr, size_t size, size_t nmemb, void* stream);
-    int kernel_vfs_close(void* stream);
-    long kernel_vfs_tell(void* stream);
-    int kernel_vfs_seek(void* stream, long offset, int whence);
-    size_t kernel_vfs_size(void* stream);
-}
+#include <kernel/fs/laziofs.h>
 
 #define fopen(path, mode) kernel_vfs_open(path, mode)
 #define fread(ptr, size, nmemb, stream) kernel_vfs_read(ptr, size, nmemb, stream)
@@ -50,9 +39,10 @@ extern "C" {
     static uint32_t doom_width = 640, doom_height = 400;
 
     void DG_Init() {
-        Kernel::Graphics::WindowManager::request_window_size(
-            Kernel::Scheduler::current_thread_id(), 640, 400, &doom_width, &doom_height);
-        doom_window.init(0, 0, doom_width, doom_height);
+        if (doom_window.open_window(640, 400)) {
+            doom_width = doom_window.width();
+            doom_height = doom_window.height();
+        }
     }
 
     void DG_DrawFrame() {

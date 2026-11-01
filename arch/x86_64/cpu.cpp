@@ -65,7 +65,6 @@ extern "C" uint64_t c_interrupt_handler(struct InterruptFrame* frame) {
         if (Kernel::Scheduler::should_preempt())
             next_rsp = Kernel::Scheduler::schedule((uint64_t)frame);
     } else if (vector == 0x30) {
-        // Dedicated software interrupt for cooperative yield; it is not a PIT tick.
         next_rsp = Kernel::Scheduler::schedule((uint64_t)frame);
     }
 

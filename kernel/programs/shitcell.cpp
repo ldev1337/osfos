@@ -1,18 +1,15 @@
-#include <kernel/drivers/framebuffer.h>
 #include <kernel/drivers/keyboard.h>
 #include <kernel/drivers/mouse.h>
 #include <kernel/graphics/vfb.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/lib/uicommon.h>
 #include <kernel/scheduler.h>
-#include <kernel/fs/vfs.h>
+#include <kernel/fs/laziofs.h>
 #include <stdint.h>
 #include <arch/x86_64/string.h>
 
 namespace Kernel::Apps {
 namespace {
-using Kernel::Drivers::Framebuffer::width;
-using Kernel::Drivers::Framebuffer::height;
 using namespace Kernel::AppCommon;
 using Kernel::Drivers::Keyboard;
 using Kernel::Drivers::Mouse;
@@ -376,14 +373,10 @@ bool load_from_vfs(SparseGrid& grid, const char* filepath) {
 }
 
 void run_shitty_excel() {
-    if (!Kernel::Drivers::Framebuffer::valid()) return;
-    uint32_t actual_w = 0, actual_h = 0;
-    if (!Kernel::AppCommon::request_window_size(1024, 720, actual_w, actual_h)) return;
-    int32_t w = static_cast<int32_t>(actual_w), h = static_cast<int32_t>(actual_h);
-    if (w < 400 || h < 300) return;
-
-    Kernel::Graphics::VirtualFramebuffer vfb(0, 0, static_cast<uint32_t>(w), static_cast<uint32_t>(h));
-    if (!vfb.valid()) return;
+    Kernel::Graphics::VirtualFramebuffer vfb;
+    if (!vfb.open_window(1024, 720, 400, 300)) return;
+    const int32_t w = static_cast<int32_t>(vfb.width());
+    const int32_t h = static_cast<int32_t>(vfb.height());
 
     SparseGrid grid;
     grid.set_text(0, 0, "Item");  grid.set_color(0, 0, SHITCELL_HEADER_BG, SHITCELL_HEADER_TEXT);
@@ -409,9 +402,9 @@ void run_shitty_excel() {
     bool mouse_down_prev = false;
 
     while (running && !Kernel::Scheduler::should_stop()) {
-        int mx = Mouse::get_x();
-        int my = Mouse::get_y();
-        bool m_left = Mouse::is_left_pressed();
+        int mx = Kernel::AppCommon::get_mouse_x();
+        int my = Kernel::AppCommon::get_mouse_y();
+        bool m_left = Kernel::AppCommon::is_left_pressed();
 
         int gx = 50, gy = 74, rh = 28, cw = 90;
         int v_rows = (h - gy - 22) / rh, v_cols = (w - gx - 10) / cw;

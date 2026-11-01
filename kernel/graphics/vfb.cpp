@@ -1,50 +1,102 @@
 #include <kernel/graphics/vfb.h>
 #include <kernel/graphics/window_manager.h>
 #include <kernel/scheduler.h>
-#include <kernel/graphics/font8x8.h>
+#include <kernel/graphics/simplefonts.h>
 #include <kernel/memory/heap.h>
 #include <arch/x86_64/string.h>
 #include <kernel/lib/math.h>
 #include <utility>
 
 namespace Kernel::Graphics {
+namespace {
 
-VirtualFramebuffer::VirtualFramebuffer()
-    : x_(0), y_(0), width_(0), height_(0), buffer_(nullptr), pitch_(0), initialized_(false) {}
+bool clip_rect(int32_t& x, int32_t& y, int32_t& w, int32_t& h,
+               uint32_t width, uint32_t height) {
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > static_cast<int32_t>(width)) w = static_cast<int32_t>(width) - x;
+    if (y + h > static_cast<int32_t>(height)) h = static_cast<int32_t>(height) - y;
+    return w > 0 && h > 0;
+}
+
+bool clip_blit(uint32_t& x, uint32_t& y, uint32_t& w, uint32_t& h,
+               uint32_t width, uint32_t height) {
+    if (x >= width || y >= height) return false;
+    if (w > width - x) w = width - x;
+    if (h > height - y) h = height - y;
+    return w && h;
+}
+
+void raster_glyph(uint32_t* buffer, uint32_t width, uint32_t height,
+                  int32_t x, int32_t y, char ch, uint32_t fg,
+                  uint32_t bg, bool opaque) {
+    unsigned char c = static_cast<unsigned char>(ch);
+    if (c < 32 || c > 127) c = '?';
+    const uint8_t* bits = Kernel::Graphics::Font::Basic8x8[c - 32];
+    for (int32_t py = 0; py < 8; ++py) {
+        const int32_t cy = y + py;
+        if (cy < 0 || cy >= static_cast<int32_t>(height)) continue;
+        for (int32_t px = 0; px < 8; ++px) {
+            const int32_t cx = x + px;
+            if (cx < 0 || cx >= static_cast<int32_t>(width)) continue;
+            const bool set = bits[py] & (1u << px);
+            if (set || opaque)
+                buffer[static_cast<size_t>(cy) * width + cx] = set ? fg : bg;
+        }
+    }
+}
+
+template <typename Pixel>
+void blit_pixels(uint32_t* buffer, uint32_t width, uint32_t x, uint32_t y,
+                 uint32_t w, uint32_t h, const uint32_t* src, uint32_t src_pitch,
+                 Pixel pixel) {
+    const uint8_t* src_row = reinterpret_cast<const uint8_t*>(src);
+    uint32_t* dst_row = buffer + y * width + x;
+    for (uint32_t row = 0; row < h; ++row) {
+        const auto* source = reinterpret_cast<const uint32_t*>(src_row);
+        for (uint32_t col = 0; col < w; ++col)
+            dst_row[col] = pixel(source[col], dst_row[col]);
+        dst_row += width;
+        src_row += src_pitch;
+    }
+}
+
+template <typename Draw>
+void walk_arc(int32_t xc, int32_t yc, int32_t r, int32_t start, int32_t end, Draw draw) {
+    bool first = true;
+    int32_t prev_x = 0, prev_y = 0;
+    for (int32_t deg = start; deg <= end; ++deg) {
+        const int32_t x = xc + r * Kernel::Lib::Math::fixed_cos(deg) / 1024;
+        const int32_t y = yc + r * Kernel::Lib::Math::fixed_sin(deg) / 1024;
+        if (!first) draw(prev_x, prev_y, x, y);
+        prev_x = x;
+        prev_y = y;
+        first = false;
+    }
+}
+}
 
 VirtualFramebuffer::VirtualFramebuffer(int32_t x, int32_t y, uint32_t width, uint32_t height)
-    : x_(0), y_(0), width_(0), height_(0), buffer_(nullptr), pitch_(0), initialized_(false) {
-    init(x, y, width, height);
-}
+    { init(x, y, width, height); }
 
 VirtualFramebuffer::~VirtualFramebuffer() {
     destroy();
 }
 
-VirtualFramebuffer::VirtualFramebuffer(VirtualFramebuffer&& other) noexcept
-    : x_(other.x_), y_(other.y_), width_(other.width_), height_(other.height_),
-      buffer_(other.buffer_), pitch_(other.pitch_), initialized_(other.initialized_) {
-    other.buffer_ = nullptr;
-    other.initialized_ = false;
-    other.width_ = 0;
-    other.height_ = 0;
+VirtualFramebuffer::VirtualFramebuffer(VirtualFramebuffer&& other) noexcept {
+    *this = static_cast<VirtualFramebuffer&&>(other);
 }
 
 VirtualFramebuffer& VirtualFramebuffer::operator=(VirtualFramebuffer&& other) noexcept {
     if (this != &other) {
         destroy();
-        x_ = other.x_;
-        y_ = other.y_;
-        width_ = other.width_;
-        height_ = other.height_;
-        buffer_ = other.buffer_;
-        pitch_ = other.pitch_;
+        x_ = other.x_; y_ = other.y_;
+        width_ = other.width_; height_ = other.height_;
+        buffer_ = other.buffer_; pitch_ = other.pitch_;
         initialized_ = other.initialized_;
-
         other.buffer_ = nullptr;
         other.initialized_ = false;
-        other.width_ = 0;
-        other.height_ = 0;
+        other.width_ = other.height_ = 0;
     }
     return *this;
 }
@@ -66,6 +118,23 @@ bool VirtualFramebuffer::init(int32_t x, int32_t y, uint32_t width, uint32_t hei
     memset(buffer_, 0, size);
     initialized_ = true;
     return true;
+}
+
+bool VirtualFramebuffer::open_window(uint32_t requested_width, uint32_t requested_height,
+                                     uint32_t min_width, uint32_t min_height) {
+    uint32_t width = 0, height = 0;
+    if (!Kernel::Graphics::WindowManager::request_window_size(
+            Kernel::Scheduler::current_thread_id(), requested_width, requested_height,
+            &width, &height) || width < min_width || height < min_height) {
+        destroy();
+        return false;
+    }
+    return init(0, 0, width, height);
+}
+
+bool VirtualFramebuffer::has_focus() const {
+    return Kernel::Graphics::WindowManager::has_keyboard_focus(
+        Kernel::Scheduler::current_thread_id());
 }
 
 void VirtualFramebuffer::destroy() {
@@ -90,10 +159,6 @@ void VirtualFramebuffer::put_pixel(uint32_t px, uint32_t py, uint32_t color) {
     buffer_[py * width_ + px] = color;
 }
 
-void VirtualFramebuffer::clear(uint32_t color) {
-    fill(color);
-}
-
 void VirtualFramebuffer::fill(uint32_t color) {
     if (!initialized_ || !buffer_) return;
     fill_rect(0, 0, static_cast<int32_t>(width_), static_cast<int32_t>(height_), color);
@@ -101,13 +166,7 @@ void VirtualFramebuffer::fill(uint32_t color) {
 
 void VirtualFramebuffer::fill_rect(int32_t rx, int32_t ry, int32_t rw, int32_t rh, uint32_t color) {
     if (!initialized_ || !buffer_) return;
-    const int32_t sw = static_cast<int32_t>(width_);
-    const int32_t sh = static_cast<int32_t>(height_);
-    if (rx < 0) { rw += rx; rx = 0; }
-    if (ry < 0) { rh += ry; ry = 0; }
-    if (rx + rw > sw) rw = sw - rx;
-    if (ry + rh > sh) rh = sh - ry;
-    if (rw <= 0 || rh <= 0) return;
+    if (!clip_rect(rx, ry, rw, rh, width_, height_)) return;
 
     const uint32_t ux = static_cast<uint32_t>(rx);
     const uint32_t uy = static_cast<uint32_t>(ry);
@@ -117,9 +176,8 @@ void VirtualFramebuffer::fill_rect(int32_t rx, int32_t ry, int32_t rw, int32_t r
     for (uint32_t py = 0; py < uh; ++py) {
         uint32_t* row = buffer_ + (uy + py) * width_ + ux;
         uint32_t px = 0;
-        const uint64_t pair = uint64_t(color) | (uint64_t(color) << 32);
         for (; px + 1 < uw; px += 2)
-            *reinterpret_cast<uint64_t*>(row + px) = pair;
+            *reinterpret_cast<uint64_t*>(row + px) = uint64_t(color) | (uint64_t(color) << 32);
         if (px < uw) row[px] = color;
     }
 }
@@ -155,12 +213,12 @@ void VirtualFramebuffer::draw_circle(int32_t xc, int32_t yc, int32_t r, uint32_t
     if (!initialized_ || r < 0) return;
     int32_t x = 0, y = r, d = 3 - 2 * r;
     auto plot_sym = [&](int32_t px, int32_t py) {
-        int32_t xs[8] = {xc + px, xc - px, xc + px, xc - px, xc + py, xc - py, xc + py, xc - py};
-        int32_t ys[8] = {yc + py, yc + py, yc - py, yc - py, yc + px, yc + px, yc - px, yc - px};
         for (int i = 0; i < 8; ++i) {
-            if (static_cast<uint32_t>(xs[i]) < width_ && static_cast<uint32_t>(ys[i]) < height_) {
-                put_pixel(xs[i], ys[i], color);
-            }
+            const int32_t dx = i < 4 ? px : py, dy = i < 4 ? py : px;
+            const int32_t sx = i % 2 ? -1 : 1, sy = i % 4 < 2 ? 1 : -1;
+            if (static_cast<uint32_t>(xc + sx * dx) < width_ &&
+                static_cast<uint32_t>(yc + sy * dy) < height_)
+                put_pixel(xc + sx * dx, yc + sy * dy, color);
         }
     };
     while (y >= x) {
@@ -218,15 +276,7 @@ inline uint32_t blend_pixel_32(uint32_t fg, uint32_t bg, uint8_t alpha) {
 void VirtualFramebuffer::fill_rect_alpha(int32_t rx, int32_t ry, int32_t w, int32_t h, uint32_t color, uint8_t alpha) {
     if (alpha == 0) return;
     if (alpha == 255) { fill_rect(rx, ry, w, h, color); return; }
-    if (!initialized_) return;
-
-    int32_t sw = static_cast<int32_t>(width_);
-    int32_t sh = static_cast<int32_t>(height_);
-    if (rx < 0) { w += rx; rx = 0; }
-    if (ry < 0) { h += ry; ry = 0; }
-    if (rx + w > sw) w = sw - rx;
-    if (ry + h > sh) h = sh - ry;
-    if (w <= 0 || h <= 0) return;
+    if (!initialized_ || !clip_rect(rx, ry, w, h, width_, height_)) return;
 
     for (int32_t py = 0; py < h; ++py) {
         uint32_t* row = buffer_ + (ry + py) * width_ + rx;
@@ -245,141 +295,55 @@ void VirtualFramebuffer::fill_circle_alpha(int32_t xc, int32_t yc, int32_t r, ui
 
 void VirtualFramebuffer::draw_glyph(int32_t gx, int32_t gy, char ch, uint32_t color) {
     if (!initialized_) return;
-    unsigned char c = static_cast<unsigned char>(ch);
-    if (c < 32 || c > 127) c = '?';
-    const uint8_t* bits = Kernel::Graphics::Font::Basic8x8[c - 32];
-    for (int32_t py = 0; py < 8; ++py) {
-        int32_t cy = gy + py;
-        if (cy < 0 || cy >= static_cast<int32_t>(height_)) continue;
-        uint8_t row_bits = bits[py];
-        for (int32_t px = 0; px < 8; ++px) {
-            if (row_bits & (1u << px)) {
-                int32_t cx = gx + px;
-                if (cx >= 0 && cx < static_cast<int32_t>(width_)) {
-                    put_pixel(static_cast<uint32_t>(cx), static_cast<uint32_t>(cy), color);
-                }
-            }
-        }
-    }
+    raster_glyph(buffer_, width_, height_, gx, gy, ch, color, 0, false);
 }
 
 void VirtualFramebuffer::draw_glyph_bg(int32_t gx, int32_t gy, char ch, uint32_t fg, uint32_t bg) {
     if (!initialized_) return;
-    unsigned char c = static_cast<unsigned char>(ch);
-    if (c < 32 || c > 127) c = '?';
-    const uint8_t* bits = Kernel::Graphics::Font::Basic8x8[c - 32];
-    for (int32_t py = 0; py < 8; ++py) {
-        int32_t cy = gy + py;
-        if (cy < 0 || cy >= static_cast<int32_t>(height_)) continue;
-        uint8_t row_bits = bits[py];
-        for (int32_t px = 0; px < 8; ++px) {
-            int32_t cx = gx + px;
-            if (cx >= 0 && cx < static_cast<int32_t>(width_)) {
-                put_pixel(static_cast<uint32_t>(cx), static_cast<uint32_t>(cy), (row_bits & (1u << px)) ? fg : bg);
-            }
-        }
-    }
+    raster_glyph(buffer_, width_, height_, gx, gy, ch, fg, bg, true);
 }
 
 void VirtualFramebuffer::blit(const uint32_t* src, uint32_t bx, uint32_t by, uint32_t bw, uint32_t bh, uint32_t src_pitch) {
-    if (!initialized_ || !src || bx >= width_ || by >= height_) return;
-    if (bw > width_ - bx) bw = width_ - bx;
-    if (bh > height_ - by) bh = height_ - by;
-    if (bw == 0 || bh == 0) return;
-
-    const uint8_t* src_curr = reinterpret_cast<const uint8_t*>(src);
-    uint32_t* dst_curr = buffer_ + by * width_ + bx;
-
-    for (uint32_t row = 0; row < bh; ++row) {
-        memcpy(dst_curr, src_curr, static_cast<size_t>(bw) * sizeof(uint32_t));
-        dst_curr += width_;
-        src_curr += src_pitch;
-    }
+    if (!initialized_ || !src || !clip_blit(bx, by, bw, bh, width_, height_)) return;
+    const uint8_t* source = reinterpret_cast<const uint8_t*>(src);
+    uint32_t* destination = buffer_ + by * width_ + bx;
+    for (uint32_t row = 0; row < bh; ++row, destination += width_, source += src_pitch)
+        memcpy(destination, source, static_cast<size_t>(bw) * sizeof(uint32_t));
 }
 
 void VirtualFramebuffer::blit_transparent(const uint32_t* src, uint32_t bx, uint32_t by,
                                           uint32_t bw, uint32_t bh, uint32_t src_pitch, uint32_t transparent_color) {
-    if (!initialized_ || !src || bx >= width_ || by >= height_) return;
-    if (bw > width_ - bx) bw = width_ - bx;
-    if (bh > height_ - by) bh = height_ - by;
-    if (bw == 0 || bh == 0) return;
-
-    const uint8_t* src_curr = reinterpret_cast<const uint8_t*>(src);
-    uint32_t* dst_curr = buffer_ + by * width_ + bx;
-
-    for (uint32_t row = 0; row < bh; ++row) {
-        auto* s = reinterpret_cast<const uint32_t*>(src_curr);
-        for (uint32_t px = 0; px < bw; ++px) {
-            if (s[px] != transparent_color) {
-                dst_curr[px] = s[px];
-            }
-        }
-        dst_curr += width_;
-        src_curr += src_pitch;
-    }
+    if (!initialized_ || !src || !clip_blit(bx, by, bw, bh, width_, height_)) return;
+    blit_pixels(buffer_, width_, bx, by, bw, bh, src, src_pitch,
+                [transparent_color](uint32_t src_pixel, uint32_t dst_pixel) {
+                    return src_pixel == transparent_color ? dst_pixel : src_pixel;
+                });
 }
 
 void VirtualFramebuffer::blit_alpha(const uint32_t* src, uint32_t bx, uint32_t by,
                                     uint32_t bw, uint32_t bh, uint32_t src_pitch, uint8_t global_alpha) {
-    if (global_alpha == 0 || !initialized_ || !src) return;
-    if (bx >= width_ || by >= height_) return;
-    if (bw > width_ - bx) bw = width_ - bx;
-    if (bh > height_ - by) bh = height_ - by;
-    if (bw == 0 || bh == 0) return;
-
-    const uint8_t* src_curr = reinterpret_cast<const uint8_t*>(src);
-    uint32_t* dst_curr = buffer_ + by * width_ + bx;
-
-    for (uint32_t row = 0; row < bh; ++row) {
-        auto* s = reinterpret_cast<const uint32_t*>(src_curr);
-        for (uint32_t px = 0; px < bw; ++px) {
-            dst_curr[px] = blend_pixel_32(s[px], dst_curr[px], global_alpha);
-        }
-        dst_curr += width_;
-        src_curr += src_pitch;
-    }
+    if (global_alpha == 0 || !initialized_ || !src ||
+        !clip_blit(bx, by, bw, bh, width_, height_)) return;
+    blit_pixels(buffer_, width_, bx, by, bw, bh, src, src_pitch,
+                [global_alpha](uint32_t src_pixel, uint32_t dst_pixel) {
+                    return blend_pixel_32(src_pixel, dst_pixel, global_alpha);
+                });
 }
 
 void VirtualFramebuffer::draw_arc(int32_t xc, int32_t yc, int32_t r, int32_t start_angle, int32_t end_angle, uint32_t color) {
     if (!initialized_ || r < 0) return;
-    bool first = true;
-    int32_t prev_x = 0, prev_y = 0;
-    for (int32_t deg = start_angle; deg <= end_angle; ++deg) {
-        int32_t x = xc + (r * Kernel::Lib::Math::fixed_cos(deg)) / 1024;
-        int32_t y = yc + (r * Kernel::Lib::Math::fixed_sin(deg)) / 1024;
-        if (first) {
-            prev_x = x; prev_y = y; first = false;
-        } else {
-            draw_line(prev_x, prev_y, x, y, color);
-            prev_x = x; prev_y = y;
-        }
-    }
-}
-
-void VirtualFramebuffer::draw_semicircle(int32_t xc, int32_t yc, int32_t r, int32_t angle_deg, uint32_t color) {
-    draw_arc(xc, yc, r, angle_deg, angle_deg + 180, color);
+    walk_arc(xc, yc, r, start_angle, end_angle,
+             [this, color](int32_t x0, int32_t y0, int32_t x1, int32_t y1) {
+                 draw_line(x0, y0, x1, y1, color);
+             });
 }
 
 void VirtualFramebuffer::fill_sector(int32_t xc, int32_t yc, int32_t r, int32_t start_angle, int32_t end_angle, uint32_t color) {
     if (!initialized_ || r < 0) return;
-    bool first = true;
-    int32_t prev_x = 0, prev_y = 0;
-    for (int32_t deg = start_angle; deg <= end_angle; ++deg) {
-        int32_t x = xc + (r * Kernel::Lib::Math::fixed_cos(deg)) / 1024;
-        int32_t y = yc + (r * Kernel::Lib::Math::fixed_sin(deg)) / 1024;
-        if (first) {
-            prev_x = x; prev_y = y; first = false;
-        } else {
-            fill_triangle(xc, yc, prev_x, prev_y, x, y, color);
-            prev_x = x; prev_y = y;
-        }
-    }
-}
-
-void VirtualFramebuffer::draw_triangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, int32_t x2, int32_t y2, uint32_t color) {
-    draw_line(x0, y0, x1, y1, color);
-    draw_line(x1, y1, x2, y2, color);
-    draw_line(x2, y2, x0, y0, color);
+    walk_arc(xc, yc, r, start_angle, end_angle,
+             [this, xc, yc, color](int32_t x0, int32_t y0, int32_t x1, int32_t y1) {
+                 fill_triangle(xc, yc, x0, y0, x1, y1, color);
+             });
 }
 
 void VirtualFramebuffer::fill_triangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, int32_t x2, int32_t y2, uint32_t color) {
@@ -406,34 +370,35 @@ void VirtualFramebuffer::fill_triangle(int32_t x0, int32_t y0, int32_t x1, int32
         for (int64_t x = xa; x <= xb; ++x) *dst++ = color;
     };
 
+    auto scan = [&](int32_t start, int32_t end, int64_t left, int64_t right,
+                    int64_t dleft, int64_t dright) {
+        for (int32_t y = start; y <= end; ++y) {
+            draw_span(y, left, right);
+            left += dleft;
+            right += dright;
+        }
+    };
+
     if (y0 < y1) {
         const int64_t dx_top = ((int64_t(x1) - x0) * 65536) / (int64_t(y1) - y0);
-        int32_t start = y0 < 0 ? 0 : y0;
-        int32_t end = y1 >= sh ? sh - 1 : y1;
-
+        const int32_t start = y0 < 0 ? 0 : y0;
+        const int32_t end = y1 >= sh ? sh - 1 : y1;
         if (start <= end) {
-            int64_t lx = int64_t(x0) * 65536 + dx_long * (int64_t(start) - y0);
-            int64_t sx = int64_t(x0) * 65536 + dx_top * (int64_t(start) - y0);
-            for (int32_t y = start; y <= end; ++y) {
-                draw_span(y, lx, sx);
-                lx += dx_long; sx += dx_top;
-            }
+            const int64_t left = int64_t(x0) * 65536 + dx_long * (int64_t(start) - y0);
+            const int64_t right = int64_t(x0) * 65536 + dx_top * (int64_t(start) - y0);
+            scan(start, end, left, right, dx_long, dx_top);
         }
     }
 
     if (y1 < y2) {
         const int64_t dx_bottom = ((int64_t(x2) - x1) * 65536) / (int64_t(y2) - y1);
-        int32_t start = (y0 == y1) ? y1 : y1 + 1;
+        int32_t start = y0 == y1 ? y1 : y1 + 1;
         if (start < 0) start = 0;
-        int32_t end = y2 >= sh ? sh - 1 : y2;
-
+        const int32_t end = y2 >= sh ? sh - 1 : y2;
         if (start <= end) {
-            int64_t lx = int64_t(x0) * 65536 + dx_long * (int64_t(start) - y0);
-            int64_t sx = int64_t(x1) * 65536 + dx_bottom * (int64_t(start) - y1);
-            for (int32_t y = start; y <= end; ++y) {
-                draw_span(y, lx, sx);
-                lx += dx_long; sx += dx_bottom;
-            }
+            const int64_t left = int64_t(x0) * 65536 + dx_long * (int64_t(start) - y0);
+            const int64_t right = int64_t(x1) * 65536 + dx_bottom * (int64_t(start) - y1);
+            scan(start, end, left, right, dx_long, dx_bottom);
         }
     }
 }

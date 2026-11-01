@@ -1,6 +1,7 @@
 #include <kernel/lib/appcommon.h>
 #include <kernel/drivers/pit.h>
 #include <kernel/drivers/keyboard.h>
+#include <kernel/drivers/mouse.h>
 #include <kernel/scheduler.h>
 #include <kernel/graphics/window_manager.h>
 #include <arch/x86_64/string.h>
@@ -25,11 +26,22 @@ void delay(uint32_t speed) {
     Kernel::Scheduler::thread_sleep_ms(target_ticks);
 }
 
-bool request_window_size(uint32_t requested_width, uint32_t requested_height,
-                         uint32_t& actual_width, uint32_t& actual_height) {
-    return Kernel::Graphics::WindowManager::request_window_size(
-        Kernel::Scheduler::current_thread_id(), requested_width, requested_height,
-        &actual_width, &actual_height);
+bool get_window_position(uint64_t thread_id, int* x, int* y) {
+    return Kernel::Graphics::WindowManager::get_window_position(thread_id, x, y);
+}
+
+static int mouse_position(bool horizontal) {
+    int wx = 0, wy = 0;
+    int position = horizontal ? Kernel::Drivers::Mouse::get_x() : Kernel::Drivers::Mouse::get_y();
+    uint64_t tid = Kernel::Scheduler::current_thread_id();
+    return get_window_position(tid, &wx, &wy) ? position - (horizontal ? wx : wy) : position;
+}
+
+int get_mouse_x() { return mouse_position(true); }
+int get_mouse_y() { return mouse_position(false); }
+
+bool is_left_pressed() {
+    return Kernel::Drivers::Mouse::is_left_pressed();
 }
 
 }

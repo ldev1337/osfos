@@ -1,15 +1,11 @@
-#include <kernel/drivers/framebuffer.h>
 #include <kernel/drivers/keyboard.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/scheduler.h>
 #include <kernel/graphics/vfb.h>
-#include <kernel/graphics/window_manager.h>
 #include <stdint.h>
 
 namespace Kernel::Games::Breakout {
 namespace {
-using Kernel::Drivers::Framebuffer::width;
-using Kernel::Drivers::Framebuffer::height;
 using Kernel::Drivers::Keyboard;
 static Kernel::Graphics::VirtualFramebuffer vfb;
 
@@ -338,22 +334,16 @@ static void update() {
 }
 
 void run() {
-    if (!Kernel::Drivers::Framebuffer::valid()) return;
-    uint32_t screen_w = 0, screen_h = 0;
-    if (!Kernel::AppCommon::request_window_size(640, 480, screen_w, screen_h)) return;
-    sw = static_cast<int>(screen_w);
-    sh = static_cast<int>(screen_h);
-    if (sw < 240 || sh < 220) return;
-
-    if (!vfb.init(0, 0, static_cast<uint32_t>(sw), static_cast<uint32_t>(sh))) return;
+    if (!vfb.open_window(640, 480, 240, 220)) return;
+    sw = static_cast<int>(vfb.width());
+    sh = static_cast<int>(vfb.height());
     reset_game();
 
     bool space_prev = false;
 
     for (;;) {
         if (Kernel::Scheduler::should_stop()) return;
-        if (!Kernel::Graphics::WindowManager::has_keyboard_focus(
-                Kernel::Scheduler::current_thread_id())) {
+        if (!vfb.has_focus()) {
             Kernel::AppCommon::delay(10);
             continue;
         }

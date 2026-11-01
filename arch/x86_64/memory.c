@@ -1,3 +1,4 @@
+#define BUILDING_KERNEL_MEMORY
 #include "arch/x86_64/string.h"
 
 #define READ_64(p) (*(const uint64_t *)(p))

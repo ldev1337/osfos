@@ -1,16 +1,13 @@
 #include <kernel/graphics/vfb.h>
-#include <kernel/drivers/framebuffer.h>
 #include <kernel/drivers/keyboard.h>
 #include <kernel/drivers/mouse.h>
-#include <kernel/fs/vfs.h>
+#include <kernel/fs/laziofs.h>
 #include <kernel/memory/heap.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/lib/uicommon.h>
 #include <kernel/scheduler.h>
 #include <arch/x86_64/string.h>
 
-using Kernel::Drivers::Framebuffer::width;
-using Kernel::Drivers::Framebuffer::height;
 using Kernel::Drivers::Mouse;
 
 namespace Kernel::Apps::Pain {
@@ -332,11 +329,11 @@ inline void flood_fill(uint32_t* canvas, uint32_t cw, uint32_t ch, int start_x, 
 }
 
 void run() {
-    uint32_t actual_w = 0, actual_h = 0;
-    if (!Kernel::AppCommon::request_window_size(1024, 720, actual_w, actual_h)) return;
-    int32_t sw = static_cast<int32_t>(actual_w), sh = static_cast<int32_t>(actual_h);
+    Kernel::Graphics::VirtualFramebuffer vfb;
+    if (!vfb.open_window(1024, 720)) return;
+    const int32_t sw = static_cast<int32_t>(vfb.width());
+    const int32_t sh = static_cast<int32_t>(vfb.height());
     const uint32_t canvas_w = sw, canvas_h = sh > 100 ? sh - 100 : sh;
-    Kernel::Graphics::VirtualFramebuffer vfb(0, 0, static_cast<uint32_t>(sw), static_cast<uint32_t>(sh));
 
     const uint32_t COLOR_BG = 0xFF1E1E2E, COLOR_CANVAS = 0xFFFFFFFF;
     const uint32_t COLOR_TEXT = 0xFFCDD6F4, COLOR_ACCENT = 0xFF89B4FA, COLOR_CURSOR = 0xFFF38BA8;
@@ -358,9 +355,9 @@ void run() {
 
     bool running = true;
     while (running && !Kernel::Scheduler::should_stop()) {
-        int mx = Mouse::get_x();
-        int my = Mouse::get_y();
-        bool m_left = Mouse::is_left_pressed();
+        int mx = Kernel::AppCommon::get_mouse_x();
+        int my = Kernel::AppCommon::get_mouse_y();
+        bool m_left = Kernel::AppCommon::is_left_pressed();
 
         if (my < static_cast<int>(canvas_h)) {
             if (m_left) {

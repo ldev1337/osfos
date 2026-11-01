@@ -1,16 +1,12 @@
-#include <kernel/drivers/framebuffer.h>
 #include <kernel/scheduler.h>
 #include <kernel/drivers/keyboard.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/lib/random.h>
 #include <kernel/graphics/vfb.h>
-#include <kernel/graphics/window_manager.h>
 #include <stdint.h>
 
 namespace Kernel::Games::Spong {
 namespace {
-using Kernel::Drivers::Framebuffer::width;
-using Kernel::Drivers::Framebuffer::height;
 using Kernel::Drivers::Keyboard;
 using namespace Kernel::AppCommon;
 
@@ -117,15 +113,11 @@ void input(Game& g, bool& running) {
 
 void run(uint32_t speed, bool ai) {
     Game g{};
-    uint32_t screen_w = 0, screen_h = 0;
-    if (!Kernel::AppCommon::request_window_size(640, 480, screen_w, screen_h)) return;
-    g.w = static_cast<int32_t>(screen_w);
-    g.h = static_cast<int32_t>(screen_h);
-    if (g.w < 168 || g.h < 200) return;
+    Kernel::Graphics::VirtualFramebuffer vfb;
+    if (!vfb.open_window(640, 480, 168, 200)) return;
+    g.w = static_cast<int32_t>(vfb.width());
+    g.h = static_cast<int32_t>(vfb.height());
     g.paddle_h = g.h < 300 ? g.h / 5 : 76;
-
-    Kernel::Graphics::VirtualFramebuffer vfb(0, 0, screen_w, screen_h);
-    if (!vfb.valid()) return;
 
     if (speed < 1) speed = 1;
     if (speed > 5) speed = 5;
@@ -144,8 +136,7 @@ void run(uint32_t speed, bool ai) {
     bool running = true;
     while (running) {
         if (Kernel::Scheduler::should_stop()) break;
-        if (!Kernel::Graphics::WindowManager::has_keyboard_focus(
-                Kernel::Scheduler::current_thread_id())) {
+        if (!vfb.has_focus()) {
             delay(10);
             continue;
         }

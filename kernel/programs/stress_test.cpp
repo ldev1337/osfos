@@ -1,4 +1,3 @@
-#include <kernel/drivers/framebuffer.h>
 #include <kernel/drivers/keyboard.h>
 #include <kernel/graphics/vfb.h>
 #include <kernel/lib/appcommon.h>
@@ -7,8 +6,6 @@
 
 namespace Kernel::Apps {
 namespace {
-using Kernel::Drivers::Framebuffer::width;
-using Kernel::Drivers::Framebuffer::height;
 using namespace Kernel::AppCommon;
 using Kernel::Drivers::Keyboard;
 
@@ -20,16 +17,10 @@ constexpr uint32_t RED = 0xf38ba8;
 constexpr uint32_t YELLOW = 0xf9e2af;
 
 void run_stress_test() {
-    if (!Kernel::Drivers::Framebuffer::valid()) return;
-
-    uint32_t actual_w = 0, actual_h = 0;
-    if (!Kernel::AppCommon::request_window_size(800, 600, actual_w, actual_h)) return;
-    int32_t w = static_cast<int32_t>(actual_w);
-    int32_t h = static_cast<int32_t>(actual_h);
-    if (w < 200 || h < 150) return;
-
-    Kernel::Graphics::VirtualFramebuffer vfb(0, 0, static_cast<uint32_t>(w), static_cast<uint32_t>(h));
-    if (!vfb.valid()) return;
+    Kernel::Graphics::VirtualFramebuffer vfb;
+    if (!vfb.open_window(800, 600, 200, 150)) return;
+    const int32_t w = static_cast<int32_t>(vfb.width());
+    const int32_t h = static_cast<int32_t>(vfb.height());
 
     int mode = 0;
     bool running = true;
