@@ -1,15 +1,23 @@
-#include <kernel/graphics/window_manager.h>
-#include <kernel/graphics/vfb.h>
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <utility>
+
+#include <arch/x86_64/spinlock.h>
+#include <arch/x86_64/string.h>
 #include <kernel/drivers/framebuffer.h>
 #include <kernel/drivers/mouse.h>
+#include <kernel/graphics/simplefonts.h>
+#include <kernel/graphics/vfb.h>
+#include <kernel/graphics/window_manager.h>
 #include <kernel/memory/heap.h>
 #include <kernel/scheduler.h>
-#include <arch/x86_64/string.h>
-#include <arch/x86_64/spinlock.h>
 
 namespace Kernel::Graphics::WindowManager {
 namespace {
-constexpr size_t MAX_WINDOWS = 8;
+
+constexpr size_t MAX_WINDOWS = 32;
 constexpr int TITLE_H = 26;
 constexpr uint32_t DESKTOP = 0x18232E;
 constexpr uint32_t TITLE_ACTIVE = 0x42698A;
@@ -20,32 +28,31 @@ constexpr size_t FRAME_BUFFER_COUNT = 3;
 constexpr uint8_t INVALID_BUFFER = 0xFF;
 
 struct Window {
-    uint64_t thread_id;
-    char title[32];
-    uint32_t* pixels[FRAME_BUFFER_COUNT];
-    uint8_t front_index;
-    uint8_t render_index;
-    uint8_t write_index;
-    uint32_t width, height;
-    int x, y;
-    bool alive, has_frame;
+  uint64_t thread_id;
+  char title[32];
+  std::array<uint32_t *, FRAME_BUFFER_COUNT> pixels{};
+  uint8_t front_index;
+  uint8_t render_index;
+  uint8_t write_index;
+  uint32_t width, height;
+  int x, y;
+  bool alive, has_frame;
 };
 
 struct RenderWindow {
-    Window* owner;
-    uint64_t thread_id;
-    char title[32];
-    const uint32_t* pixels;
-    uint32_t width, height;
-    int x, y;
-    uint8_t buffer_index;
-    bool focused;
+  Window *owner;
+  uint64_t thread_id;
+  const char *title;
+  const uint32_t *pixels;
+  uint32_t width, height;
+  int x, y;
+  uint8_t buffer_index;
+  bool focused;
 };
 
-Window windows[MAX_WINDOWS]{};
+std::array<Window, MAX_WINDOWS> windows{};
 size_t window_count = 0;
-// Z-order indirection table: z_order[0] is bottom-most, z_order[window_count - 1] is top-most (focused)
-size_t z_order[MAX_WINDOWS]{};
+std::array<size_t, MAX_WINDOWS> z_order{};
 size_t focused_index_in_z = 0;
 
 uint32_t screen_w = 0, screen_h = 0;
@@ -57,532 +64,622 @@ Spinlock compositor_lock;
 bool damage_valid = false;
 int damage_left = 0, damage_top = 0, damage_right = 0, damage_bottom = 0;
 
-void copy_name(char* dst, const char* src) {
-    size_t i = 0;
-    if (src) for (; i + 1 < 32 && src[i]; ++i) dst[i] = src[i];
-    dst[i] = '\0';
+void copy_name(char *dst, const char *src) {
+  size_t i = 0;
+  if (src)
+    for (; i + 1 < 32 && src[i]; ++i)
+      dst[i] = src[i];
+  dst[i] = '\0';
 }
 
-void draw_text(int x, int y, const char* s, uint32_t color) {
-    while (*s) {
-        desktop.draw_glyph(x, y, *s++, color);
-        x += 8;
+void draw_glyph(int gx, int gy, char ch, uint32_t color, int cl, int ct, int cr,
+                int cb) {
+  if (gx + 8 <= cl || gx >= cr || gy + 8 <= ct || gy >= cb)
+    return;
+  const auto c = static_cast<unsigned char>(ch);
+  const auto *bits =
+      Kernel::Graphics::Font::Basic8x8[(c >= 32 && c <= 127) ? c - 32
+                                                             : '?' - 32];
+  auto *buf = desktop.buffer();
+  const int y_start = std::max(0, ct - gy);
+  const int y_end = std::min(8, cb - gy);
+  const int x_start = std::max(0, cl - gx);
+  const int x_end = std::min(8, cr - gx);
+
+  for (int py = y_start; py < y_end; ++py) {
+    const uint8_t row = bits[py];
+    auto *dst = buf + static_cast<size_t>(gy + py) * screen_w;
+    for (int px = x_start; px < x_end; ++px) {
+      if (row & (1u << px))
+        dst[gx + px] = color;
     }
+  }
 }
 
-void free_window_pixels(Window& w) {
-    for (uint32_t*& pixels : w.pixels) {
-        kfree(pixels);
-        pixels = nullptr;
-    }
+void draw_text(int x, int y, const char *s, uint32_t color, int cl, int ct,
+               int cr, int cb) {
+  if (!s || !desktop.valid())
+    return;
+  for (; *s && x < cr; x += 8, ++s) {
+    if (x + 8 > cl)
+      draw_glyph(x, y, *s, color, cl, ct, cr, cb);
+  }
+}
+
+void free_window_pixels(Window &w) {
+  for (auto *&p : w.pixels) {
+    kfree(p);
+    p = nullptr;
+  }
 }
 
 bool allocate_frames(uint32_t width, uint32_t height,
-                     uint32_t* (&frames)[FRAME_BUFFER_COUNT]) {
-    const size_t bytes = static_cast<size_t>(width) * height * sizeof(uint32_t);
-    size_t count = 0;
-    for (; count < FRAME_BUFFER_COUNT; ++count) {
-        frames[count] = static_cast<uint32_t*>(kmalloc(bytes));
-        if (!frames[count]) break;
+                     std::array<uint32_t *, FRAME_BUFFER_COUNT> &frames) {
+  const size_t bytes = static_cast<size_t>(width) * height * sizeof(uint32_t);
+  for (auto *&f : frames) {
+    f = static_cast<uint32_t *>(kmalloc(bytes));
+    if (!f) {
+      for (auto *&c : frames) {
+        kfree(c);
+        c = nullptr;
+      }
+      return false;
     }
-    if (count < FRAME_BUFFER_COUNT) {
-        while (count) {
-            kfree(frames[--count]);
-            frames[count] = nullptr;
-        }
-        return false;
-    }
-    for (uint32_t* frame : frames) memset(frame, 0, bytes);
-    return true;
+    memset(f, 0, bytes);
+  }
+  return true;
 }
 
 void mark_dirty(int left, int top, int right, int bottom) {
-    if (left >= right || top >= bottom) return;
-    if (!damage_valid) {
-        damage_left = left; damage_top = top;
-        damage_right = right; damage_bottom = bottom;
-        damage_valid = true;
-        return;
-    }
-    if (left < damage_left) damage_left = left;
-    if (top < damage_top) damage_top = top;
-    if (right > damage_right) damage_right = right;
-    if (bottom > damage_bottom) damage_bottom = bottom;
+  if (left >= right || top >= bottom)
+    return;
+  if (!damage_valid) {
+    damage_left = left;
+    damage_top = top;
+    damage_right = right;
+    damage_bottom = bottom;
+    damage_valid = true;
+  } else {
+    damage_left = std::min(damage_left, left);
+    damage_top = std::min(damage_top, top);
+    damage_right = std::max(damage_right, right);
+    damage_bottom = std::max(damage_bottom, bottom);
+  }
 }
 
-void mark_window_dirty(const Window& w) {
-    mark_dirty(w.x - 1, w.y - 1,
-               w.x + static_cast<int>(w.width) + 1,
-               w.y + TITLE_H + static_cast<int>(w.height) + 1);
-}
-
-void mark_full_dirty() {
-    mark_dirty(0, 0, static_cast<int>(screen_w), static_cast<int>(screen_h));
+void mark_window_dirty(const Window &w) {
+  mark_dirty(w.x - 1, w.y - 1, w.x + static_cast<int>(w.width) + 1,
+             w.y + TITLE_H + static_cast<int>(w.height) + 1);
 }
 
 void fill_rect_clipped(int x, int y, int width, int height, uint32_t color,
                        int left, int top, int right, int bottom) {
-    const int clipped_left = x > left ? x : left;
-    const int clipped_top = y > top ? y : top;
-    const int clipped_right = (x + width) < right ? x + width : right;
-    const int clipped_bottom = (y + height) < bottom ? y + height : bottom;
-    if (clipped_left < clipped_right && clipped_top < clipped_bottom)
-        desktop.fill_rect(clipped_left, clipped_top,
-                          clipped_right - clipped_left, clipped_bottom - clipped_top, color);
+  const int cl = std::max(x, left);
+  const int ct = std::max(y, top);
+  const int cr = std::min(x + width, right);
+  const int cb = std::min(y + height, bottom);
+  if (cl < cr && ct < cb)
+    desktop.fill_rect(cl, ct, cr - cl, cb - ct, color);
 }
 
-bool clip_to_screen(int& left, int& top, int& right, int& bottom) {
-    if (left < 0) left = 0;
-    if (top < 0) top = 0;
-    if (right > static_cast<int>(screen_w)) right = static_cast<int>(screen_w);
-    if (bottom > static_cast<int>(screen_h)) bottom = static_cast<int>(screen_h);
-    return left < right && top < bottom;
+bool clip_to_screen(int &l, int &t, int &r, int &b) {
+  l = std::max(0, l);
+  t = std::max(0, t);
+  r = std::min(static_cast<int>(screen_w), r);
+  b = std::min(static_cast<int>(screen_h), b);
+  return l < r && t < b;
 }
 
 void blit_desktop_region(int left, int top, int right, int bottom) {
-    if (!clip_to_screen(left, top, right, bottom)) return;
-
-    const uint32_t width = static_cast<uint32_t>(right - left);
-    const uint32_t height = static_cast<uint32_t>(bottom - top);
-    const uint32_t* source = desktop.buffer() + static_cast<size_t>(top) * screen_w + left;
-    Kernel::Drivers::Framebuffer::blit(source, static_cast<uint32_t>(left),
-                                       static_cast<uint32_t>(top), width, height,
-                                       desktop.pitch());
+  if (!clip_to_screen(left, top, right, bottom))
+    return;
+  const auto *src =
+      desktop.buffer() + static_cast<size_t>(top) * screen_w + left;
+  Kernel::Drivers::Framebuffer::blit(src, left, top, right - left, bottom - top,
+                                     desktop.pitch());
 }
 
-// Moves window index 'w_idx' to the top of the z-order (most recently focused)
 void bring_to_front(size_t w_idx) {
-    size_t pos = 0;
-    while (pos < window_count && z_order[pos] != w_idx) ++pos;
-    if (pos >= window_count) return;
-
-    for (size_t j = pos; j + 1 < window_count; ++j) {
-        z_order[j] = z_order[j + 1];
-    }
-    z_order[window_count - 1] = w_idx;
-    focused_index_in_z = window_count - 1;
+  auto *end = z_order.data() + window_count;
+  auto *it = std::find(z_order.data(), end, w_idx);
+  if (it == end)
+    return;
+  std::rotate(it, it + 1, end);
+  focused_index_in_z = window_count - 1;
 }
 
 void remove_from_z_order(size_t window_index) {
-    size_t pos = 0;
-    while (pos < window_count && z_order[pos] != window_index) ++pos;
-    if (pos == window_count) return;
-    for (size_t i = pos; i + 1 < window_count; ++i) z_order[i] = z_order[i + 1];
-    focused_index_in_z = --window_count ? window_count - 1 : 0;
+  auto *end = z_order.data() + window_count;
+  auto *it = std::find(z_order.data(), end, window_index);
+  if (it == end)
+    return;
+  std::move(it + 1, end, it);
+  focused_index_in_z = --window_count ? window_count - 1 : 0;
 }
 
-Window* find_window(uint64_t thread_id) {
-    for (size_t i = 0; i < window_count; ++i)
-        if (windows[i].alive && windows[i].thread_id == thread_id) return &windows[i];
+Window *find_window(uint64_t thread_id) {
+  if (!thread_id)
     return nullptr;
+  for (auto &w : windows) {
+    if (w.alive && w.thread_id == thread_id)
+      return &w;
+  }
+  return nullptr;
 }
 
-void render_region(const RenderWindow* rendered_windows, size_t rendered_count,
-                   int left, int top, int right, int bottom) {
-    if (!desktop.valid() || !clip_to_screen(left, top, right, bottom)) return;
+void unregister_window_index(size_t i) {
+  if (i >= MAX_WINDOWS || !windows[i].alive)
+    return;
+  auto &w = windows[i];
+  mark_window_dirty(w);
+  w.alive = false;
+  if (w.render_index == INVALID_BUFFER && w.write_index == INVALID_BUFFER)
+    free_window_pixels(w);
+  remove_from_z_order(i);
+}
 
-    desktop.fill_rect(left, top, right - left, bottom - top, DESKTOP);
-    fill_rect_clipped(0, 0, static_cast<int>(screen_w), 30, 0x22313E,
-                      left, top, right, bottom);
-    draw_text(12, 10, "OSFOS DESKTOP", TEXT);
+int register_window_locked(uint64_t thread_id, const char *title, bool launcher,
+                           uint32_t width, uint32_t height) {
+  if (!desktop.valid() || !thread_id)
+    return -1;
 
-    for (size_t i = 0; i < rendered_count; ++i) {
-        const RenderWindow& w = rendered_windows[i];
-        const int outer_w = static_cast<int>(w.width) + 2;
-        const int outer_h = static_cast<int>(w.height) + TITLE_H + 2;
-        const uint32_t title_color = w.focused ? TITLE_ACTIVE : TITLE_INACTIVE;
-        fill_rect_clipped(w.x - 1, w.y - 1, outer_w, outer_h, BORDER,
-                          left, top, right, bottom);
-        fill_rect_clipped(w.x, w.y, static_cast<int>(w.width), TITLE_H, title_color,
-                          left, top, right, bottom);
-        draw_text(w.x + 9, w.y + 8, w.title, TEXT);
-        fill_rect_clipped(w.x + static_cast<int>(w.width) - 22, w.y + 4, 16, 16, 0x9E4D55,
-                          left, top, right, bottom);
-        desktop.draw_glyph(w.x + static_cast<int>(w.width) - 18, w.y + 8, 'X', TEXT);
-        fill_rect_clipped(w.x, w.y + TITLE_H, static_cast<int>(w.width), static_cast<int>(w.height),
-                          0x101820, left, top, right, bottom);
-        if (w.pixels) {
-            const int body_top = w.y + TITLE_H;
-            const int copy_left = w.x > left ? w.x : left;
-            const int copy_top = body_top > top ? body_top : top;
-            const int copy_right = (w.x + static_cast<int>(w.width)) < right
-                ? w.x + static_cast<int>(w.width) : right;
-            const int copy_bottom = (body_top + static_cast<int>(w.height)) < bottom
-                ? body_top + static_cast<int>(w.height) : bottom;
-            if (copy_left < copy_right && copy_top < copy_bottom) {
-                const uint32_t* source = w.pixels +
-                    static_cast<size_t>(copy_top - body_top) * w.width +
-                    static_cast<size_t>(copy_left - w.x);
-                desktop.blit(source, static_cast<uint32_t>(copy_left),
-                             static_cast<uint32_t>(copy_top),
-                             static_cast<uint32_t>(copy_right - copy_left),
-                             static_cast<uint32_t>(copy_bottom - copy_top),
-                             w.width * sizeof(uint32_t));
-            }
-        }
+  size_t slot = MAX_WINDOWS;
+  for (size_t i = 0; i < MAX_WINDOWS; ++i) {
+    if (windows[i].alive) {
+      if (windows[i].thread_id == thread_id) {
+        bring_to_front(i);
+        return static_cast<int>(focused_index_in_z);
+      }
+    } else if (slot == MAX_WINDOWS) {
+      slot = i;
     }
+  }
 
-    const int mx = cursor_x;
-    const int my = cursor_y;
-    fill_rect_clipped(mx - 1, my - 7, 3, 15, TEXT, left, top, right, bottom);
-    fill_rect_clipped(mx - 7, my - 1, 15, 3, TEXT, left, top, right, bottom);
-    blit_desktop_region(left, top, right, bottom);
+  // Never refuse an app: evict bottom-most window if at limit
+  if (slot == MAX_WINDOWS) {
+    if (window_count > 0) {
+      slot = z_order[0];
+      const uint64_t evict_tid = windows[slot].thread_id;
+      unregister_window_index(slot);
+      Kernel::Scheduler::terminate_thread(evict_tid);
+    } else {
+      slot = 0;
+    }
+  }
+
+  const uint32_t margin = launcher ? 24 : 0;
+  if (!width)
+    width = launcher ? (screen_w > 48 ? screen_w - 48 : screen_w) : 320;
+  if (!height)
+    height = launcher
+                 ? (screen_h > 100 ? screen_h - 100 : screen_h - TITLE_H - 2)
+                 : 200;
+
+  std::array<uint32_t *, FRAME_BUFFER_COUNT> frames{};
+  auto &recycled = windows[slot];
+  const bool can_reuse = recycled.width == width && recycled.height == height &&
+                         recycled.pixels[0] &&
+                         recycled.render_index == INVALID_BUFFER &&
+                         recycled.write_index == INVALID_BUFFER;
+  if (can_reuse) {
+    frames = recycled.pixels;
+    for (auto *f : frames)
+      memset(f, 0, static_cast<size_t>(width) * height * sizeof(uint32_t));
+  } else {
+    free_window_pixels(recycled);
+    if (!allocate_frames(width, height, frames))
+      return -1;
+  }
+
+  auto &w = windows[slot];
+  w.thread_id = thread_id;
+  copy_name(w.title, title);
+  w.pixels = frames;
+  w.front_index = 0;
+  w.render_index = w.write_index = INVALID_BUFFER;
+  w.width = width;
+  w.height = height;
+
+  const int offset = static_cast<int>((slot % 8) * 26);
+  w.x =
+      (margin + offset + static_cast<int>(width) <= static_cast<int>(screen_w))
+          ? (margin + offset)
+          : 0;
+  w.y = (launcher ? 42 : 48) + offset;
+  if (w.y + static_cast<int>(height) + TITLE_H > static_cast<int>(screen_h))
+    w.y = 30;
+  w.alive = true;
+  w.has_frame = false;
+
+  z_order[window_count++] = slot;
+  bring_to_front(slot);
+  mark_window_dirty(w);
+  return static_cast<int>(focused_index_in_z);
+}
+
+void render_region(const RenderWindow *rendered_windows, size_t rendered_count,
+                   int left, int top, int right, int bottom) {
+  if (!desktop.valid() || !clip_to_screen(left, top, right, bottom))
+    return;
+
+  desktop.fill_rect(left, top, right - left, bottom - top, DESKTOP);
+
+  if (top < 30) {
+    fill_rect_clipped(0, 0, screen_w, 30, 0x22313E, left, top, right, bottom);
+    if (left < 150)
+      draw_text(12, 10, "OSFOS DESKTOP", TEXT, left, top, right, bottom);
+  }
+
+  for (size_t i = 0; i < rendered_count; ++i) {
+    const auto &w = rendered_windows[i];
+    const int outer_w = static_cast<int>(w.width) + 2;
+    const int outer_h = static_cast<int>(w.height) + TITLE_H + 2;
+    const int wl = w.x - 1, wt = w.y - 1;
+
+    // Early window culling against dirty rectangle
+    if (wl + outer_w <= left || wl >= right || wt + outer_h <= top ||
+        wt >= bottom)
+      continue;
+
+    const uint32_t title_color = w.focused ? TITLE_ACTIVE : TITLE_INACTIVE;
+    fill_rect_clipped(wl, wt, outer_w, outer_h, BORDER, left, top, right,
+                      bottom);
+    fill_rect_clipped(w.x, w.y, w.width, TITLE_H, title_color, left, top, right,
+                      bottom);
+    draw_text(w.x + 9, w.y + 8, w.title, TEXT, left, top,
+              std::min(w.x + static_cast<int>(w.width) - 24, right), bottom);
+
+    const int btn_x = w.x + static_cast<int>(w.width) - 22;
+    const int btn_y = w.y + 4;
+    fill_rect_clipped(btn_x, btn_y, 16, 16, 0x9E4D55, left, top, right, bottom);
+    draw_glyph(btn_x + 4, btn_y + 4, 'X', TEXT, left, top, right, bottom);
+
+    const int body_top = w.y + TITLE_H;
+    fill_rect_clipped(w.x, body_top, w.width, w.height, 0x101820, left, top,
+                      right, bottom);
+
+    if (w.pixels) {
+      const int cl = std::max(w.x, left);
+      const int ct = std::max(body_top, top);
+      const int cr = std::min(w.x + static_cast<int>(w.width), right);
+      const int cb = std::min(body_top + static_cast<int>(w.height), bottom);
+      if (cl < cr && ct < cb) {
+        const auto *src = w.pixels +
+                          static_cast<size_t>(ct - body_top) * w.width +
+                          (cl - w.x);
+        desktop.blit(src, cl, ct, cr - cl, cb - ct, w.width * sizeof(uint32_t));
+      }
+    }
+  }
+
+  fill_rect_clipped(cursor_x - 1, cursor_y - 7, 3, 15, TEXT, left, top, right,
+                    bottom);
+  fill_rect_clipped(cursor_x - 7, cursor_y - 1, 15, 3, TEXT, left, top, right,
+                    bottom);
+  blit_desktop_region(left, top, right, bottom);
 }
 
 void mouse_update() {
-    const bool left = Kernel::Drivers::Mouse::raw_left_pressed();
-    const bool left_changed = left != old_left;
-    const int mx = Kernel::Drivers::Mouse::get_x();
-    const int my = Kernel::Drivers::Mouse::get_y();
-    const int previous_cursor_x = cursor_x;
-    const int previous_cursor_y = cursor_y;
-    cursor_x = mx;
-    cursor_y = my;
+  const bool left = Kernel::Drivers::Mouse::raw_left_pressed();
+  const bool left_changed = left != old_left;
+  const int mx = Kernel::Drivers::Mouse::get_x();
+  const int my = Kernel::Drivers::Mouse::get_y();
+  const int prev_mx = cursor_x;
+  const int prev_my = cursor_y;
+  cursor_x = mx;
+  cursor_y = my;
 
-    if (left && !old_left) {
-        // Iterate z-order from top to bottom for hit testing
-        for (size_t n = window_count; n > 0; --n) {
-            const size_t z_idx = n - 1;
-            const size_t i = z_order[z_idx];
-            Window& w = windows[i];
-            if (!w.alive) continue;
-            const int ow = static_cast<int>(w.width) + 2;
-            const int oh = static_cast<int>(w.height) + TITLE_H + 2;
-            if (mx < w.x - 1 || mx >= w.x + ow || my < w.y - 1 || my >= w.y + oh) continue;
+  if (left && !old_left) {
+    for (size_t n = window_count; n > 0; --n) {
+      const size_t i = z_order[n - 1];
+      auto &w = windows[i];
+      if (!w.alive)
+        continue;
+      if (mx < w.x - 1 || mx >= w.x + static_cast<int>(w.width) + 1 ||
+          my < w.y - 1 || my >= w.y + TITLE_H + static_cast<int>(w.height) + 1)
+        continue;
 
-            if (window_count > 0 && windows[z_order[focused_index_in_z]].alive)
-                mark_window_dirty(windows[z_order[focused_index_in_z]]);
+      if (window_count > 0 && windows[z_order[focused_index_in_z]].alive)
+        mark_window_dirty(windows[z_order[focused_index_in_z]]);
 
-            bring_to_front(i);
-            Window& selected = windows[i];
-            mark_window_dirty(selected);
+      bring_to_front(i);
+      mark_window_dirty(w);
 
-            if (my >= selected.y && my < selected.y + TITLE_H &&
-                mx >= selected.x + static_cast<int>(selected.width) - 24) {
-                selected.alive = false;
-                Kernel::Scheduler::terminate_thread(selected.thread_id);
-            } else if (my < selected.y + TITLE_H) {
-                dragging = true;
-                drag_x = mx - selected.x;
-                drag_y = my - selected.y;
-            }
-            break;
-        }
+      if (my >= w.y && my < w.y + TITLE_H &&
+          mx >= w.x + static_cast<int>(w.width) - 24) {
+        const uint64_t tid = w.thread_id;
+        unregister_window_index(i);
+        Kernel::Scheduler::terminate_thread(tid);
+      } else if (my < w.y + TITLE_H) {
+        dragging = true;
+        drag_x = mx - w.x;
+        drag_y = my - w.y;
+      }
+      break;
     }
-    if (left && dragging && window_count > 0) {
-        Window& w = windows[z_order[focused_index_in_z]];
-        const int previous_x = w.x;
-        const int previous_y = w.y;
-        w.x = mx - drag_x;
-        w.y = my - drag_y;
-        if (w.x < 0) w.x = 0;
-        if (w.y < 30) w.y = 30;
-        if (w.x + static_cast<int>(w.width) > static_cast<int>(screen_w)) w.x = screen_w - w.width;
-        if (w.y + static_cast<int>(w.height) + TITLE_H > static_cast<int>(screen_h)) w.y = screen_h - w.height - TITLE_H;
-        mark_dirty(previous_x - 1, previous_y - 1,
-                   previous_x + static_cast<int>(w.width) + 1,
-                   previous_y + TITLE_H + static_cast<int>(w.height) + 1);
-        mark_window_dirty(w);
+  }
+
+  if (left && dragging && window_count > 0) {
+    auto &w = windows[z_order[focused_index_in_z]];
+    const int prev_x = w.x;
+    const int prev_y = w.y;
+    const int new_x = std::clamp(mx - drag_x, -static_cast<int>(w.width) + 32,
+                                 static_cast<int>(screen_w) - 32);
+    const int new_y =
+        std::clamp(my - drag_y, 0, static_cast<int>(screen_h) - TITLE_H);
+
+    if (new_x != prev_x || new_y != prev_y) {
+      w.x = new_x;
+      w.y = new_y;
+      mark_dirty(prev_x - 1, prev_y - 1, prev_x + static_cast<int>(w.width) + 1,
+                 prev_y + TITLE_H + static_cast<int>(w.height) + 1);
+      mark_window_dirty(w);
     }
-    if (!left) dragging = false;
-    old_left = left;
-    if (left_changed || mx != previous_cursor_x || my != previous_cursor_y) {
-        mark_dirty(previous_cursor_x - 7, previous_cursor_y - 7,
-                   previous_cursor_x + 8, previous_cursor_y + 8);
-        mark_dirty(mx - 7, my - 7, mx + 8, my + 8);
-    }
+  }
+
+  if (!left)
+    dragging = false;
+  old_left = left;
+  if (left_changed || mx != prev_mx || my != prev_my) {
+    mark_dirty(prev_mx - 7, prev_my - 7, prev_mx + 8, prev_my + 8);
+    mark_dirty(mx - 7, my - 7, mx + 8, my + 8);
+  }
 }
 
-void take_damage_locked(RenderWindow* rendered_windows, size_t& rendered_count,
-                        int& left, int& top, int& right, int& bottom) {
-    if (!damage_valid) return;
-    left = damage_left;
-    top = damage_top;
-    right = damage_right;
-    bottom = damage_bottom;
-    rendered_count = 0;
+bool take_damage_locked(RenderWindow *rendered_windows, size_t &rendered_count,
+                        int &left, int &top, int &right, int &bottom) {
+  if (!damage_valid)
+    return false;
 
-    // Iterate using z-order sequence
-    for (size_t z_idx = 0; z_idx < window_count; ++z_idx) {
-        const size_t i = z_order[z_idx];
-        Window& w = windows[i];
-        if (!w.alive) continue;
-        RenderWindow& snapshot = rendered_windows[rendered_count++];
-        snapshot.owner = &w; snapshot.thread_id = w.thread_id;
-        copy_name(snapshot.title, w.title);
-        snapshot.pixels = w.has_frame ? w.pixels[w.front_index] : nullptr;
-        snapshot.width = w.width; snapshot.height = w.height;
-        snapshot.x = w.x; snapshot.y = w.y;
-        snapshot.buffer_index = w.front_index;
-        snapshot.focused = (z_idx == focused_index_in_z);
-        w.render_index = w.front_index;
-    }
-    damage_valid = false;
+  left = std::clamp(damage_left, 0, static_cast<int>(screen_w));
+  top = std::clamp(damage_top, 0, static_cast<int>(screen_h));
+  right = std::clamp(damage_right, 0, static_cast<int>(screen_w));
+  bottom = std::clamp(damage_bottom, 0, static_cast<int>(screen_h));
+  damage_valid = false;
+
+  if (left >= right || top >= bottom)
+    return false;
+
+  rendered_count = 0;
+  for (size_t z = 0; z < window_count; ++z) {
+    auto &w = windows[z_order[z]];
+    if (!w.alive)
+      continue;
+    auto &s = rendered_windows[rendered_count++];
+    s.owner = &w;
+    s.thread_id = w.thread_id;
+    s.title = w.title;
+    s.pixels = w.has_frame ? w.pixels[w.front_index] : nullptr;
+    s.width = w.width;
+    s.height = w.height;
+    s.x = w.x;
+    s.y = w.y;
+    s.buffer_index = w.front_index;
+    s.focused = (z == focused_index_in_z);
+    w.render_index = w.front_index;
+  }
+  return true;
 }
 
-void release_render_buffers(const RenderWindow* rendered_windows, size_t rendered_count) {
-    SpinlockGuard guard(compositor_lock);
-    for (size_t i = 0; i < rendered_count; ++i) {
-        const RenderWindow& snapshot = rendered_windows[i];
-        Window& w = *snapshot.owner;
-        if (w.thread_id == snapshot.thread_id &&
-            w.render_index == snapshot.buffer_index) {
-            w.render_index = INVALID_BUFFER;
-        }
-        if (!w.alive && w.render_index == INVALID_BUFFER && w.write_index == INVALID_BUFFER) {
-            free_window_pixels(w);
-        }
-    }
+void release_render_buffers(const RenderWindow *rendered_windows,
+                            size_t rendered_count) {
+  SpinlockGuard guard(compositor_lock);
+  for (size_t i = 0; i < rendered_count; ++i) {
+    const auto &s = rendered_windows[i];
+    auto &w = *s.owner;
+    if (w.thread_id == s.thread_id && w.render_index == s.buffer_index)
+      w.render_index = INVALID_BUFFER;
+    if (!w.alive && w.render_index == INVALID_BUFFER &&
+        w.write_index == INVALID_BUFFER)
+      free_window_pixels(w);
+  }
 }
-}
+
+} // namespace
 
 bool initialize() {
-    if (!Kernel::Drivers::Framebuffer::valid()) return false;
-    screen_w = Kernel::Drivers::Framebuffer::width();
-    screen_h = Kernel::Drivers::Framebuffer::height();
-    if (screen_w < 240 || screen_h < 160) return false;
-    return desktop.init(0, 0, screen_w, screen_h);
+  if (!Kernel::Drivers::Framebuffer::valid())
+    return false;
+  screen_w = Kernel::Drivers::Framebuffer::width();
+  screen_h = Kernel::Drivers::Framebuffer::height();
+  return (screen_w >= 240 && screen_h >= 160) &&
+         desktop.init(0, 0, screen_w, screen_h);
 }
 
-int register_window(uint64_t thread_id, const char* title, bool launcher,
+int register_window(uint64_t thread_id, const char *title, bool launcher,
                     uint32_t width, uint32_t height) {
-    SpinlockGuard guard(compositor_lock);
-    if (!desktop.valid() || !thread_id) return -1;
-
-    size_t slot = window_count;
-    for (size_t i = 0; i < window_count; ++i) {
-        if (windows[i].thread_id == thread_id && windows[i].alive) {
-            // Find its current z-order position to return focus index
-            for (size_t z = 0; z < window_count; ++z) {
-                if (z_order[z] == i) return static_cast<int>(z);
-            }
-            return static_cast<int>(i);
-        } else if (!windows[i].alive && slot == window_count) {
-            slot = i;
-        }
-    }
-    if (slot == window_count && window_count == MAX_WINDOWS) return -1;
-
-    const uint32_t margin = launcher ? 24 : 0;
-    if (!width) width = launcher ? (screen_w > 48 ? screen_w - 48 : screen_w) : 320;
-    if (!height) height = launcher ? (screen_h > 100 ? screen_h - 100 : screen_h - TITLE_H - 2) : 200;
-    const uint32_t max_width = screen_w > 2 ? screen_w - 2 : screen_w;
-    const uint32_t max_height = screen_h > TITLE_H + 2 ? screen_h - TITLE_H - 2 : screen_h;
-    if (width > max_width) width = max_width;
-    if (height > max_height) height = max_height;
-
-    uint32_t* frames[FRAME_BUFFER_COUNT]{};
-    Window& recycled = windows[slot];
-    const bool can_reuse = slot < window_count && recycled.width == width &&
-                           recycled.height == height &&
-                           recycled.render_index == INVALID_BUFFER &&
-                           recycled.write_index == INVALID_BUFFER;
-    if (can_reuse) {
-        for (size_t i = 0; i < FRAME_BUFFER_COUNT; ++i) frames[i] = recycled.pixels[i];
-    } else {
-        if (slot < window_count) free_window_pixels(recycled);
-        if (!allocate_frames(width, height, frames)) return -1;
-    }
-    const size_t frame_bytes = static_cast<size_t>(width) * height * sizeof(uint32_t);
-    if (can_reuse)
-        for (uint32_t* frame : frames) memset(frame, 0, frame_bytes);
-
-    Window& w = windows[slot];
-    w.thread_id = thread_id;
-    copy_name(w.title, title);
-    for (size_t i = 0; i < FRAME_BUFFER_COUNT; ++i)
-        w.pixels[i] = frames[i];
-    w.front_index = 0; w.render_index = w.write_index = INVALID_BUFFER;
-    w.width = width; w.height = height;
-    const int offset = static_cast<int>(slot * 26);
-    w.x = margin + offset;
-    w.y = (launcher ? 42 : 48) + offset;
-    if (w.x + static_cast<int>(width) > static_cast<int>(screen_w)) w.x = 0;
-    if (w.y + static_cast<int>(height) + TITLE_H > static_cast<int>(screen_h)) w.y = 30;
-    w.alive = true;
-    w.has_frame = false;
-
-    if (slot == window_count) {
-        z_order[window_count] = slot;
-        ++window_count;
-    }
-    bring_to_front(slot);
-    mark_window_dirty(w);
-    return static_cast<int>(focused_index_in_z);
+  SpinlockGuard guard(compositor_lock);
+  return register_window_locked(thread_id, title, launcher, width, height);
 }
 
 bool request_window_size(uint64_t thread_id, uint32_t requested_width,
-                         uint32_t requested_height, uint32_t* actual_width,
-                         uint32_t* actual_height) {
-    if (!thread_id || !requested_width || !requested_height || !actual_width || !actual_height) return false;
-    SpinlockGuard guard(compositor_lock);
-    Window* window = find_window(thread_id);
-    if (!window) return false;
+                         uint32_t requested_height, uint32_t *actual_width,
+                         uint32_t *actual_height) {
+  if (!thread_id || !requested_width || !requested_height || !actual_width ||
+      !actual_height)
+    return false;
 
-    uint32_t width = requested_width;
-    uint32_t height = requested_height;
-    const uint32_t max_width = screen_w > 2 ? screen_w - 2 : screen_w;
-    const uint32_t max_height = screen_h > TITLE_H + 32 ? screen_h - TITLE_H - 32 : screen_h;
-    if (width > max_width) width = max_width;
-    if (height > max_height) height = max_height;
-    if (window->width == width && window->height == height) {
-        *actual_width = width;
-        *actual_height = height;
-        return true;
-    }
+  SpinlockGuard guard(compositor_lock);
+  auto *window = find_window(thread_id);
+  if (!window) {
+    if (register_window_locked(thread_id, "App", false, requested_width,
+                               requested_height) < 0)
+      return false;
+    window = find_window(thread_id);
+    if (!window)
+      return false;
+    *actual_width = window->width;
+    *actual_height = window->height;
+    return true;
+  }
 
-    if (window->render_index != INVALID_BUFFER || window->write_index != INVALID_BUFFER) {
-        *actual_width = window->width;
-        *actual_height = window->height;
-        return true;
-    }
-
-    uint32_t* frames[FRAME_BUFFER_COUNT]{};
-    while (width >= 120 && height >= 80) {
-        if (allocate_frames(width, height, frames)) break;
-        if (width >= height && width > 120) width = width * 3 / 4;
-        else if (height > 80) height = height * 3 / 4;
-        else break;
-    }
-    if (!frames[0]) {
-        *actual_width = window->width;
-        *actual_height = window->height;
-        return true;
-    }
-
-    mark_window_dirty(*window);
-    for (size_t i = 0; i < FRAME_BUFFER_COUNT; ++i) {
-        kfree(window->pixels[i]);
-        window->pixels[i] = frames[i];
-    }
-    window->width = width;
-    window->height = height;
-    window->front_index = 0;
-    window->has_frame = false;
-    window->x = static_cast<int>((screen_w - width) / 2);
-    window->y = 30 + static_cast<int>((screen_h - 30 - TITLE_H - height) / 2);
-    mark_window_dirty(*window);
+  const uint32_t width = requested_width;
+  const uint32_t height = requested_height;
+  if (window->width == width && window->height == height) {
     *actual_width = width;
     *actual_height = height;
     return true;
+  }
+
+  std::array<uint32_t *, FRAME_BUFFER_COUNT> frames{};
+  if (!allocate_frames(width, height, frames)) {
+    *actual_width = window->width;
+    *actual_height = window->height;
+    return true;
+  }
+
+  mark_window_dirty(*window);
+  free_window_pixels(*window);
+  window->pixels = frames;
+  window->width = width;
+  window->height = height;
+  window->front_index = 0;
+  window->render_index = INVALID_BUFFER;
+  window->write_index = INVALID_BUFFER;
+  window->has_frame = false;
+
+  window->x = (screen_w > width) ? static_cast<int>((screen_w - width) / 2) : 0;
+  window->y =
+      (screen_h > height + TITLE_H + 30)
+          ? (30 + static_cast<int>((screen_h - 30 - TITLE_H - height) / 2))
+          : 30;
+
+  mark_window_dirty(*window);
+  *actual_width = width;
+  *actual_height = height;
+  return true;
 }
 
 void unregister_window(uint64_t thread_id) {
-    SpinlockGuard guard(compositor_lock);
-    for (size_t i = 0; i < window_count; ++i) {
-        if (windows[i].thread_id != thread_id) continue;
-        mark_window_dirty(windows[i]);
-        windows[i].alive = false;
-        if (windows[i].render_index == INVALID_BUFFER && windows[i].write_index == INVALID_BUFFER) {
-            free_window_pixels(windows[i]);
-        }
-
-        remove_from_z_order(i);
-        return;
+  SpinlockGuard guard(compositor_lock);
+  for (size_t i = 0; i < MAX_WINDOWS; ++i) {
+    if (windows[i].alive && windows[i].thread_id == thread_id) {
+      unregister_window_index(i);
+      return;
     }
+  }
 }
 
-bool present(uint64_t thread_id, const uint32_t* pixels, uint32_t width, uint32_t height, uint32_t pitch) {
-    if (!pixels || !width || !height) return false;
+bool present(uint64_t thread_id, const uint32_t *pixels, uint32_t width,
+             uint32_t height, uint32_t pitch) {
+  if (!pixels || !width || !height)
+    return false;
 
-    uint32_t* destination = nullptr;
-    uint32_t destination_width = 0;
-    int write_index = -1;
-    Window* target_window = nullptr;
+  uint32_t *destination = nullptr;
+  uint32_t destination_width = 0;
+  int write_index = -1;
+  Window *target_window = nullptr;
 
-    {
-        SpinlockGuard guard(compositor_lock);
-        for (size_t i = 0; i < window_count; ++i) {
-            Window& w = windows[i];
-            if (w.thread_id != thread_id) continue;
-            if (!w.alive) return true;
-            if (width != w.width || height != w.height || pitch < width * sizeof(uint32_t)) return true;
-            for (size_t buffer = 0; buffer < FRAME_BUFFER_COUNT; ++buffer) {
-                if (buffer != w.front_index && buffer != w.render_index &&
-                    buffer != w.write_index) {
-                    write_index = static_cast<int>(buffer);
-                    break;
-                }
-            }
-            if (write_index < 0) return true;
-            destination = w.pixels[write_index];
-            destination_width = w.width;
-            w.write_index = static_cast<uint8_t>(write_index);
-            target_window = &w;
-            break;
-        }
-    }
-    if (write_index < 0 || !destination || !target_window) return false;
-
-    memcpy(destination, pixels, static_cast<size_t>(destination_width) * height * sizeof(uint32_t));
-
+  {
     SpinlockGuard guard(compositor_lock);
-    if (target_window->write_index == write_index &&
-        target_window->pixels[write_index] == destination) {
-        target_window->write_index = INVALID_BUFFER;
-        if (target_window->alive) {
-            target_window->front_index = static_cast<uint8_t>(write_index);
-            target_window->has_frame = true;
-            mark_window_dirty(*target_window);
-        } else if (target_window->render_index == INVALID_BUFFER) free_window_pixels(*target_window);
+    for (auto &w : windows) {
+      if (!w.alive || w.thread_id != thread_id)
+        continue;
+      if (width != w.width || height != w.height ||
+          pitch < width * sizeof(uint32_t))
+        return true;
+      for (size_t b = 0; b < FRAME_BUFFER_COUNT; ++b) {
+        if (b != w.front_index && b != w.render_index && b != w.write_index) {
+          write_index = static_cast<int>(b);
+          break;
+        }
+      }
+      if (write_index < 0)
+        return true;
+      destination = w.pixels[write_index];
+      destination_width = w.width;
+      w.write_index = static_cast<uint8_t>(write_index);
+      target_window = &w;
+      break;
     }
-    return true;
+  }
+  if (write_index < 0 || !destination || !target_window)
+    return false;
+
+  memcpy(destination, pixels,
+         static_cast<size_t>(destination_width) * height * sizeof(uint32_t));
+
+  SpinlockGuard guard(compositor_lock);
+  if (target_window->write_index == write_index) {
+    target_window->write_index = INVALID_BUFFER;
+    if (target_window->alive) {
+      target_window->front_index = static_cast<uint8_t>(write_index);
+      if (!target_window->has_frame) {
+        target_window->has_frame = true;
+        mark_window_dirty(*target_window);
+      } else {
+        mark_dirty(target_window->x, target_window->y + TITLE_H,
+                   target_window->x + static_cast<int>(target_window->width),
+                   target_window->y + TITLE_H +
+                       static_cast<int>(target_window->height));
+      }
+    } else if (target_window->render_index == INVALID_BUFFER) {
+      free_window_pixels(*target_window);
+    }
+  }
+  return true;
 }
 
 bool has_window(uint64_t thread_id) {
-    SpinlockGuard guard(compositor_lock);
-    return find_window(thread_id);
+  SpinlockGuard guard(compositor_lock);
+  return find_window(thread_id) != nullptr;
 }
 
-bool title_is_open(const char* title) {
-    SpinlockGuard guard(compositor_lock);
-    if (!title) return false;
-    for (size_t i = 0; i < window_count; ++i) {
-        if (!windows[i].alive) continue;
-        size_t j = 0;
-        while (title[j] && windows[i].title[j] && title[j] == windows[i].title[j]) ++j;
-        if (!title[j] && !windows[i].title[j]) return true;
-    }
+bool title_is_open(const char *title) {
+  if (!title)
     return false;
+  SpinlockGuard guard(compositor_lock);
+  for (const auto &w : windows) {
+    if (w.alive && strcmp(w.title, title) == 0)
+      return true;
+  }
+  return false;
 }
 
 bool has_keyboard_focus(uint64_t thread_id) {
-    SpinlockGuard guard(compositor_lock);
-    return window_count > 0 && focused_index_in_z < window_count &&
-           windows[z_order[focused_index_in_z]].alive &&
-           windows[z_order[focused_index_in_z]].thread_id == thread_id;
+  SpinlockGuard guard(compositor_lock);
+  return window_count > 0 && focused_index_in_z < window_count &&
+         windows[z_order[focused_index_in_z]].alive &&
+         windows[z_order[focused_index_in_z]].thread_id == thread_id;
 }
 
-bool get_window_position(uint64_t thread_id, int* x, int* y) {
-    if (!thread_id || !x || !y) return false;
-    SpinlockGuard guard(compositor_lock);
-    Window* window = find_window(thread_id);
-    if (!window) return false;
-    *x = window->x;
-    *y = window->y + TITLE_H;
+bool get_window_position(uint64_t thread_id, int *x, int *y) {
+  if (!thread_id || !x || !y)
+    return false;
+  SpinlockGuard guard(compositor_lock);
+  if (auto *w = find_window(thread_id)) {
+    *x = w->x;
+    *y = w->y + TITLE_H;
     return true;
+  }
+  return false;
 }
 
 void run() {
-    RenderWindow rendered_windows[MAX_WINDOWS]{};
-    for (;;) {
-        size_t rendered_count = 0;
-        int left = 0, top = 0, right = 0, bottom = 0;
-        {
-            SpinlockGuard guard(compositor_lock);
-            if (cursor_x < 0) {
-                cursor_x = Kernel::Drivers::Mouse::get_x();
-                cursor_y = Kernel::Drivers::Mouse::get_y();
-                mark_full_dirty();
-            }
-            mouse_update();
-            take_damage_locked(rendered_windows, rendered_count, left, top, right, bottom);
-        }
-        if (rendered_count) {
-            render_region(rendered_windows, rendered_count, left, top, right, bottom);
-            release_render_buffers(rendered_windows, rendered_count);
-        }
-        Kernel::Scheduler::thread_sleep_ms(4);
+  std::array<RenderWindow, MAX_WINDOWS> rendered_windows{};
+  for (;;) {
+    size_t rendered_count = 0;
+    int left = 0, top = 0, right = 0, bottom = 0;
+    bool has_damage = false;
+    {
+      SpinlockGuard guard(compositor_lock);
+      if (cursor_x < 0) {
+        cursor_x = Kernel::Drivers::Mouse::get_x();
+        cursor_y = Kernel::Drivers::Mouse::get_y();
+        mark_dirty(0, 0, screen_w, screen_h);
+      }
+      mouse_update();
+      has_damage = take_damage_locked(rendered_windows.data(), rendered_count,
+                                      left, top, right, bottom);
     }
+    if (has_damage) {
+      render_region(rendered_windows.data(), rendered_count, left, top, right,
+                    bottom);
+      if (rendered_count)
+        release_render_buffers(rendered_windows.data(), rendered_count);
+    }
+    Kernel::Scheduler::thread_sleep_ms(4);
+  }
 }
-}
+
+} // namespace Kernel::Graphics::WindowManager

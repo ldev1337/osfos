@@ -16,3 +16,6 @@ rust/**/target/
 
 # Local editor and tool state
 compile_commands.json
+
+.clang-format
+.clang-tidy

@@ -1,6 +1,6 @@
 #pragma once
-#include <stddef.h>
-#include <stdint.h>
+#include <cstddef>
+#include <cstdint>
 
 namespace Kernel::FS {
 
@@ -17,52 +17,55 @@ constexpr uint32_t VFS_MAX_ENTRIES = 256;
 constexpr uint32_t VFS_MAX_OPEN_FILES = 32;
 
 struct VFSFile {
-    char name[VFS_MAX_PATH];
-    uint32_t size;
+  char name[VFS_MAX_PATH];
+  uint32_t size;
 
-    uint32_t start_lba;
-    bool exists;
-    uint32_t entry_index;
-    bool is_directory;
+  uint32_t start_lba;
+  bool exists;
+  uint32_t entry_index;
+  bool is_directory;
 };
 
 class VFS {
 public:
-    static void init();
-    static bool mount();
-    static bool format(uint32_t total_sectors);
-    static bool is_mounted();
+  static void init();
+  static bool mount();
+  static bool format(uint32_t total_sectors);
+  static bool is_mounted();
 
-    static bool find_file(const char* filename, VFSFile* out_file);
-    static int read_file(const VFSFile* file, void* buffer, uint32_t length, uint32_t offset);
+  static bool find_file(const char *filename, VFSFile *out_file);
+  static int read_file(const VFSFile *file, void *buffer, uint32_t length,
+                       uint32_t offset);
 
-    static void* vfs_open(const char* path, const char* mode);
-    static void* vfs_open(const char* path);
-    static size_t vfs_read(void* buffer, size_t size, size_t count, void* stream);
-    static size_t vfs_write(const void* buffer, size_t size, size_t count, void* stream);
-    static int vfs_close(void* stream);
-    static long vfs_tell(void* stream);
-    static int vfs_seek(void* stream, long offset, int whence);
-    static size_t vfs_size(void* stream);
-    static int vfs_mkdir(const char* pathname, int mode);
-    static int vfs_remove(const char* pathname);
-    static int vfs_rename(const char* oldpath, const char* newpath);
-    static bool vfs_exists(const char* path);
-    static bool get_file_at(uint32_t index, VFSFile* out_file);
+  static void *vfs_open(const char *path, const char *mode);
+  static void *vfs_open(const char *path);
+  static size_t vfs_read(void *buffer, size_t size, size_t count, void *stream);
+  static size_t vfs_write(const void *buffer, size_t size, size_t count,
+                          void *stream);
+  static int vfs_close(void *stream);
+  static long vfs_tell(void *stream);
+  static int vfs_seek(void *stream, long offset, int whence);
+  static size_t vfs_size(void *stream);
+  static int vfs_mkdir(const char *pathname, int mode);
+  static int vfs_remove(const char *pathname);
+  static int vfs_rename(const char *oldpath, const char *newpath);
+  static bool vfs_exists(const char *path);
+  static bool get_file_at(uint32_t index, VFSFile *out_file);
 };
 
-}
+} // namespace Kernel::FS
 
 extern "C" {
-void* kernel_vfs_open(const char* path, const char* mode);
-size_t kernel_vfs_read(void* ptr, size_t size, size_t nmemb, void* stream);
-size_t kernel_vfs_write(const void* ptr, size_t size, size_t nmemb, void* stream);
-int kernel_vfs_close(void* stream);
-long kernel_vfs_tell(void* stream);
-int kernel_vfs_seek(void* stream, long offset, int whence);
-size_t kernel_vfs_size(void* stream);
-int kernel_vfs_mkdir(const char* path, int mode);
-int kernel_vfs_remove(const char* path);
-int kernel_vfs_rename(const char* oldpath, const char* newpath);
-bool kernel_vfs_exists(const char* path);
+void *kernel_vfs_open(const char *path, const char *mode);
+size_t kernel_vfs_read(void *ptr, size_t size, size_t nmemb, void *stream);
+size_t kernel_vfs_write(const void *ptr, size_t size, size_t nmemb,
+                        void *stream);
+int kernel_vfs_close(void *stream);
+long kernel_vfs_tell(void *stream);
+int kernel_vfs_seek(void *stream, long offset, int whence);
+size_t kernel_vfs_size(void *stream);
+int kernel_vfs_mkdir(const char *path, int mode);
+int kernel_vfs_remove(const char *path);
+int kernel_vfs_rename(const char *oldpath, const char *newpath);
+bool kernel_vfs_exists(const char *path);
 }
