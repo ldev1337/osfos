@@ -3,6 +3,8 @@
 #include <kernel/memory/heap.h>
 #include <kernel/memory/pmm.h>
 
+#include <algorithm>
+
 namespace Kernel::Memory {
 
 KernelHeap g_kheap;
@@ -10,7 +12,7 @@ static Spinlock heap_lock;
 
 void KernelHeap::init(void *heap_start_addr, size_t initial_size) {
   const uint64_t flags = heap_lock.lock_irqsave();
-  start_node = (HeapNode *)heap_start_addr;
+  start_node = static_cast<HeapNode *>(heap_start_addr);
   total_heap_size = initial_size;
   start_node->size = initial_size - sizeof(HeapNode);
   start_node->is_free = true;
@@ -48,9 +50,7 @@ void *KernelHeap::kmalloc(size_t size) {
       current->is_free = false;
       used_bytes_count += current->size;
 
-      if (used_bytes_count > peak_used_size) {
-        peak_used_size = used_bytes_count;
-      }
+      peak_used_size = std::max(used_bytes_count, peak_used_size);
 
       void *result = (void *)((size_t)current + sizeof(HeapNode));
       heap_lock.unlock_irqrestore(flags);
@@ -129,7 +129,8 @@ bool KernelHeap::validate() const {
   const uint64_t flags = heap_lock.lock_irqsave();
   HeapNode *current = start_node;
   while (current != nullptr) {
-    if (current->next && (size_t)current >= (size_t)current->next) {
+    if ((current->next != nullptr) &&
+        (size_t)current >= (size_t)current->next) {
       heap_lock.unlock_irqrestore(flags);
       return false;
     }

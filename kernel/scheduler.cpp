@@ -2,6 +2,8 @@
 #include <kernel/drivers/pit.h>
 #include <kernel/memory/heap.h>
 #include <kernel/scheduler.h>
+#include <stddef.h>
+#include <stdint.h>
 
 namespace Kernel::Scheduler {
 
@@ -24,7 +26,13 @@ struct RunQueue {
 };
 
 static constexpr unsigned PRIORITY_COUNT = 3;
-static constexpr size_t THREAD_STACK_SIZE = 256 * 1024;
+static constexpr size_t THREAD_STACK_SIZE = 64 * 1024;
+static constexpr size_t IDLE_STACK_SIZE = 16 * 1024;
+static constexpr size_t XSTATE_SIZE = 832;
+static constexpr uint32_t MAX_SLEEP_MS = 0x7FFFFFFFU;
+static constexpr unsigned HIGH_PRIORITY_DISPATCH_LIMIT = 7;
+static constexpr unsigned IDLE_PRIORITY_DISPATCH_INTERVAL = 63;
+
 static RunQueue run_queues[PRIORITY_COUNT] = {};
 static uint32_t ready_priorities = 0;
 static unsigned consecutive_high_dispatches = 0;
@@ -35,6 +43,11 @@ static ThreadControlBlock *thread_list_head = nullptr;
 static ThreadControlBlock *reap_pending = nullptr;
 static ThreadControlBlock *sleep_queue = nullptr;
 static uint64_t next_pid = 1;
+static bool scheduler_initialized = false;
+
+// The idle task has a permanent static stack and is never put on a run queue.
+alignas(64) static uint8_t idle_stack_mem[IDLE_STACK_SIZE];
+static ThreadControlBlock idle_thread_storage{};
 
 extern "C" void thread_start_wrapper(void (*)());
 extern "C" void thread_start_arg_wrapper(ThreadEntry, void *);
@@ -50,21 +63,34 @@ static inline void irq_restore(uint64_t flags) {
     __asm__ volatile("sti" : : : "memory");
 }
 
+// Used while the caller already has interrupts disabled. The saved interrupt
+// frame therefore resumes with IF=0, and irq_restore() runs after the thread
+// has actually been scheduled again.
+static inline void yield_with_irqs_disabled() {
+  __asm__ volatile("int $0x30" ::: "memory");
+}
+
 static inline unsigned priority_index(ThreadPriority priority) {
-  unsigned index = static_cast<unsigned>(priority);
+  const unsigned index = static_cast<unsigned>(priority);
   return index < PRIORITY_COUNT ? index
                                 : static_cast<unsigned>(ThreadPriority::NORMAL);
 }
 
 static void enqueue(ThreadControlBlock *thread) {
-  unsigned index = priority_index(thread->priority);
+  if (!thread || thread == idle_thread ||
+      thread->state == ThreadState::TERMINATED)
+    return;
+
+  const unsigned index = priority_index(thread->priority);
   RunQueue &queue = run_queues[index];
   thread->next = nullptr;
   thread->state = ThreadState::READY;
+
   if (queue.tail)
     queue.tail->next = thread;
   else
     queue.head = thread;
+
   queue.tail = thread;
   ready_priorities |= 1u << index;
 }
@@ -74,8 +100,20 @@ static void insert_sleeper(ThreadControlBlock *thread) {
   while (*link &&
          static_cast<int32_t>((*link)->wake_tick - thread->wake_tick) <= 0)
     link = &(*link)->sleep_next;
+
   thread->sleep_next = *link;
   *link = thread;
+}
+
+static void remove_sleeper(ThreadControlBlock *thread) {
+  ThreadControlBlock **link = &sleep_queue;
+  while (*link && *link != thread)
+    link = &(*link)->sleep_next;
+
+  if (*link == thread) {
+    *link = thread->sleep_next;
+    thread->sleep_next = nullptr;
+  }
 }
 
 static void wake_sleepers(uint32_t now) {
@@ -90,10 +128,18 @@ static void wake_sleepers(uint32_t now) {
 }
 
 static ThreadControlBlock *dequeue_priority(unsigned index) {
-  if (!(ready_priorities & (1u << index)))
+  if (index >= PRIORITY_COUNT || !(ready_priorities & (1u << index)))
     return nullptr;
+
   RunQueue &queue = run_queues[index];
   ThreadControlBlock *thread = queue.head;
+  if (!thread) {
+    // Repair a stale bit instead of dereferencing a null queue head.
+    queue.tail = nullptr;
+    ready_priorities &= ~(1u << index);
+    return nullptr;
+  }
+
   queue.head = thread->next;
   if (!queue.head) {
     queue.tail = nullptr;
@@ -107,27 +153,32 @@ static ThreadControlBlock *dequeue_fair() {
   constexpr unsigned HIGH = static_cast<unsigned>(ThreadPriority::HIGH);
   constexpr unsigned NORMAL = static_cast<unsigned>(ThreadPriority::NORMAL);
   constexpr unsigned IDLE = static_cast<unsigned>(ThreadPriority::IDLE);
+
   const bool high_ready = (ready_priorities & (1u << HIGH)) != 0;
   const bool normal_ready = (ready_priorities & (1u << NORMAL)) != 0;
   const bool idle_ready = (ready_priorities & (1u << IDLE)) != 0;
 
-  // Even explicitly created idle-priority work receives a bounded share.
+  // Background-priority work gets one dispatch after a bounded interval.
   if (idle_ready && (high_ready || normal_ready) &&
-      dispatches_since_idle >= 63) {
+      dispatches_since_idle >= IDLE_PRIORITY_DISPATCH_INTERVAL) {
     dispatches_since_idle = 0;
     consecutive_high_dispatches = 0;
     return dequeue_priority(IDLE);
   }
 
-  // Bound normal-thread starvation under a continuously busy high queue.
-  if (high_ready && normal_ready && consecutive_high_dispatches >= 7) {
+  // A continuously busy HIGH queue cannot starve NORMAL work.
+  if (high_ready && normal_ready &&
+      consecutive_high_dispatches >= HIGH_PRIORITY_DISPATCH_LIMIT) {
     consecutive_high_dispatches = 0;
     if (idle_ready)
       ++dispatches_since_idle;
+    else
+      dispatches_since_idle = 0;
     return dequeue_priority(NORMAL);
   }
+
   if (high_ready) {
-    if (consecutive_high_dispatches < 7)
+    if (consecutive_high_dispatches < HIGH_PRIORITY_DISPATCH_LIMIT)
       ++consecutive_high_dispatches;
     if (idle_ready)
       ++dispatches_since_idle;
@@ -135,6 +186,7 @@ static ThreadControlBlock *dequeue_fair() {
       dispatches_since_idle = 0;
     return dequeue_priority(HIGH);
   }
+
   consecutive_high_dispatches = 0;
   if (normal_ready) {
     if (idle_ready)
@@ -143,8 +195,9 @@ static ThreadControlBlock *dequeue_fair() {
       dispatches_since_idle = 0;
     return dequeue_priority(NORMAL);
   }
+
   dispatches_since_idle = 0;
-  return dequeue_priority(IDLE);
+  return idle_ready ? dequeue_priority(IDLE) : nullptr;
 }
 
 static void register_thread(ThreadControlBlock *thread) {
@@ -160,17 +213,23 @@ static void unlink_thread(ThreadControlBlock *thread) {
     thread->registry_prev->registry_next = thread->registry_next;
   else
     thread_list_head = thread->registry_next;
+
   if (thread->registry_next)
     thread->registry_next->registry_prev = thread->registry_prev;
 }
 
 static void reap_deferred() {
-  uint64_t flags = irq_save();
+  const uint64_t flags = irq_save();
   ThreadControlBlock *pending = reap_pending;
   reap_pending = nullptr;
+
   for (ThreadControlBlock *thread = pending; thread; thread = thread->reap_next)
     unlink_thread(thread);
+
   irq_restore(flags);
+
+  // Never free a thread's stack from its own execution context. The scheduler
+  // puts exited threads here; a later creator reclaims them safely.
   while (pending) {
     ThreadControlBlock *thread = pending;
     pending = pending->reap_next;
@@ -180,26 +239,33 @@ static void reap_deferred() {
   }
 }
 
-static void initialize_context(ThreadControlBlock *thread, uint64_t *stack_mem,
-                               void (*entry)(), ThreadEntry arg_entry,
-                               void *argument) {
-  // A context is restored with iretq, so there is no call instruction to
-  // push a return address before the thread entry wrapper runs.  Make the
-  // wrapper's incoming RSP look like a normal SysV function entry (8 mod
-  // 16); it will then have a 16-byte aligned stack before calling the app.
-  uint64_t stack_top =
-      (reinterpret_cast<uint64_t>(stack_mem) + THREAD_STACK_SIZE) &
-      ~uint64_t(0xF);
+static bool initialize_context(ThreadControlBlock *thread, uint64_t *stack_mem,
+                               size_t stack_size, void (*entry)(),
+                               ThreadEntry arg_entry, void *argument) {
+  if (!thread || !stack_mem ||
+      stack_size < sizeof(ThreadContext) + XSTATE_SIZE + 64)
+    return false;
+
+  const uint64_t stack_begin = reinterpret_cast<uint64_t>(stack_mem);
+  uint64_t stack_top = (stack_begin + stack_size) & ~uint64_t{0xF};
+
+  // iretq does not push a return address. SysV function entry expects RSP=8
+  // modulo 16, so make the wrapper's initial stack look like a call entry.
   if ((stack_top & 0xF) == 0)
     stack_top -= sizeof(uint64_t);
-  ThreadContext *context =
+
+  auto *context =
       reinterpret_cast<ThreadContext *>(stack_top - sizeof(ThreadContext));
+  const uint64_t xstate_addr =
+      (reinterpret_cast<uint64_t>(context) - XSTATE_SIZE) & ~uint64_t{0x3F};
+  if (xstate_addr < stack_begin)
+    return false;
+
   memset(context, 0, sizeof(ThreadContext));
-  uint64_t xstate_addr =
-      (reinterpret_cast<uint64_t>(context) - 832) & ~uint64_t(0x3F);
-  memset(reinterpret_cast<void *>(xstate_addr), 0, 832);
+  memset(reinterpret_cast<void *>(xstate_addr), 0, XSTATE_SIZE);
   *reinterpret_cast<uint16_t *>(xstate_addr) = 0x037F;
   *reinterpret_cast<uint32_t *>(xstate_addr + 24) = 0x1F80;
+
   context->xstate_ptr = xstate_addr;
   if (arg_entry) {
     context->rdi = reinterpret_cast<uint64_t>(arg_entry);
@@ -209,6 +275,7 @@ static void initialize_context(ThreadControlBlock *thread, uint64_t *stack_mem,
     context->rdi = reinterpret_cast<uint64_t>(entry);
     context->rip = reinterpret_cast<uint64_t>(thread_start_wrapper);
   }
+
   context->cs = 0x08;
   context->rflags = 0x202;
   context->rsp = stack_top;
@@ -216,6 +283,12 @@ static void initialize_context(ThreadControlBlock *thread, uint64_t *stack_mem,
   thread->stack_mem = stack_mem;
   thread->rsp = reinterpret_cast<uint64_t>(context);
   thread->reap_next = nullptr;
+  return true;
+}
+
+[[noreturn]] static void idle_loop() {
+  for (;;)
+    __asm__ volatile("sti; hlt" ::: "memory");
 }
 
 extern "C" void thread_start_wrapper(void (*entry)()) {
@@ -229,13 +302,36 @@ extern "C" void thread_start_arg_wrapper(ThreadEntry entry, void *argument) {
 }
 
 void scheduler_init() {
-  uint64_t flags = irq_save();
-  ThreadControlBlock *main_tcb =
+  if (scheduler_initialized)
+    return;
+
+  // Heap allocation happens before disabling interrupts; the critical section
+  // below only publishes fully initialized scheduler state.
+  auto *main_tcb =
       static_cast<ThreadControlBlock *>(kmalloc(sizeof(ThreadControlBlock)));
-  if (!main_tcb) {
-    irq_restore(flags);
+  if (!main_tcb)
+    return;
+
+  memset(main_tcb, 0, sizeof(ThreadControlBlock));
+  memset(&idle_thread_storage, 0, sizeof(ThreadControlBlock));
+
+  if (!initialize_context(&idle_thread_storage,
+                          reinterpret_cast<uint64_t *>(idle_stack_mem),
+                          IDLE_STACK_SIZE, idle_loop, nullptr, nullptr)) {
+    kfree(main_tcb);
     return;
   }
+
+  idle_thread_storage.id = 0;
+  idle_thread_storage.state = ThreadState::READY;
+  idle_thread_storage.priority = ThreadPriority::IDLE;
+  idle_thread_storage.stop_requested = false;
+  idle_thread_storage.wake_tick = 0;
+  idle_thread_storage.timed_wait = false;
+  idle_thread_storage.sleep_next = nullptr;
+  idle_thread_storage.next = nullptr;
+
+  const uint64_t flags = irq_save();
   main_tcb->id = next_pid++;
   main_tcb->state = ThreadState::RUNNING;
   main_tcb->priority = ThreadPriority::IDLE;
@@ -247,38 +343,51 @@ void scheduler_init() {
   main_tcb->wake_tick = 0;
   main_tcb->timed_wait = false;
   main_tcb->sleep_next = nullptr;
+
   register_thread(main_tcb);
-  idle_thread = main_tcb;
+  idle_thread = &idle_thread_storage;
   current_thread = main_tcb;
+  scheduler_initialized = true;
   irq_restore(flags);
 }
 
 static auto create_thread(void (*entry)(), ThreadEntry arg_entry,
                           void *argument, ThreadPriority priority) -> int {
+  if (!scheduler_initialized || (!entry && !arg_entry))
+    return -1;
+
   reap_deferred();
+
   auto *thread =
       static_cast<ThreadControlBlock *>(kmalloc(sizeof(ThreadControlBlock)));
-  if (thread == nullptr) {
+  if (!thread)
     return -1;
-  }
+
   auto *stack_mem = static_cast<uint64_t *>(kmalloc(THREAD_STACK_SIZE));
-  if (stack_mem == nullptr) {
+  if (!stack_mem) {
     kfree(thread);
     return -1;
   }
 
-  initialize_context(thread, stack_mem, entry, arg_entry, argument);
-  thread->priority = priority;
+  memset(thread, 0, sizeof(ThreadControlBlock));
+  if (!initialize_context(thread, stack_mem, THREAD_STACK_SIZE, entry,
+                          arg_entry, argument)) {
+    kfree(stack_mem);
+    kfree(thread);
+    return -1;
+  }
+
+  thread->priority = static_cast<ThreadPriority>(priority_index(priority));
   thread->stop_requested = false;
   thread->wake_tick = 0;
   thread->timed_wait = false;
   thread->sleep_next = nullptr;
 
-  uint64_t flags = irq_save();
+  const uint64_t flags = irq_save();
   thread->id = next_pid++;
   register_thread(thread);
   enqueue(thread);
-  int id = static_cast<int>(thread->id);
+  const int id = static_cast<int>(thread->id);
   irq_restore(flags);
   return id;
 }
@@ -297,13 +406,22 @@ auto current_thread_id() -> uint64_t {
 }
 
 void terminate_thread(uint64_t id) {
-  uint64_t flags = irq_save();
+  const uint64_t flags = irq_save();
   for (ThreadControlBlock *thread = thread_list_head; thread;
        thread = thread->registry_next) {
-    if (thread->id == id && thread->state != ThreadState::TERMINATED) {
-      thread->stop_requested = true;
-      break;
+    if (thread->id != id || thread->state == ThreadState::TERMINATED)
+      continue;
+
+    thread->stop_requested = true;
+    // A cooperative termination request must also release a blocked thread,
+    // otherwise it may never get CPU time to observe should_stop().
+    if (thread->state == ThreadState::BLOCKED) {
+      if (thread->timed_wait)
+        remove_sleeper(thread);
+      thread->timed_wait = false;
+      enqueue(thread);
     }
+    break;
   }
   irq_restore(flags);
 }
@@ -315,68 +433,77 @@ auto should_stop() -> bool {
 void thread_yield() { __asm__ volatile("int $0x30" ::: "memory"); }
 
 void thread_exit() {
-  uint64_t flags = irq_save();
-  if (current_thread) {
+  (void)irq_save();
+  if (current_thread && current_thread != idle_thread) {
     current_thread->state = ThreadState::TERMINATED;
     current_thread->timed_wait = false;
   }
-  irq_restore(flags);
-  thread_yield();
+
+  // The current stack is reclaimed later by reap_deferred(), never here.
+  yield_with_irqs_disabled();
   for (;;)
-    __asm__ volatile("hlt");
+    __asm__ volatile("hlt" ::: "memory");
 }
 
 void thread_block() {
-  uint64_t flags = irq_save();
-  if (current_thread) {
-    current_thread->state = ThreadState::BLOCKED;
-    current_thread->timed_wait = false;
+  const uint64_t flags = irq_save();
+  if (!current_thread || current_thread == idle_thread) {
+    irq_restore(flags);
+    return;
   }
+
+  current_thread->state = ThreadState::BLOCKED;
+  current_thread->timed_wait = false;
+  yield_with_irqs_disabled();
   irq_restore(flags);
-  thread_yield();
 }
 
 auto thread_block_if(bool (*should_block)()) -> bool {
   if (!should_block)
     return false;
-  uint64_t flags = irq_save();
-  if (!should_block()) {
+
+  const uint64_t flags = irq_save();
+  if (!current_thread || current_thread == idle_thread || !should_block()) {
     irq_restore(flags);
     return false;
   }
-  if (current_thread) {
-    current_thread->state = ThreadState::BLOCKED;
-    current_thread->timed_wait = false;
-  }
+
+  current_thread->state = ThreadState::BLOCKED;
+  current_thread->timed_wait = false;
+  yield_with_irqs_disabled();
   irq_restore(flags);
-  thread_yield();
   return true;
 }
 
 void thread_sleep_ms(uint32_t milliseconds) {
   if (milliseconds == 0)
     milliseconds = 1;
-  uint64_t flags = irq_save();
-  if (current_thread) {
-    if (milliseconds > 0x7FFFFFFFu)
-      milliseconds = 0x7FFFFFFFu;
-    current_thread->wake_tick =
-        Kernel::Drivers::PIT::get_ticks() + milliseconds;
-    current_thread->timed_wait = true;
-    insert_sleeper(current_thread);
-    current_thread->state = ThreadState::BLOCKED;
+  if (milliseconds > MAX_SLEEP_MS)
+    milliseconds = MAX_SLEEP_MS;
+
+  const uint64_t flags = irq_save();
+  if (!current_thread || current_thread == idle_thread) {
+    irq_restore(flags);
+    return;
   }
+
+  const uint32_t now = static_cast<uint32_t>(Kernel::Drivers::PIT::get_ticks());
+  current_thread->wake_tick = now + milliseconds;
+  current_thread->timed_wait = true;
+  insert_sleeper(current_thread);
+  current_thread->state = ThreadState::BLOCKED;
+
+  // Keep interrupts disabled until int 0x30 has saved this blocked context.
+  yield_with_irqs_disabled();
   irq_restore(flags);
-  thread_yield();
 }
 
 void unblock_io_threads() {
-  uint64_t flags = irq_save();
+  const uint64_t flags = irq_save();
   for (ThreadControlBlock *thread = thread_list_head; thread;
        thread = thread->registry_next) {
-    if (thread->state == ThreadState::BLOCKED)
-      if (!thread->timed_wait)
-        enqueue(thread);
+    if (thread->state == ThreadState::BLOCKED && !thread->timed_wait)
+      enqueue(thread);
   }
   irq_restore(flags);
 }
@@ -384,42 +511,40 @@ void unblock_io_threads() {
 auto should_preempt() -> bool { return true; }
 
 auto schedule(uint64_t current_rsp) -> uint64_t {
-  if (!current_thread)
+  ThreadControlBlock *previous = current_thread;
+  if (!previous)
     return current_rsp;
 
-  current_thread->rsp = current_rsp;
-  wake_sleepers(Kernel::Drivers::PIT::get_ticks());
-  ThreadControlBlock *previous = current_thread;
-  if (previous->state == ThreadState::RUNNING) {
-    if (!ready_priorities)
-      return previous->rsp;
-    enqueue(previous);
-  } else if (previous->state == ThreadState::TERMINATED) {
-    previous->reap_next = reap_pending;
-    reap_pending = previous;
+  previous->rsp = current_rsp;
+  wake_sleepers(static_cast<uint32_t>(Kernel::Drivers::PIT::get_ticks()));
+
+  const bool previous_is_idle = previous == idle_thread;
+  if (!previous_is_idle) {
+    if (previous->state == ThreadState::RUNNING) {
+      // No other runnable work: avoid touching queues or switching contexts.
+      if (ready_priorities == 0)
+        return previous->rsp;
+      enqueue(previous);
+    } else if (previous->state == ThreadState::TERMINATED) {
+      previous->reap_next = reap_pending;
+      reap_pending = previous;
+    }
+  } else if (ready_priorities == 0) {
+    // The real idle task simply resumes its sti; hlt loop.
+    previous->state = ThreadState::RUNNING;
+    return previous->rsp;
   }
 
   ThreadControlBlock *next = dequeue_fair();
-  if (next == previous) {
-    previous->state = ThreadState::RUNNING;
-    current_thread = previous;
-    return previous->rsp;
-  }
+  if (!next)
+    next = idle_thread;
+
   if (!next) {
-    if (previous->state == ThreadState::READY) {
-      previous->state = ThreadState::RUNNING;
-      current_thread = previous;
+    // scheduler_init() normally guarantees an idle context. Retain a safe
+    // fallback for partially initialized boot paths.
+    if (previous->state == ThreadState::RUNNING)
       return previous->rsp;
-    }
-    if (previous->state != ThreadState::RUNNING && idle_thread &&
-        idle_thread != previous) {
-      idle_thread->state = ThreadState::RUNNING;
-      current_thread = idle_thread;
-      return idle_thread->rsp;
-    }
-    previous->state = ThreadState::RUNNING;
-    current_thread = previous;
-    return previous->rsp;
+    return current_rsp;
   }
 
   next->state = ThreadState::RUNNING;

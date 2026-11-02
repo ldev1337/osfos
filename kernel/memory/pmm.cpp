@@ -26,7 +26,7 @@ void PMM::init(void *bitmap_buffer, size_t mem_size) {
   const uint64_t flags = pmm_lock.lock_irqsave();
   total_pages = mem_size / PAGE_SIZE;
   bitmap_size = total_pages / 8;
-  bitmap = (uint8_t *)bitmap_buffer;
+  bitmap = static_cast<uint8_t *>(bitmap_buffer);
   used_pages_count = 0;
 
   memset(bitmap, 0, bitmap_size);
@@ -73,7 +73,7 @@ void *PMM::allocate_page_block(size_t count) {
 }
 
 void PMM::free_page_block(void *ptr, size_t count) {
-  if (!ptr || count == 0)
+  if ((ptr == nullptr) || count == 0)
     return;
   const uint64_t flags = pmm_lock.lock_irqsave();
   size_t start_page = (size_t)ptr / PAGE_SIZE;

@@ -1,15 +1,15 @@
 #pragma once
 
 #include <atomic>
-#include <stdint.h>
+#include <cstdint>
 
 class Spinlock {
 private:
   std::atomic_flag m_lock = ATOMIC_FLAG_INIT;
 
-  static inline uint64_t cpu_save_flags_and_cli() {
+  static auto cpu_save_flags_and_cli() -> uint64_t {
     uint64_t rflags;
-#if defined(__x86_64__)
+#ifdef __x86_64__
     __asm__ volatile("pushfq\n\t"
                      "pop %0\n\t"
                      "cli"
@@ -20,9 +20,9 @@ private:
     return rflags;
   }
 
-  static inline void cpu_restore_flags(uint64_t rflags) {
-#if defined(__x86_64__)
-    if (rflags & (1 << 9)) {
+  static void cpu_restore_flags(uint64_t rflags) {
+#ifdef __x86_64__
+    if ((rflags & (1 << 9)) != 0U) {
       __asm__ volatile("sti" : : : "memory");
     } else {
       __asm__ volatile("cli" : : : "memory");
@@ -35,17 +35,17 @@ public:
   ~Spinlock() = default;
 
   Spinlock(const Spinlock &) = delete;
-  Spinlock &operator=(const Spinlock &) = delete;
+  auto operator=(const Spinlock &) -> Spinlock & = delete;
 
   void lock() {
     while (m_lock.test_and_set(std::memory_order_acquire)) {
-#if defined(__x86_64__)
+#ifdef __x86_64__
       __builtin_ia32_pause();
 #endif
     }
   }
 
-  uint64_t lock_irqsave() {
+  auto lock_irqsave() -> uint64_t {
     uint64_t flags = cpu_save_flags_and_cli();
     lock();
     return flags;
@@ -72,5 +72,5 @@ public:
   ~SpinlockGuard() { m_spinlock.unlock_irqrestore(m_flags); }
 
   SpinlockGuard(const SpinlockGuard &) = delete;
-  SpinlockGuard &operator=(const SpinlockGuard &) = delete;
+  auto operator=(const SpinlockGuard &) -> SpinlockGuard & = delete;
 };

@@ -16,6 +16,13 @@ constexpr uint32_t VFS_MAX_PATH = 112;
 constexpr uint32_t VFS_MAX_ENTRIES = 256;
 constexpr uint32_t VFS_MAX_OPEN_FILES = 32;
 
+// ── Sector cache configuration ──────────────────────────────────────────────
+// Number of sector-sized cache slots.  Each slot holds one sector in RAM and
+// avoids repeated ATA reads/writes for the same LBA.  32 slots = 16 KiB.
+#ifndef VFS_CACHE_SLOTS
+#define VFS_CACHE_SLOTS 32u
+#endif
+
 struct VFSFile {
   char name[VFS_MAX_PATH];
   uint32_t size;
@@ -51,6 +58,10 @@ public:
   static int vfs_rename(const char *oldpath, const char *newpath);
   static bool vfs_exists(const char *path);
   static bool get_file_at(uint32_t index, VFSFile *out_file);
+
+  // Flush all deferred writes (cache, FAT, dirty dir entries) to disk.
+  // Called automatically by vfs_close; can also be called explicitly.
+  static bool vfs_sync();
 };
 
 } // namespace Kernel::FS
@@ -68,4 +79,5 @@ int kernel_vfs_mkdir(const char *path, int mode);
 int kernel_vfs_remove(const char *path);
 int kernel_vfs_rename(const char *oldpath, const char *newpath);
 bool kernel_vfs_exists(const char *path);
+int kernel_vfs_sync();
 }

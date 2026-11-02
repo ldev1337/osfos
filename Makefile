@@ -25,7 +25,8 @@ CFLAGS_CPP_PERF = $(COMMON_FLAGS) $(FLAG_O3) $(CPP_STD)
 CFLAGS_C_SIZE   = $(COMMON_FLAGS) $(FLAG_Oz) $(C_STD)
 CFLAGS_CPP_SIZE = $(COMMON_FLAGS) $(FLAG_Oz) $(CPP_STD)
 CFLAGS_DOOM_SIZE = $(COMMON_FLAGS) $(FLAG_FM) $(C_STD) \
-	-fno-ident -fno-unwind-tables -fno-asynchronous-unwind-tables
+	-fno-ident -fno-unwind-tables -fno-asynchronous-unwind-tables \
+	-fvisibility=hidden
 
 LDFLAGS = -static -ffreestanding -nostdlib -flto=full -fuse-ld=lld \
 	-Wl,-O3 -Wl,-n -Wl \

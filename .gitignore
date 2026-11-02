@@ -19,3 +19,8 @@ compile_commands.json
 
 .clang-format
 .clang-tidy
+
+.asm-lsp.toml
+
+.vscode/
+.cache/

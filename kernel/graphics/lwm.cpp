@@ -248,9 +248,9 @@ int register_window_locked(uint64_t thread_id, const char *title, bool launcher,
   }
 
   const uint32_t margin = launcher ? 24 : 0;
-  if (!width)
+  if (width == 0U)
     width = launcher ? (screen_w > 48 ? screen_w - 48 : screen_w) : 320;
-  if (!height)
+  if (height == 0U)
     height = launcher
                  ? (screen_h > 100 ? screen_h - 100 : screen_h - TITLE_H - 2)
                  : 200;
@@ -258,7 +258,7 @@ int register_window_locked(uint64_t thread_id, const char *title, bool launcher,
   std::array<uint32_t *, FRAME_BUFFER_COUNT> frames{};
   auto &recycled = windows[slot];
   const bool can_reuse = recycled.width == width && recycled.height == height &&
-                         recycled.pixels[0] &&
+                         (recycled.pixels[0] != nullptr) &&
                          recycled.render_index == INVALID_BUFFER &&
                          recycled.write_index == INVALID_BUFFER;
   if (can_reuse) {
@@ -593,14 +593,14 @@ bool present(uint64_t thread_id, const uint32_t *pixels, uint32_t width,
       break;
     }
   }
-  if (write_index < 0 || !destination || !target_window)
+  if (write_index < 0 || (destination == nullptr) || (target_window == nullptr))
     return false;
 
   memcpy(destination, pixels,
          static_cast<size_t>(destination_width) * height * sizeof(uint32_t));
 
   SpinlockGuard guard(compositor_lock);
-  if (target_window->write_index == write_index) {
+  if (std::cmp_equal(target_window->write_index, write_index)) {
     target_window->write_index = INVALID_BUFFER;
     if (target_window->alive) {
       target_window->front_index = static_cast<uint8_t>(write_index);
