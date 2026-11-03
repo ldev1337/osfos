@@ -1,11 +1,9 @@
 #include <kernel/cpu.h>
+#include <kernel/drivers/e1000.h>
 #include <kernel/drivers/keyboard.h>
 #include <kernel/drivers/mouse.h>
 #include <kernel/drivers/pit.h>
 #include <kernel/scheduler.h>
-#include <x86intrin.h>
-
-extern "C" void kernel_printf(const char *fmt, ...);
 
 struct GDTEntry {
   uint16_t limit_low;
@@ -71,6 +69,10 @@ extern "C" uint64_t c_interrupt_handler(struct InterruptFrame *frame) {
 
   if (vector == 0x2C) {
     Kernel::Drivers::Mouse::handle_interrupt();
+  }
+
+  if (vector == (0x20 + Kernel::Drivers::E1000::get_irq())) {
+    Kernel::Drivers::E1000::handle_interrupt();
   }
 
   if (vector >= 0x20 && vector <= 0x2F) {
@@ -229,122 +231,4 @@ void cpu_init(void) {
       __asm__ volatile("hlt");
     }
   }
-}
-
-#define KEEP_MEMORY_BARRIER() __asm__ volatile("" ::: "memory")
-
-__attribute__((noinline, target("sse2,no-avx"))) static void
-test_routine_sse2_context_switch(uint8_t *save_area, size_t iterations) {
-  for (size_t i = 0; i < iterations; ++i) {
-    __asm__ volatile("movaps %%xmm0, 0(%0)\n\t"
-                     "movaps %%xmm1, 16(%0)\n\t"
-                     "movaps %%xmm2, 32(%0)\n\t"
-                     "movaps %%xmm3, 48(%0)\n\t"
-                     "movaps %%xmm4, 64(%0)\n\t"
-                     "movaps %%xmm5, 80(%0)\n\t"
-                     "movaps %%xmm6, 96(%0)\n\t"
-                     "movaps %%xmm7, 112(%0)\n\t"
-                     "movaps %%xmm8, 128(%0)\n\t"
-                     "movaps %%xmm9, 144(%0)\n\t"
-                     "movaps %%xmm10, 160(%0)\n\t"
-                     "movaps %%xmm11, 176(%0)\n\t"
-                     "movaps %%xmm12, 192(%0)\n\t"
-                     "movaps %%xmm13, 208(%0)\n\t"
-                     "movaps %%xmm14, 224(%0)\n\t"
-                     "movaps %%xmm15, 240(%0)\n\t"
-
-                     "movaps 0(%0), %%xmm0\n\t"
-                     "movaps 16(%0), %%xmm1\n\t"
-                     "movaps 32(%0), %%xmm2\n\t"
-                     "movaps 48(%0), %%xmm3\n\t"
-                     "movaps 64(%0), %%xmm4\n\t"
-                     "movaps 80(%0), %%xmm5\n\t"
-                     "movaps 96(%0), %%xmm6\n\t"
-                     "movaps 112(%0), %%xmm7\n\t"
-                     "movaps 128(%0), %%xmm8\n\t"
-                     "movaps 144(%0), %%xmm9\n\t"
-                     "movaps 160(%0), %%xmm10\n\t"
-                     "movaps 176(%0), %%xmm11\n\t"
-                     "movaps 192(%0), %%xmm12\n\t"
-                     "movaps 208(%0), %%xmm13\n\t"
-                     "movaps 224(%0), %%xmm14\n\t"
-                     "movaps 240(%0), %%xmm15\n\t"
-                     :
-                     : "r"(save_area)
-                     : "memory", "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5",
-                       "xmm6", "xmm7", "xmm8", "xmm9", "xmm10", "xmm11",
-                       "xmm12", "xmm13", "xmm14", "xmm15");
-  }
-  KEEP_MEMORY_BARRIER();
-}
-
-__attribute__((noinline, target("avx2"))) static void
-test_routine_avx2_context_switch(uint8_t *save_area, size_t iterations) {
-  for (size_t i = 0; i < iterations; ++i) {
-    __asm__ volatile("vmovaps %%ymm0, 0(%0)\n\t"
-                     "vmovaps %%ymm1, 32(%0)\n\t"
-                     "vmovaps %%ymm2, 64(%0)\n\t"
-                     "vmovaps %%ymm3, 96(%0)\n\t"
-                     "vmovaps %%ymm4, 128(%0)\n\t"
-                     "vmovaps %%ymm5, 160(%0)\n\t"
-                     "vmovaps %%ymm6, 192(%0)\n\t"
-                     "vmovaps %%ymm7, 224(%0)\n\t"
-                     "vmovaps %%ymm8, 256(%0)\n\t"
-                     "vmovaps %%ymm9, 288(%0)\n\t"
-                     "vmovaps %%ymm10, 320(%0)\n\t"
-                     "vmovaps %%ymm11, 352(%0)\n\t"
-                     "vmovaps %%ymm12, 384(%0)\n\t"
-                     "vmovaps %%ymm13, 416(%0)\n\t"
-                     "vmovaps %%ymm14, 448(%0)\n\t"
-                     "vmovaps %%ymm15, 480(%0)\n\t"
-
-                     "vmovaps 0(%0), %%ymm0\n\t"
-                     "vmovaps 32(%0), %%ymm1\n\t"
-                     "vmovaps 64(%0), %%ymm2\n\t"
-                     "vmovaps 96(%0), %%ymm3\n\t"
-                     "vmovaps 128(%0), %%ymm4\n\t"
-                     "vmovaps 160(%0), %%ymm5\n\t"
-                     "vmovaps 192(%0), %%ymm6\n\t"
-                     "vmovaps 224(%0), %%ymm7\n\t"
-                     "vmovaps 256(%0), %%ymm8\n\t"
-                     "vmovaps 288(%0), %%ymm9\n\t"
-                     "vmovaps 320(%0), %%ymm10\n\t"
-                     "vmovaps 352(%0), %%ymm11\n\t"
-                     "vmovaps 384(%0), %%ymm12\n\t"
-                     "vmovaps 416(%0), %%ymm13\n\t"
-                     "vmovaps 448(%0), %%ymm14\n\t"
-                     "vmovaps 480(%0), %%ymm15\n\t"
-                     :
-                     : "r"(save_area)
-                     : "memory", "ymm0", "ymm1", "ymm2", "ymm3", "ymm4", "ymm5",
-                       "ymm6", "ymm7", "ymm8", "ymm9", "ymm10", "ymm11",
-                       "ymm12", "ymm13", "ymm14", "ymm15");
-  }
-  KEEP_MEMORY_BARRIER();
-}
-
-void run_vector_benchmark(void) {
-  _Alignas(64) uint8_t tcb_save_buffer[512];
-  const size_t SWITCH_ITERATIONS = 100000;
-  unsigned int aux;
-
-  uint64_t start_sse2 = __rdtscp(&aux);
-  test_routine_sse2_context_switch(tcb_save_buffer, SWITCH_ITERATIONS);
-  uint64_t total_cycles_sse2 = __rdtscp(&aux) - start_sse2;
-
-  uint64_t start_avx2 = __rdtscp(&aux);
-  test_routine_avx2_context_switch(tcb_save_buffer, SWITCH_ITERATIONS);
-  uint64_t total_cycles_avx2 = __rdtscp(&aux) - start_avx2;
-
-  uint64_t avg_sse2 = total_cycles_sse2 / SWITCH_ITERATIONS;
-  uint64_t avg_avx2 = total_cycles_avx2 / SWITCH_ITERATIONS;
-
-  kernel_printf("=== CONTEXT SWITCH COST BENCHMARK ===\n");
-  kernel_printf("Iterations: %zu switches\n", SWITCH_ITERATIONS);
-  kernel_printf(
-      "SSE2 (XMM 256B) -> Avg: %llu cycles/switch | Total: %llu cycles\n",
-      avg_sse2, total_cycles_sse2);
-  kernel_printf(
-      "AVX2 (YMM 512B) -> Avg: %llu cycles/switch | Total: %llu cycles\n",
-      avg_avx2, total_cycles_avx2);
 }

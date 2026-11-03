@@ -19,6 +19,7 @@ constexpr uint32_t COLOR_PMM = 0x42A5F5;  // Cyan/Blue for PMM
 constexpr uint32_t COLOR_HEAP = 0x66BB6A; // Green for Heap
 constexpr uint32_t COLOR_PEAK = 0xF4511E; // Red/Orange for Peak Memory
 constexpr uint32_t COLOR_GRID = 0x22313E;
+constexpr uint32_t COLOR_CHECK = 0xFFD166;
 
 constexpr size_t HISTORY_CAPACITY = 60;
 
@@ -134,6 +135,8 @@ void run_memory_analyzer() {
   MemoryHistory history;
   bool running = true;
   uint32_t sample_tick = 0;
+  bool has_verified_sample = false;
+  Kernel::Memory::SystemMemoryInfo verified_info{};
 
   while (running && !Kernel::Scheduler::should_stop()) {
     while (Keyboard::available()) {
@@ -143,6 +146,10 @@ void run_memory_analyzer() {
       if (c == 'q' || c == 27) {
         running = false;
         break;
+      }
+      if (c == 'r') {
+        verified_info = Kernel::Memory::g_kheap.get_system_memory_info(true);
+        has_verified_sample = true;
       }
     }
     if (!running)
@@ -185,13 +192,23 @@ void run_memory_analyzer() {
                    COLOR_HEAP);
 
     // Heap Peak Memory Panel
-    vfb.fill_rounded_rect(16, 116, w - 32, 28, 4, CARD_BG);
-    text(vfb, 24, 124, "HEAP PEAK USED:", TEXT_MUTED);
-    draw_formatted_size(vfb, 150, 124, mem_info.heap_peak_size, COLOR_PEAK);
+    vfb.fill_rounded_rect(16, 116, w - 32, 40, 4, CARD_BG);
+    text(vfb, 24, 122, "HEAP PEAK:", TEXT_MUTED);
+    draw_formatted_size(vfb, 112, 122, mem_info.heap_peak_size, COLOR_PEAK);
+    if (has_verified_sample) {
+      text(vfb, 24, 140, "VERIFIED PMM:", TEXT_MUTED);
+      draw_formatted_size(vfb, 120, 140, verified_info.pmm_used_memory,
+                          COLOR_CHECK);
+      text(vfb, 234, 140, "HEAP:", TEXT_MUTED);
+      draw_formatted_size(vfb, 282, 140, verified_info.heap_used_size,
+                          COLOR_CHECK);
+    } else {
+      text(vfb, 24, 140, "PRESS [R] TO VERIFY TRUE RAM USAGE", COLOR_CHECK);
+    }
 
     // Real-Time Analytics Graph Area
     int32_t gx = 16;
-    int32_t gy = 152;
+    int32_t gy = 164;
     int32_t gw = w - 32;
     int32_t gh = h - 168;
 

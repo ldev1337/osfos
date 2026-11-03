@@ -16,7 +16,7 @@ void PMM::set_bit(size_t page_index, bool value) {
     bitmap[byte_index] &= ~(1 << bit_index);
 }
 
-bool PMM::get_bit(size_t page_index) {
+bool PMM::get_bit(size_t page_index) const {
   size_t byte_index = page_index / 8;
   size_t bit_index = page_index % 8;
   return (bitmap[byte_index] & (1 << bit_index)) != 0;
@@ -91,6 +91,17 @@ void PMM::free_page_block(void *ptr, size_t count) {
     used_pages_count = 0;
   }
   pmm_lock.unlock_irqrestore(flags);
+}
+
+size_t PMM::recheck_used_memory() const {
+  const uint64_t flags = pmm_lock.lock_irqsave();
+  size_t used_pages = 0;
+  for (size_t page = 0; page < total_pages; ++page) {
+    if (get_bit(page))
+      ++used_pages;
+  }
+  pmm_lock.unlock_irqrestore(flags);
+  return used_pages * PAGE_SIZE;
 }
 
 } // namespace Kernel::Memory

@@ -13,23 +13,20 @@ namespace Kernel::FS {
 
 constexpr uint32_t VFS_SECTOR_SIZE = 512;
 constexpr uint32_t VFS_MAX_PATH = 112;
-constexpr uint32_t VFS_MAX_ENTRIES = 256;
 constexpr uint32_t VFS_MAX_OPEN_FILES = 32;
+constexpr uint32_t VFS_MAX_INODES = 1024;
 
 // ── Sector cache configuration ──────────────────────────────────────────────
-// Number of sector-sized cache slots.  Each slot holds one sector in RAM and
-// avoids repeated ATA reads/writes for the same LBA.  32 slots = 16 KiB.
 #ifndef VFS_CACHE_SLOTS
-#define VFS_CACHE_SLOTS 32u
+#define VFS_CACHE_SLOTS 64u
 #endif
 
 struct VFSFile {
   char name[VFS_MAX_PATH];
   uint32_t size;
-
-  uint32_t start_lba;
+  uint32_t start_lba; // Primary extent start or inode number context
   bool exists;
-  uint32_t entry_index;
+  uint32_t entry_index; // Inode index
   bool is_directory;
 };
 
@@ -59,8 +56,7 @@ public:
   static bool vfs_exists(const char *path);
   static bool get_file_at(uint32_t index, VFSFile *out_file);
 
-  // Flush all deferred writes (cache, FAT, dirty dir entries) to disk.
-  // Called automatically by vfs_close; can also be called explicitly.
+  // Flush all deferred writes (cache, bitmaps, dirty inodes) to disk.
   static bool vfs_sync();
 };
 

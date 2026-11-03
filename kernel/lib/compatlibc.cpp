@@ -1,5 +1,7 @@
 
 #include <kernel/fs/laziofs.h>
+#include <kernel/lib/appcommon.h>
+#include <kernel/scheduler.h>
 #include <kernel/shell/shell.h>
 #include <limits.h>
 #include <stdarg.h>
@@ -448,6 +450,8 @@ double strtod(const char *nptr, char **endptr) {
 }
 
 void exit(int status) {
+  if (Kernel::Scheduler::is_current_thread_application())
+    Kernel::AppCommon::exit(status);
   kernel_printf("\nProcess exited with status %d\n", status);
   for (;;) {
     __asm__ volatile("cli; hlt");

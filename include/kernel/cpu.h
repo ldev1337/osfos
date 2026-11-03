@@ -10,7 +10,6 @@ void cpu_init(void);
 #ifdef __cplusplus
 }
 
-void run_vector_benchmark(void);
 #endif
 
 static inline

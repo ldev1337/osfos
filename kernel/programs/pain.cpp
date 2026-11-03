@@ -400,13 +400,8 @@ void run() {
       static_cast<uint32_t *>(kmalloc(canvas_w * canvas_h * sizeof(uint32_t)));
   uint32_t *backup_canvas =
       static_cast<uint32_t *>(kmalloc(canvas_w * canvas_h * sizeof(uint32_t)));
-  if ((canvas == nullptr) || (backup_canvas == nullptr)) {
-    if (canvas != nullptr)
-      kfree(canvas);
-    if (backup_canvas != nullptr)
-      kfree(backup_canvas);
+  if ((canvas == nullptr) || (backup_canvas == nullptr))
     return;
-  }
   for (size_t i = 0; i < canvas_w * canvas_h; ++i)
     canvas[i] = COLOR_CANVAS;
   memcpy(backup_canvas, canvas, canvas_w * canvas_h * sizeof(uint32_t));
@@ -674,8 +669,6 @@ void run() {
     vfb.flush();
   }
 
-  kfree(canvas);
-  kfree(backup_canvas);
 }
 
 } // namespace Kernel::Apps::Pain

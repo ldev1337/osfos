@@ -4,9 +4,18 @@
 #include <kernel/drivers/pit.h>
 #include <kernel/graphics/window_manager.h>
 #include <kernel/lib/appcommon.h>
+#include <kernel/memory/heap.h>
 #include <kernel/scheduler.h>
 
 namespace Kernel::AppCommon {
+
+[[noreturn]] void exit(int status) {
+  (void)status;
+  const uint64_t thread_id = Kernel::Scheduler::current_thread_id();
+  Kernel::Graphics::WindowManager::unregister_window(thread_id);
+  Kernel::Memory::g_kheap.free_thread_allocations(thread_id);
+  Kernel::Scheduler::thread_exit();
+}
 
 void text(Kernel::Graphics::VirtualFramebuffer &vfb, int32_t x, int32_t y,
           const char *s, uint32_t color) {

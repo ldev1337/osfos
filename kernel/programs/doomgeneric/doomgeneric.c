@@ -1,8 +1,10 @@
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "m_argv.h"
 
 #include "doomgeneric.h"
+#include "z_zone.h"
 
 pixel_t* DG_ScreenBuffer = NULL;
 
@@ -23,5 +25,12 @@ void doomgeneric_Create(int argc, char **argv)
 	DG_Init();
 
 	D_DoomMain ();
+}
+
+void doomgeneric_Shutdown(void)
+{
+	free(DG_ScreenBuffer);
+	DG_ScreenBuffer = NULL;
+	Z_Shutdown();
 }
 

@@ -405,6 +405,51 @@ auto current_thread_id() -> uint64_t {
   return current_thread ? current_thread->id : 0;
 }
 
+void mark_current_thread_as_application(const char *name) {
+  if (current_thread) {
+    current_thread->application_thread = true;
+    current_thread->application_start_ticks = Kernel::Drivers::PIT::get_ticks();
+    size_t index = 0;
+    if (name) {
+      while (name[index] && index + 1 < sizeof(current_thread->application_name)) {
+        current_thread->application_name[index] = name[index];
+        ++index;
+      }
+    }
+    current_thread->application_name[index] = '\0';
+  }
+}
+
+bool is_current_thread_application() {
+  return current_thread && current_thread->application_thread;
+}
+
+size_t get_application_tasks(ApplicationTaskInfo *tasks, size_t capacity) {
+  if (!tasks || capacity == 0)
+    return 0;
+
+  size_t count = 0;
+  const uint64_t flags = irq_save();
+  for (ThreadControlBlock *thread = thread_list_head;
+       thread && count < capacity; thread = thread->registry_next) {
+    if (!thread->application_thread ||
+        thread->state == ThreadState::TERMINATED)
+      continue;
+
+    ApplicationTaskInfo &task = tasks[count++];
+    task.id = thread->id;
+    task.start_ticks = thread->application_start_ticks;
+    size_t index = 0;
+    while (index + 1 < sizeof(task.name) && thread->application_name[index]) {
+      task.name[index] = thread->application_name[index];
+      ++index;
+    }
+    task.name[index] = '\0';
+  }
+  irq_restore(flags);
+  return count;
+}
+
 void terminate_thread(uint64_t id) {
   const uint64_t flags = irq_save();
   for (ThreadControlBlock *thread = thread_list_head; thread;
@@ -432,7 +477,7 @@ auto should_stop() -> bool {
 
 void thread_yield() { __asm__ volatile("int $0x30" ::: "memory"); }
 
-void thread_exit() {
+[[noreturn]] void thread_exit() {
   (void)irq_save();
   if (current_thread && current_thread != idle_thread) {
     current_thread->state = ThreadState::TERMINATED;

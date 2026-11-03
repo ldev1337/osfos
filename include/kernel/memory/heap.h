@@ -1,11 +1,13 @@
 #pragma once
 #include <cstddef>
+#include <cstdint>
 
 namespace Kernel::Memory {
 
 struct HeapNode {
   size_t size;
   bool is_free;
+  uint64_t owner_thread_id;
   HeapNode *next;
 };
 
@@ -31,6 +33,8 @@ public:
 
   void *kmalloc(size_t size);
   void kfree(void *ptr);
+  void free_thread_allocations(uint64_t thread_id);
+  size_t get_thread_allocated_size(uint64_t thread_id) const;
   void *krealloc(void *ptr, size_t size);
   void *kcalloc(size_t num, size_t size);
   void *kzalloc(size_t size);
@@ -42,7 +46,7 @@ public:
   size_t get_peak_used_size() const { return peak_used_size; }
   bool validate() const;
 
-  SystemMemoryInfo get_system_memory_info() const;
+  SystemMemoryInfo get_system_memory_info(bool recheck = false) const;
 };
 
 extern KernelHeap g_kheap;

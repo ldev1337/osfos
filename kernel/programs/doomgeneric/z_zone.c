@@ -18,6 +18,7 @@
 
 
 #include "z_zone.h"
+#include <stdlib.h>
 #include "i_system.h"
 #include "doomtype.h"
 
@@ -117,6 +118,15 @@ void Z_Init (void)
     block->tag = PU_FREE;
     
     block->size = mainzone->size - sizeof(memzone_t);
+}
+
+void Z_Shutdown (void)
+{
+    if (mainzone != NULL)
+    {
+        free(mainzone);
+        mainzone = NULL;
+    }
 }
 
 

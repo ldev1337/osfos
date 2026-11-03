@@ -69,6 +69,7 @@ struct atexit_listentry_s
 };
 
 static atexit_listentry_t *exit_funcs = NULL;
+extern void DG_RequestQuit(void);
 
 void I_AtExit(atexit_func_t func, boolean run_on_error)
 {
@@ -245,17 +246,15 @@ void I_BindVariables(void)
 
 void I_Quit (void)
 {
-    atexit_listentry_t *entry;
-
-    // Run through all exit functions
- 
-    entry = exit_funcs; 
-
-    while (entry != NULL)
+    while (exit_funcs != NULL)
     {
+        atexit_listentry_t *entry = exit_funcs;
+        exit_funcs = entry->next;
         entry->func();
-        entry = entry->next;
+        free(entry);
     }
+
+    DG_RequestQuit();
 
 #if ORIGCODE
     SDL_Quit();
@@ -466,7 +465,7 @@ void I_Error (char *error, ...)
 
     exit(-1);
 #else
-    exit(-1);
+    DG_RequestQuit();
 #endif
 }
 

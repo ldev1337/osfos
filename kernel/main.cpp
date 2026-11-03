@@ -1,13 +1,18 @@
 #include <kernel/cpu.h>
+#include <kernel/drivers/e1000.h>
 #include <kernel/drivers/framebuffer.h>
 #include <kernel/drivers/keyboard.h>
 #include <kernel/drivers/mouse.h>
 #include <kernel/drivers/pit.h>
 #include <kernel/graphics/window_manager.h>
+#include <kernel/lib/random.h>
 #include <kernel/memory/heap.h>
 #include <kernel/memory/pmm.h>
+#include <kernel/net/smoltcp_bridge.h>
 #include <kernel/scheduler.h>
 #include <kernel/shell/shell.h>
+
+extern "C" uint8_t _kernel_end[];
 
 struct multiboot_tag {
   uint32_t type;
@@ -77,7 +82,7 @@ extern "C" void main(unsigned long multiboot_info_addr) {
       {fb_addr, fb_width, fb_height, fb_pitch, fb_format});
 
   size_t total_ram = 4ULL * 1024 * 1024 * 1024;
-  void *bitmap_safe_addr = (void *)0x200000;
+  void *bitmap_safe_addr = (void *)_kernel_end;
   Kernel::Memory::g_pmm.init(bitmap_safe_addr, total_ram);
   for (size_t i = 0; i < 1024; i++) {
     Kernel::Memory::g_pmm.reserve_page(i);
@@ -97,6 +102,16 @@ extern "C" void main(unsigned long multiboot_info_addr) {
   Kernel::Drivers::Keyboard::init();
   Kernel::Drivers::Mouse::init();
   Kernel::Drivers::PIT::init(250);
+  if (Kernel::Drivers::E1000::detect_and_init()) {
+    uint8_t mac[6];
+    Kernel::Drivers::E1000::get_mac_address(mac);
+    uint64_t seed = Kernel::Lib::Random::rdtsc() ^
+            Kernel::Drivers::PIT::get_ticks();
+    for (size_t i = 0; i < 6; ++i)
+      seed = (seed << 8) ^ mac[i];
+    if (Kernel::Net::initialize(mac, seed) != 0)
+      kernel_printf("Network stack initialization failed.\n");
+  }
   if (window_manager_ready)
     Kernel::Scheduler::thread_create(Kernel::Graphics::WindowManager::run);
   Kernel::Scheduler::thread_create(Kernel::Shell::run);

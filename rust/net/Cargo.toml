@@ -1,0 +1,24 @@
+[package]
+name = "osfos-net"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "osfos_net"
+crate-type = ["staticlib"]
+
+[dependencies]
+smoltcp = { path = "../smoltcp", default-features = false, features = [
+    "medium-ethernet",
+    "proto-ipv4",
+    "socket-dhcpv4",
+    "socket-icmp",
+    "socket-tcp",
+    "socket-udp",
+] }
+
+[profile.release]
+opt-level = "z"
+lto = false
+codegen-units = 1
+panic = "abort"

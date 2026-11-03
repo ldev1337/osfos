@@ -2,6 +2,7 @@
 #include <arch/x86_64/string.h>
 #include <kernel/memory/heap.h>
 #include <kernel/memory/pmm.h>
+#include <kernel/scheduler.h>
 
 #include <algorithm>
 
@@ -16,6 +17,7 @@ void KernelHeap::init(void *heap_start_addr, size_t initial_size) {
   total_heap_size = initial_size;
   start_node->size = initial_size - sizeof(HeapNode);
   start_node->is_free = true;
+  start_node->owner_thread_id = 0;
   start_node->next = nullptr;
 
   used_bytes_count =
@@ -39,6 +41,7 @@ void *KernelHeap::kmalloc(size_t size) {
             (HeapNode *)((size_t)current + sizeof(HeapNode) + size);
         new_node->size = current->size - size - sizeof(HeapNode);
         new_node->is_free = true;
+        new_node->owner_thread_id = 0;
         new_node->next = current->next;
 
         current->size = size;
@@ -48,6 +51,7 @@ void *KernelHeap::kmalloc(size_t size) {
         used_bytes_count += sizeof(HeapNode);
       }
       current->is_free = false;
+      current->owner_thread_id = Kernel::Scheduler::current_thread_id();
       used_bytes_count += current->size;
 
       peak_used_size = std::max(used_bytes_count, peak_used_size);
@@ -69,6 +73,7 @@ void KernelHeap::kfree(void *ptr) {
   HeapNode *node = (HeapNode *)((size_t)ptr - sizeof(HeapNode));
   if (!node->is_free) {
     node->is_free = true;
+    node->owner_thread_id = 0;
     if (used_bytes_count >= node->size) {
       used_bytes_count -= node->size;
     }
@@ -87,6 +92,45 @@ void KernelHeap::kfree(void *ptr) {
     current = current->next;
   }
   heap_lock.unlock_irqrestore(flags);
+}
+
+void KernelHeap::free_thread_allocations(uint64_t thread_id) {
+  if (!thread_id)
+    return;
+
+  const uint64_t flags = heap_lock.lock_irqsave();
+  for (HeapNode *node = start_node; node; node = node->next) {
+    if (!node->is_free && node->owner_thread_id == thread_id) {
+      node->is_free = true;
+      node->owner_thread_id = 0;
+      if (used_bytes_count >= node->size)
+        used_bytes_count -= node->size;
+    }
+  }
+
+  for (HeapNode *node = start_node; node; node = node->next) {
+    while (node->is_free && node->next && node->next->is_free) {
+      node->size += sizeof(HeapNode) + node->next->size;
+      node->next = node->next->next;
+      if (used_bytes_count >= sizeof(HeapNode))
+        used_bytes_count -= sizeof(HeapNode);
+    }
+  }
+  heap_lock.unlock_irqrestore(flags);
+}
+
+size_t KernelHeap::get_thread_allocated_size(uint64_t thread_id) const {
+  if (!thread_id)
+    return 0;
+
+  size_t allocated_size = 0;
+  const uint64_t flags = heap_lock.lock_irqsave();
+  for (HeapNode *node = start_node; node; node = node->next) {
+    if (!node->is_free && node->owner_thread_id == thread_id)
+      allocated_size += node->size;
+  }
+  heap_lock.unlock_irqrestore(flags);
+  return allocated_size;
 }
 
 void *KernelHeap::krealloc(void *ptr, size_t size) {
@@ -140,16 +184,33 @@ bool KernelHeap::validate() const {
   return true;
 }
 
-SystemMemoryInfo KernelHeap::get_system_memory_info() const {
+SystemMemoryInfo KernelHeap::get_system_memory_info(bool recheck) const {
   SystemMemoryInfo info;
   info.pmm_total_memory = g_pmm.get_total_memory();
-  info.pmm_used_memory = g_pmm.get_used_memory();
-  info.pmm_free_memory = g_pmm.get_free_memory();
+  if (recheck) {
+    info.pmm_used_memory = g_pmm.recheck_used_memory();
+    info.pmm_free_memory = info.pmm_total_memory - info.pmm_used_memory;
+  } else {
+    info.pmm_used_memory = g_pmm.get_used_memory();
+    info.pmm_free_memory = g_pmm.get_free_memory();
+  }
 
+  const uint64_t flags = heap_lock.lock_irqsave();
   info.heap_total_size = total_heap_size;
   info.heap_used_size = used_bytes_count;
-  info.heap_free_size = total_heap_size - used_bytes_count;
+  if (recheck) {
+    size_t block_count = 0;
+    size_t allocated_bytes = 0;
+    for (HeapNode *node = start_node; node != nullptr; node = node->next) {
+      ++block_count;
+      if (!node->is_free)
+        allocated_bytes += node->size;
+    }
+    info.heap_used_size = allocated_bytes + block_count * sizeof(HeapNode);
+  }
+  info.heap_free_size = total_heap_size - info.heap_used_size;
   info.heap_peak_size = peak_used_size;
+  heap_lock.unlock_irqrestore(flags);
 
   return info;
 }

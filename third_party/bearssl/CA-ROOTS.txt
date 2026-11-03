@@ -1,0 +1,12 @@
+The HTTPS client embeds these root trust anchors for a deliberately small
+initial trust store. The anchor data was generated with BearSSL v0.6's
+`brssl ta` command from the official self-signed root certificates:
+
+- Google Trust Services GTS Root R1
+  https://pki.goog/repo/certs/gtsr1.pem
+- Internet Security Research Group ISRG Root X1
+  https://letsencrypt.org/certs/isrgrootx1.pem
+
+The certificates were valid through 2036 and 2035 respectively when vendored.
+The HTTPS client still checks certificate validity dates and hostnames. Add
+additional roots only by reviewing and regenerating the trust-anchor table.

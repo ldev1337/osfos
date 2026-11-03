@@ -7,8 +7,10 @@
 #include <kernel/fs/laziofs.h>
 #include <kernel/graphics/vfb.h>
 #include <kernel/graphics/window_manager.h>
+#include <kernel/lib/appcommon.h>
 #include <kernel/memory/heap.h>
 #include <kernel/memory/pmm.h>
+#include <kernel/net/smoltcp_bridge.h>
 #include <kernel/scheduler.h>
 #include <kernel/shell/shell.h>
 
@@ -16,7 +18,6 @@
 #include <cstddef>
 #include <cstdint>
 
-#include <kernel/cpu.h>
 
 namespace Kernel::Games {
 namespace Spong {
@@ -38,6 +39,7 @@ void graphic_test_run();
 void stress_test_run();
 void shitty_excel_run();
 void memory_analyzer_run();
+void task_manager_run();
 namespace Pain {
 void run();
 }
@@ -75,28 +77,44 @@ uint32_t screen_w = 0, screen_h = 0;
 
 struct AppLaunch {
   void (*entry)();
+  char title[32];
 };
 
 void app_thread_entry(void *argument) {
-  AppLaunch *launch = static_cast<AppLaunch *>(argument);
+  auto *launch = static_cast<AppLaunch *>(argument);
   void (*entry)() = launch ? launch->entry : nullptr;
-  if (launch)
+  char title[32]{};
+  if (launch != nullptr) {
+    size_t index = 0;
+    while (index + 1 < sizeof(title) && (launch->title[index] != 0)) {
+      title[index] = launch->title[index];
+      ++index;
+    }
+    title[index] = '\0';
+  }
+  Kernel::Scheduler::mark_current_thread_as_application(title);
+  if (launch != nullptr)
     kfree(launch);
   while (!Kernel::Scheduler::should_stop() &&
          !Kernel::Graphics::WindowManager::has_window(
              Kernel::Scheduler::current_thread_id()))
     Kernel::Scheduler::thread_sleep_ms(1);
-  if (entry)
+  if ((entry != nullptr) && !Kernel::Scheduler::should_stop())
     entry();
-  Kernel::Graphics::WindowManager::unregister_window(
-      Kernel::Scheduler::current_thread_id());
+  Kernel::AppCommon::exit();
 }
 
 bool launch_app(const char *title, void (*entry)()) {
-  AppLaunch *launch = static_cast<AppLaunch *>(kmalloc(sizeof(AppLaunch)));
+  auto *launch = static_cast<AppLaunch *>(kmalloc(sizeof(AppLaunch)));
   if (!launch)
     return false;
   launch->entry = entry;
+  size_t title_index = 0;
+  while (title_index + 1 < sizeof(launch->title) && title[title_index]) {
+    launch->title[title_index] = title[title_index];
+    ++title_index;
+  }
+  launch->title[title_index] = '\0';
   int id = Kernel::Scheduler::thread_create(app_thread_entry, launch);
   if (id < 0) {
     kfree(launch);
@@ -300,13 +318,20 @@ void help() {
   kernel_printf("  help                  Show this list\n");
   kernel_printf("  clear                 Clear the terminal\n");
   kernel_printf("  echo <text>           Print text\n");
+  kernel_printf("  ping <host>           Send ICMP echo requests\n");
+  kernel_printf("  netup                 Acquire network settings with DHCP\n");
+  kernel_printf("  netinfo               Show network interface settings\n");
+  kernel_printf("  fetch <url>           Fetch a bounded HTTP or verified HTTPS response\n");
+  kernel_printf("  tcp-echo <host> <port> <text>  Send text to a TCP echo service\n");
   kernel_printf("  about                 Kernel shell information\n");
   kernel_printf("  mem                   Memory-manager test commands\n");
+  kernel_printf("  taskman               List running apps and task stats\n");
   kernel_printf(
       "  heap-test [bytes]     Allocate/free a heap block (default 64)\n");
   kernel_printf(
       "  pmm-test [pages]      Allocate/free physical pages (default 1)\n");
   kernel_printf("  disk-init             Initialize LazIOfs disk\n");
+  kernel_printf("  xhci-init             Probe and initialize a USB xHCI controller\n");
   kernel_printf("  disk-check <file>     Check if a file exists on disk and "
                 "print info\n");
   kernel_printf("  spong                 Play Shitty Pong\n");
@@ -387,7 +412,7 @@ void run_ls(const char *) {
     return;
   }
   kernel_printf("TYPE   SIZE     PATH\n");
-  for (uint32_t i = 0; i < FS::VFS_MAX_ENTRIES; ++i) {
+  for (uint32_t i = 0; i < FS::VFS_MAX_INODES; ++i) {
     Kernel::FS::VFSFile file;
     if (Kernel::FS::VFS::get_file_at(i, &file) && file.exists) {
       kernel_printf("%s  %u     %s\n", file.is_directory ? "DIR " : "FILE",
@@ -419,7 +444,6 @@ void run_cat(const char *args) {
 }
 
 void run_xhci_init(const char *) {
-  kernel_printf("Searching PCI bus for xHCI controller (0x0C0330)...\n");
   bool found = false;
   for (uint16_t bus = 0; bus < PCI_MAX_BUSES && !found; ++bus) {
     for (uint8_t slot = 0; slot < PCI_MAX_SLOTS && !found; ++slot) {
@@ -431,22 +455,195 @@ void run_xhci_init(const char *) {
         if (((cls >> 24) & 0xFF) == 0x0C && ((cls >> 16) & 0xFF) == 0x03 &&
             ((cls >> 8) & 0xFF) == 0x30) {
           found = true;
-          kernel_printf("Found xHCI at %02X:%02X.%u\n", bus, slot, func);
           uint32_t cmd = pci_read_config(bus, slot, func, 0x04);
           pci_write_config(bus, slot, func, 0x04, cmd | (1 << 2));
           uint64_t mmio_base =
               ((uint64_t)pci_read_config(bus, slot, func, 0x14) << 32) |
               (pci_read_config(bus, slot, func, 0x10) & 0xFFFFFFF0u);
-          kernel_printf("xHCI MMIO Base: 0x%lX\n", mmio_base);
           Kernel::Drivers::USB::XHCIController xhci(mmio_base);
-          kernel_printf(xhci.initialize() ? "xHCI initialization PASSED!\n"
-                                          : "xHCI initialization FAILED!\n");
+          if (!xhci.initialize())
+            kernel_printf("xhci-init: controller initialization failed\n");
         }
       }
     }
   }
-  if (!found)
-    kernel_printf("xhci-init: No xHCI controller found on PCI bus.\n");
+}
+
+void print_ipv4(uint32_t address) {
+  kernel_printf("%u.%u.%u.%u", (address >> 24) & 255,
+                (address >> 16) & 255, (address >> 8) & 255,
+                address & 255);
+}
+
+void run_netup(const char *) {
+  const int result = Kernel::Net::configure(8000);
+  if (result != 0) {
+    kernel_printf("netup: DHCP failed (%d)\n", result);
+    return;
+  }
+  kernel_printf("Network configured.\n");
+}
+
+void run_netinfo(const char *) {
+  Kernel::Net::Info info{};
+  if (Kernel::Net::get_info(&info) != 0) {
+    kernel_printf("netinfo: network stack unavailable\n");
+    return;
+  }
+  kernel_printf("MAC %02X:%02X:%02X:%02X:%02X:%02X\n", info.mac[0],
+                info.mac[1], info.mac[2], info.mac[3], info.mac[4],
+                info.mac[5]);
+  if (!info.configured) {
+    kernel_printf("IPv4: not configured (run netup)\n");
+    return;
+  }
+  kernel_printf("IPv4: ");
+  print_ipv4(info.ipv4);
+  kernel_printf("/%u\nGateway: ", info.prefix_len);
+  print_ipv4(info.gateway);
+  kernel_printf("\nDNS: ");
+  print_ipv4(info.dns);
+  kernel_printf("\n");
+}
+
+void run_ping(const char *host) {
+  if (!*host) {
+    kernel_printf("usage: ping <host>\n");
+    return;
+  }
+  Kernel::Net::PingStats stats{};
+  const int result = Kernel::Net::ping(host, &stats);
+  if (result != 0) {
+    kernel_printf("ping: failed (%d)\n", result);
+    return;
+  }
+  for (uint32_t sequence = 0; sequence < 4; ++sequence) {
+    if (stats.received_mask & (1u << sequence))
+      kernel_printf("reply from %s: seq=%u time=%u ms\n", host,
+                    sequence + 1, stats.rtt_ms[sequence]);
+    else
+      kernel_printf("request timed out (seq=%u)\n", sequence + 1);
+  }
+  kernel_printf("%u/%u replies received\n", stats.received, stats.sent);
+}
+
+void run_tcp_echo(char *args) {
+  char *host = args;
+  while (*args && *args != ' ')
+    ++args;
+  if (!*args) {
+    kernel_printf("usage: tcp-echo <host> <port> <text>\n");
+    return;
+  }
+  *args++ = '\0';
+  while (*args == ' ')
+    ++args;
+  char *port_text = args;
+  while (*args && *args != ' ')
+    ++args;
+  if (!*args) {
+    kernel_printf("usage: tcp-echo <host> <port> <text>\n");
+    return;
+  }
+  *args++ = '\0';
+  while (*args == ' ')
+    ++args;
+  size_t port = 0;
+  if (!*args || !parse_size(port_text, port) || port > 65535) {
+    kernel_printf("usage: tcp-echo <host> <port> <text>\n");
+    return;
+  }
+
+  char response[512]{};
+  const int length = Kernel::Net::tcp_echo(host, static_cast<uint16_t>(port),
+                                           args, response,
+                                           sizeof(response) - 1, 5000);
+  if (length < 0) {
+    kernel_printf("tcp-echo: failed (%d)\n", length);
+    return;
+  }
+  response[length] = '\0';
+  kernel_printf("received %d bytes: %s\n", length, response);
+}
+
+void run_fetch(const char *url) {
+  if (!*url) {
+    kernel_printf("usage: fetch <http[s]://host[:port]/path>\n");
+    return;
+  }
+  char response[2048]{};
+  const int length = Kernel::Net::fetch(url, response, sizeof(response));
+  if (length == -8) {
+    kernel_printf("fetch: invalid URL; use http:// or https://\n");
+    return;
+  }
+  if (length == -4) {
+    kernel_printf("fetch: hardware RDRAND entropy unavailable\n");
+    return;
+  }
+  if (length == -5) {
+    kernel_printf("fetch: RTC time unavailable; HTTPS certificate checks refused\n");
+    return;
+  }
+  if (length == -6) {
+    kernel_printf("fetch: HTTPS handshake or certificate verification failed\n");
+    return;
+  }
+  if (length <= -1000) {
+    const int detail = -1000 - length;
+    if (detail >= 1100 && detail < 1400) {
+      const int failure = (detail - 1000) / 100;
+      const int tls_error = (detail - 1000) % 100;
+      if (failure == 1)
+        kernel_printf("fetch: TCP receive timed out during TLS (BearSSL %d)\n",
+                      tls_error);
+      else if (failure == 2)
+        kernel_printf("fetch: peer closed TCP during TLS (BearSSL %d)\n",
+                      tls_error);
+      else
+        kernel_printf("fetch: TCP send failed during TLS (BearSSL %d)\n",
+                      tls_error);
+      return;
+    }
+    const int tls_error = detail;
+    switch (tls_error) {
+    case 3:
+      kernel_printf("fetch: peer does not support TLS 1.2\n");
+      break;
+    case 8:
+      kernel_printf("fetch: BearSSL could not seed its random generator\n");
+      break;
+    case 31:
+      kernel_printf("fetch: TCP transport failed during TLS\n");
+      break;
+    case 53:
+      kernel_printf("fetch: certificate time was not available\n");
+      break;
+    case 54:
+      kernel_printf("fetch: server certificate is expired or not yet valid\n");
+      break;
+    case 56:
+      kernel_printf("fetch: server certificate hostname mismatch\n");
+      break;
+    case 62:
+      kernel_printf("fetch: server certificate chain is not trusted\n");
+      break;
+    default:
+      kernel_printf("fetch: BearSSL error %d\n", tls_error);
+      break;
+    }
+    return;
+  }
+  if (length < 0) {
+    kernel_printf("fetch: request failed (%d)\n", length);
+    return;
+  }
+  kernel_printf("%s", response);
+  if (length == static_cast<int>(sizeof(response) - 1))
+    kernel_printf("\n[response truncated at %u bytes]\n",
+                  static_cast<unsigned int>(sizeof(response) - 1));
+  else
+    kernel_printf("\n");
 }
 
 void reset_terminal_view() {
@@ -482,6 +679,16 @@ void execute(char *line) {
     term_vfb.flush();
   } else if (equals(line, "echo"))
     kernel_printf("%s\n", args);
+  else if (equals(line, "ping"))
+    run_ping(args);
+  else if (equals(line, "netup"))
+    run_netup(args);
+  else if (equals(line, "netinfo"))
+    run_netinfo(args);
+  else if (equals(line, "tcp-echo"))
+    run_tcp_echo(args);
+  else if (equals(line, "fetch"))
+    run_fetch(args);
   else if (equals(line, "about"))
     kernel_printf("OSFOS kernel shell\nFramebuffer text UI with Virtual "
                   "Framebuffer abstraction.\n");
@@ -489,6 +696,10 @@ void execute(char *line) {
     kernel_printf(
         "Memory APIs available in this build:\n  KernelHeap::kmalloc/kfree\n  "
         "PMM::allocate_page_block/free_page_block\n");
+  else if (equals(line, "taskman")) {
+    if (!launch_app("Task Manager", Apps::task_manager_run))
+      kernel_printf("Could not launch Task Manager.\n");
+  }
   else if (equals(line, "heap-test"))
     run_heap_test(args);
   else if (equals(line, "pmm-test"))
@@ -498,6 +709,8 @@ void execute(char *line) {
       kernel_printf("Could not launch graphics test.\n");
   } else if (equals(line, "disk-init"))
     run_disk_init(args);
+  else if (equals(line, "xhci-init"))
+    run_xhci_init(args);
   else if (equals(line, "disk-check"))
     run_disk_check(args);
   else if (equals(line, "ls"))
@@ -571,9 +784,6 @@ void initialize_screen() {
   memset(screen, ' ', sizeof(screen));
   reset_terminal_view();
 
-  detect_pci_devices();
-  run_xhci_init("1");
-  run_vector_benchmark();
   kernel_printf("OSFOS kernel shell ready.\nType 'help' to get started.\n");
 }
 } // namespace

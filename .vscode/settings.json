@@ -1,3 +1,7 @@
 {
-    "makefile.configureOnOpen": true
+    "makefile.configureOnOpen": true,
+    "rust-analyzer.linkedProjects": [
+    "rust/net/Cargo.toml",
+    "rust/smoltcp/Cargo.toml"
+  ]
 }

@@ -12,7 +12,7 @@ private:
   size_t used_pages_count; // O(1) counter
 
   void set_bit(size_t page_index, bool value);
-  bool get_bit(size_t page_index);
+  bool get_bit(size_t page_index) const;
 
 public:
   static const size_t PAGE_SIZE = 4096;
@@ -27,6 +27,7 @@ public:
   size_t get_free_memory() const {
     return (total_pages - used_pages_count) * PAGE_SIZE;
   }
+  size_t recheck_used_memory() const;
   size_t get_total_pages() const { return total_pages; }
   size_t get_used_pages() const { return used_pages_count; }
   size_t get_free_pages() const { return total_pages - used_pages_count; }

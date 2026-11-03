@@ -5,7 +5,8 @@ CC++ = clang++
 C_STD    = -std=c17
 CPP_STD = -std=c++20
 
-INCLUDES = -Iinclude -Ikernel/programs/doomgeneric
+INCLUDES = -Iinclude -Ikernel/programs/doomgeneric -Ithird_party/bearssl/inc \
+	-Ithird_party/bearssl/src
 
 COMMON_FLAGS = -march=x86-64-v3 -mvzeroupper -mprefer-vector-width=256 \
 	-ffreestanding -Wall -Wextra -w -mno-red-zone -m64 \
@@ -27,6 +28,8 @@ CFLAGS_CPP_SIZE = $(COMMON_FLAGS) $(FLAG_Oz) $(CPP_STD)
 CFLAGS_DOOM_SIZE = $(COMMON_FLAGS) $(FLAG_FM) $(C_STD) \
 	-fno-ident -fno-unwind-tables -fno-asynchronous-unwind-tables \
 	-fvisibility=hidden
+CFLAGS_BEARSSL = $(COMMON_FLAGS) $(FLAG_O2) $(C_STD) \
+	-DBR_USE_URANDOM=0 -DBR_USE_UNIX_TIME=0 -DBR_USE_WIN32_RAND=0 -DBR_RDRAND=0
 
 LDFLAGS = -static -ffreestanding -nostdlib -flto=full -fuse-ld=lld \
 	-Wl,-O3 -Wl,-n -Wl \
@@ -38,18 +41,26 @@ ASM_SRCS = $(shell find arch kernel -name '*.asm' $(EXCLUDE))
 C_SRCS   = $(shell find arch kernel -name '*.c' $(EXCLUDE))
 C++_SRCS = $(shell find arch kernel -name '*.cpp' $(EXCLUDE))
 
-PROGRAM_OBJS      = $(patsubst %.cpp, %.o, $(wildcard kernel/programs/*.cpp))
-PROGRAM_CPP_OBJS = $(patsubst %.cpp, %.o, $(shell find kernel/programs -name '*.cpp'))
-PROGRAM_C_OBJS    = $(patsubst %.c, %.o, $(wildcard kernel/programs/doomgeneric/*.c))
-GRAPHICS_OBJS      = $(patsubst %.cpp, %.o, $(wildcard kernel/graphics/*.cpp))
-ARCH_PERF_C_OBJS  = arch/x86_64/memory.o arch/x86_64/string.o
-PERF_CPP_OBJS      = kernel/lib/math.o kernel/fs/vfs.o $(GRAPHICS_OBJS)
-SIZE_CPP_OBJS      = kernel/lib/compatlibc.o
+BUILD_DIR = build
+RUST_TARGET = x86_64-unknown-none
+RUST_TARGET_DIR = $(BUILD_DIR)/rust
+RUST_NET_LIB = $(RUST_TARGET_DIR)/$(RUST_TARGET)/release/libosfos_net.a
+RUST_NET_SOURCES = $(shell find rust/net/src rust/smoltcp/src -type f -name '*.rs')
+BEARSSL_SOURCES = $(shell find third_party/bearssl/src -type f -name '*.c')
+BEARSSL_OBJS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(BEARSSL_SOURCES))
+PROGRAM_OBJS = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(wildcard kernel/programs/*.cpp))
+PROGRAM_CPP_OBJS = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(shell find kernel/programs -name '*.cpp'))
+PROGRAM_C_OBJS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(wildcard kernel/programs/doomgeneric/*.c))
+GRAPHICS_OBJS = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(wildcard kernel/graphics/*.cpp))
+ARCH_PERF_C_OBJS = $(BUILD_DIR)/arch/x86_64/memory.o $(BUILD_DIR)/arch/x86_64/string.o
+PERF_CPP_OBJS = $(BUILD_DIR)/kernel/lib/math.o $(BUILD_DIR)/kernel/fs/vfs.o $(GRAPHICS_OBJS)
+SIZE_CPP_OBJS = $(BUILD_DIR)/kernel/lib/compatlibc.o
 
 OBJS = $(sort \
-	$(ASM_SRCS:.asm=.o) \
-	$(C_SRCS:.c=.o) \
-	$(C++_SRCS:.cpp=.o) \
+	$(patsubst %.asm,$(BUILD_DIR)/%.o,$(ASM_SRCS)) \
+	$(patsubst %.c,$(BUILD_DIR)/%.o,$(C_SRCS)) \
+	$(patsubst %.cpp,$(BUILD_DIR)/%.o,$(C++_SRCS)) \
+	$(BEARSSL_OBJS) \
 	$(PROGRAM_OBJS) \
 	$(PROGRAM_CPP_OBJS) \
 	$(PROGRAM_C_OBJS) \
@@ -62,6 +73,7 @@ $(ARCH_PERF_C_OBJS): CFLAGS_C   = $(CFLAGS_C_PERF)
 $(SIZE_CPP_OBJS):    CFLAGS_CPP = $(CFLAGS_CPP_SIZE)
 $(PROGRAM_OBJS) $(PROGRAM_CPP_OBJS): CFLAGS_CPP = $(CFLAGS_CPP_SIZE)
 $(PROGRAM_C_OBJS):   CFLAGS_C   = $(CFLAGS_DOOM_SIZE)
+$(BEARSSL_OBJS):    CFLAGS_C   = $(CFLAGS_BEARSSL)
 
 opt_flag = $(lastword $(filter -O%,$(1)))
 opt_tag  = $(patsubst -%,%,$(call opt_flag,$(1)))
@@ -98,7 +110,7 @@ define PRINT_TUI
 	'
 endef
 
-.PHONY: all clean simd_inspect
+.PHONY: all clean simd simd_inspect
 
 all: os.iso disk.img
 
@@ -106,60 +118,76 @@ DOOM1_WAD = $(firstword $(wildcard doom1.wad doom.wad))
 DOOM2_WAD = $(wildcard doom2.wad)
 DOOM_WADS = $(DOOM1_WAD) $(DOOM2_WAD)
 ifneq ($(DOOM_WADS),)
-disk.img: $(DOOM_WADS) tools/mkosfosfs.py
-	@python3 tools/mkosfosfs.py $@ $(if $(DOOM1_WAD),--add /bin/doom/doom1.wad=$(DOOM1_WAD)) $(if $(DOOM2_WAD),--add /bin/doom/doom2.wad=$(DOOM2_WAD))
+disk.img: $(DOOM_WADS) tools/mklaziofs.py
+	@python3 tools/mklaziofs.py $@ $(if $(DOOM1_WAD),--add /bin/doom/doom1.wad=$(DOOM1_WAD)) $(if $(DOOM2_WAD),--add /bin/doom/doom2.wad=$(DOOM2_WAD))
 else
-disk.img: tools/mkosfosfs.py
-	@python3 tools/mkosfosfs.py $@
+disk.img: tools/mklaziofs.py
+	@python3 tools/mklaziofs.py $@
 endif
 
-%.o: %.asm
+$(BUILD_DIR)/%.o: %.asm
+	@mkdir -p $(@D)
 	@$(NASM) -Ox -f elf64 $< -o $@
 ifeq ($(V),1)
 else
 	@$(call PRINT_TUI, [ASM   ], $<)
 endif
 
-%.o: %.c
+$(BUILD_DIR)/%.o: %.c
+	@mkdir -p $(@D)
 	@$(CC) $(CFLAGS_C) -c $< -o $@
 ifeq ($(V),1)
 else
 	@$(call PRINT_TUI, $(TAG_C), $<)
 endif
 
-%.o: %.cpp
+$(BUILD_DIR)/%.o: %.cpp
+	@mkdir -p $(@D)
 	@$(CC++) $(CFLAGS_CPP) -c $< -o $@
 ifeq ($(V),1)
 else
 	@$(call PRINT_TUI, $(TAG_CPP), $<)
 endif
 
-os.bin: $(OBJS)
-	$(Q)$(CC) $(LDFLAGS) $(OBJS) -o $@
+$(BUILD_DIR)/os.bin: $(OBJS) $(RUST_NET_LIB)
+	$(Q)mkdir -p $(@D)
+	$(Q)$(CC) $(LDFLAGS) $(OBJS) $(RUST_NET_LIB) -o $@
 	$(Q)llvm-strip --strip-all --remove-section=.comment --remove-section=.note $@ 2>/dev/null || true
 ifeq ($(V),1)
 else
 	$(Q)$(call PRINT_TUI, [LD    ], $@)
 endif
 
-os.iso: os.bin grub.cfg
-	$(Q)mkdir -p iso/boot/grub
-	$(Q)cp os.bin iso/boot/os.bin
-	$(Q)cp grub.cfg iso/boot/grub/grub.cfg
-	$(Q)grub-mkrescue -o os.iso iso >/dev/null 2>&1
-	$(Q)rm -rf iso
+$(RUST_NET_LIB): rust/net/Cargo.toml rust/net/Cargo.lock $(RUST_NET_SOURCES) \
+	rust/smoltcp/Cargo.toml
+	$(Q)PATH="$(HOME)/.cargo/bin:$$PATH" CARGO_TARGET_DIR="$(abspath $(RUST_TARGET_DIR))" \
+	cargo build --locked --manifest-path rust/net/Cargo.toml \
+		--target $(RUST_TARGET) --release $(if $(filter 1,$(V)),,--quiet)
+	$(Q)test -f $@
+ifeq ($(V),1)
+else
+	$(Q)$(call PRINT_TUI, [RUST Os], rust/smoltcp/src/lib.rs)
+	$(Q)$(call PRINT_TUI, [RUST Os], rust/net/src/lib.rs)
+endif
+
+os.iso: $(BUILD_DIR)/os.bin grub.cfg
+	$(Q)mkdir -p $(BUILD_DIR)/iso/boot/grub
+	$(Q)cp $(BUILD_DIR)/os.bin $(BUILD_DIR)/iso/boot/os.bin
+	$(Q)cp grub.cfg $(BUILD_DIR)/iso/boot/grub/grub.cfg
+	$(Q)grub-mkrescue -o $@ $(BUILD_DIR)/iso >/dev/null 2>&1
+	$(Q)rm -rf $(BUILD_DIR)/iso
 ifeq ($(V),1)
 else
 	$(Q)$(call PRINT_TUI, [ISO   ], $@)
 endif
 
-simd: os.bin
-	@total=$$(objdump -d os.bin 2>/dev/null | grep -E '\b(xmm|ymm|zmm)[0-9]+' | wc -l); \
+simd: $(BUILD_DIR)/os.bin
+	@total=$$(objdump -d $(BUILD_DIR)/os.bin 2>/dev/null | grep -E '\b(xmm|ymm|zmm)[0-9]+' | wc -l); \
 	printf "\033[32mTotal SIMD instructions generated:\033[0m \033[1;33m%5d\033[0m\n\n" "$$total"; \
-	objdump -d os.bin 2>/dev/null | grep -E '\b(xmm|ymm|zmm)[0-9]+' | awk -F'\t' '{print $$3}' | awk '{print $$1}' | sort | uniq -c | sort -nr | head -n 50 | awk '{printf "  \033[33m%-15s\033[0m : %5d times\n", $$2, $$1}'
+	objdump -d $(BUILD_DIR)/os.bin 2>/dev/null | grep -E '\b(xmm|ymm|zmm)[0-9]+' | awk -F'\t' '{print $$3}' | awk '{print $$1}' | sort | uniq -c | sort -nr | head -n 50 | awk '{printf "  \033[33m%-15s\033[0m : %5d times\n", $$2, $$1}'
 
 clean:
-	$(Q)rm -rf $(OBJS) os.bin os.iso iso kernel.profdata kernel.afdo perf.data
+	$(Q)rm -rf $(BUILD_DIR) os.bin os.iso disk.img iso kernel.profdata kernel.afdo perf.data
 	$(Q)cargo clean --manifest-path rust/kernel_heap/Cargo.toml 2>/dev/null || true
 ifeq ($(V),1)
 else
