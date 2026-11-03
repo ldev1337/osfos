@@ -8,7 +8,7 @@ name = "osfos_net"
 crate-type = ["staticlib"]
 
 [dependencies]
-smoltcp = { path = "../smoltcp", default-features = false, features = [
+smoltcp = { version = "=0.14.0", default-features = false, features = [
     "medium-ethernet",
     "proto-ipv4",
     "socket-dhcpv4",
@@ -18,7 +18,9 @@ smoltcp = { path = "../smoltcp", default-features = false, features = [
 ] }
 
 [profile.release]
-opt-level = "z"
-lto = false
+opt-level = 3
+lto = "fat"
 codegen-units = 1
 panic = "abort"
+strip = true
+debug = 0

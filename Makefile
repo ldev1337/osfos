@@ -6,36 +6,45 @@ C_STD    = -std=c17
 CPP_STD = -std=c++20
 
 INCLUDES = -Iinclude -Ikernel/programs/doomgeneric -Ithird_party/bearssl/inc \
-	-Ithird_party/bearssl/src
+  -Ithird_party/bearssl/src
 
-COMMON_FLAGS = -march=x86-64-v3 -mvzeroupper -mprefer-vector-width=256 \
-	-ffreestanding -Wall -Wextra -w -mno-red-zone -m64 \
-	-fno-exceptions -fno-stack-protector -fno-rtti \
-	-fno-unwind-tables -fno-asynchronous-unwind-tables \
-	-flto=full -ffunction-sections -fdata-sections -fmerge-all-constants $(INCLUDES)
+POLLY_FLAGS = -fpass-plugin=/usr/lib/LLVMPolly.so -mllvm -polly
 
-FLAG_O2  = -O2
+EXTREME_FLAGS = \
+  -mllvm -inline-threshold=400 \
+  -mllvm -inlinehint-threshold=650 \
+  -mllvm -aggressive-ext-opt=true \
+  -mllvm -enable-gvn-hoist=true \
+  -mllvm -enable-gvn-sink=true \
+  -mllvm -enable-loop-flatten=true \
+  -mllvm -enable-interleaved-mem-accesses=true
+
+COMMON_FLAGS = -march=x86-64-v3 $(POLLY_FLAGS) -ffast-math -mvzeroupper -mprefer-vector-width=256 \
+  -ffreestanding -Wall -Wextra -w -mno-red-zone -m64 \
+  -fno-exceptions -fno-stack-protector -fno-rtti \
+  -fno-unwind-tables -fno-asynchronous-unwind-tables \
+  -flto=full -ffunction-sections -fdata-sections -fmerge-all-constants $(INCLUDES)
+
 FLAG_O3    = -O3
-FLAG_FM    = -Oz -ffast-math
 FLAG_Oz    = -Oz
 
-CFLAGS_C        = $(COMMON_FLAGS) $(FLAG_O2) $(C_STD)
-CFLAGS_CPP      = $(COMMON_FLAGS) $(FLAG_O2) $(CPP_STD)
-CFLAGS_C_PERF   = $(COMMON_FLAGS) $(FLAG_O3) $(C_STD)
-CFLAGS_CPP_PERF = $(COMMON_FLAGS) $(FLAG_O3) $(CPP_STD)
+CFLAGS_C        = $(COMMON_FLAGS) $(FLAG_O3) $(C_STD)
+CFLAGS_CPP      = $(COMMON_FLAGS) $(FLAG_O3) $(CPP_STD)
+CFLAGS_C_PERF   = $(COMMON_FLAGS) $(FLAG_O3) $(EXTREME_FLAGS) $(C_STD)
+CFLAGS_CPP_PERF = $(COMMON_FLAGS) $(FLAG_O3) $(EXTREME_FLAGS) $(CPP_STD)
 CFLAGS_C_SIZE   = $(COMMON_FLAGS) $(FLAG_Oz) $(C_STD)
 CFLAGS_CPP_SIZE = $(COMMON_FLAGS) $(FLAG_Oz) $(CPP_STD)
-CFLAGS_DOOM_SIZE = $(COMMON_FLAGS) $(FLAG_FM) $(C_STD) \
-	-fno-ident -fno-unwind-tables -fno-asynchronous-unwind-tables \
-	-fvisibility=hidden
-CFLAGS_BEARSSL = $(COMMON_FLAGS) $(FLAG_O2) $(C_STD) \
-	-DBR_USE_URANDOM=0 -DBR_USE_UNIX_TIME=0 -DBR_USE_WIN32_RAND=0 -DBR_RDRAND=0
+CFLAGS_DOOM_PERF = $(COMMON_FLAGS) $(FLAG_O3) $(C_STD) \
+  -fno-ident -fno-unwind-tables -fno-asynchronous-unwind-tables \
+  -fvisibility=hidden
+CFLAGS_BEARSSL = $(COMMON_FLAGS) $(FLAG_O3) $(C_STD) \
+  -DBR_USE_URANDOM=0 -DBR_USE_UNIX_TIME=0 -DBR_USE_WIN32_RAND=0 -DBR_RDRAND=0
 
-LDFLAGS = -static -ffreestanding -nostdlib -flto=full -fuse-ld=lld \
-	-Wl,-O3 -Wl,-n -Wl \
-	-Wl,--gc-sections -Wl,--icf=all \
-	-Wl,--strip-all -Wl,--build-id=none \
-	-Wl,-T,arch/linker.ld
+LDFLAGS = -static -ffreestanding -nostdlib -flto=full -fuse-ld=lld $(POLLY_FLAGS) \
+  -Wl,-O3 -Wl,-n -Wl \
+  -Wl,--gc-sections -Wl,--icf=all \
+  -Wl,--strip-all -Wl,--build-id=none \
+  -Wl,-T,arch/linker.ld
 
 ASM_SRCS = $(shell find arch kernel -name '*.asm' $(EXCLUDE))
 C_SRCS   = $(shell find arch kernel -name '*.c' $(EXCLUDE))
@@ -45,35 +54,36 @@ BUILD_DIR = build
 RUST_TARGET = x86_64-unknown-none
 RUST_TARGET_DIR = $(BUILD_DIR)/rust
 RUST_NET_LIB = $(RUST_TARGET_DIR)/$(RUST_TARGET)/release/libosfos_net.a
-RUST_NET_SOURCES = $(shell find rust/net/src rust/smoltcp/src -type f -name '*.rs')
+RUST_NET_SOURCES = $(shell find rust/net/src -type f -name '*.rs')
 BEARSSL_SOURCES = $(shell find third_party/bearssl/src -type f -name '*.c')
 BEARSSL_OBJS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(BEARSSL_SOURCES))
 PROGRAM_OBJS = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(wildcard kernel/programs/*.cpp))
 PROGRAM_CPP_OBJS = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(shell find kernel/programs -name '*.cpp'))
+DEMO_CPP_OBJS = $(BUILD_DIR)/kernel/programs/graphic_test.o $(BUILD_DIR)/kernel/programs/stress_test.o
+PROGRAM_PERF_CPP_OBJS = $(filter-out $(DEMO_CPP_OBJS),$(PROGRAM_CPP_OBJS))
 PROGRAM_C_OBJS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(wildcard kernel/programs/doomgeneric/*.c))
 GRAPHICS_OBJS = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(wildcard kernel/graphics/*.cpp))
 ARCH_PERF_C_OBJS = $(BUILD_DIR)/arch/x86_64/memory.o $(BUILD_DIR)/arch/x86_64/string.o
 PERF_CPP_OBJS = $(BUILD_DIR)/kernel/lib/math.o $(BUILD_DIR)/kernel/fs/vfs.o $(GRAPHICS_OBJS)
-SIZE_CPP_OBJS = $(BUILD_DIR)/kernel/lib/compatlibc.o
 
 OBJS = $(sort \
-	$(patsubst %.asm,$(BUILD_DIR)/%.o,$(ASM_SRCS)) \
-	$(patsubst %.c,$(BUILD_DIR)/%.o,$(C_SRCS)) \
-	$(patsubst %.cpp,$(BUILD_DIR)/%.o,$(C++_SRCS)) \
-	$(BEARSSL_OBJS) \
-	$(PROGRAM_OBJS) \
-	$(PROGRAM_CPP_OBJS) \
-	$(PROGRAM_C_OBJS) \
-	$(GRAPHICS_OBJS) \
-	$(ARCH_PERF_C_OBJS) \
+  $(patsubst %.asm,$(BUILD_DIR)/%.o,$(ASM_SRCS)) \
+  $(patsubst %.c,$(BUILD_DIR)/%.o,$(C_SRCS)) \
+  $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(C++_SRCS)) \
+  $(BEARSSL_OBJS) \
+  $(PROGRAM_OBJS) \
+  $(PROGRAM_CPP_OBJS) \
+  $(PROGRAM_C_OBJS) \
+  $(GRAPHICS_OBJS) \
+  $(ARCH_PERF_C_OBJS) \
 )
 
 $(PERF_CPP_OBJS):    CFLAGS_CPP = $(CFLAGS_CPP_PERF)
 $(ARCH_PERF_C_OBJS): CFLAGS_C   = $(CFLAGS_C_PERF)
-$(SIZE_CPP_OBJS):    CFLAGS_CPP = $(CFLAGS_CPP_SIZE)
-$(PROGRAM_OBJS) $(PROGRAM_CPP_OBJS): CFLAGS_CPP = $(CFLAGS_CPP_SIZE)
-$(PROGRAM_C_OBJS):   CFLAGS_C   = $(CFLAGS_DOOM_SIZE)
-$(BEARSSL_OBJS):    CFLAGS_C   = $(CFLAGS_BEARSSL)
+$(PROGRAM_PERF_CPP_OBJS): CFLAGS_CPP = $(CFLAGS_CPP_PERF)
+$(DEMO_CPP_OBJS):         CFLAGS_CPP = $(CFLAGS_CPP_SIZE)
+$(PROGRAM_C_OBJS):        CFLAGS_C   = $(CFLAGS_DOOM_PERF)
+$(BEARSSL_OBJS):     CFLAGS_C   = $(CFLAGS_BEARSSL)
 
 opt_flag = $(lastword $(filter -O%,$(1)))
 opt_tag  = $(patsubst -%,%,$(call opt_flag,$(1)))
@@ -82,35 +92,35 @@ TAG_C   = [CC  $(call opt_tag,$(CFLAGS_C))]
 TAG_CPP = [C++ $(call opt_tag,$(CFLAGS_CPP))]
 
 ifeq ($(V),1)
-	Q =
+  Q =
 else
-	Q = @
+  Q = @
 endif
 
 TERM_COLS ?= $(shell tput cols 2>/dev/null || echo 80)
 FILE_WIDTH = $(shell awk -v cols=$(TERM_COLS) 'BEGIN { w = cols - 23; if (w < 23) w = 23; print w }')
 
 define PRINT_TUI
-	@flock /tmp/make_tui.lock sh -c ' \
-	SZ=$$(wc -c < $@ | tr -d " "); \
-	if [ $$SZ -ge 1048576 ]; then \
-		SZ_FMT=$$(awk "BEGIN {printf \"%.2f MB\", $$SZ / 1048576}"); \
-	elif [ $$SZ -ge 1024 ]; then \
-		SZ_FMT=$$(awk "BEGIN {printf \"%.2f KB\", $$SZ / 1024}"); \
-	else \
-		SZ_FMT="$${SZ} B"; \
-	fi; \
-	TAG_RAW="$(1)"; \
-	TAG_LEN=$${#TAG_RAW}; \
-	PAD_LEN=$$(( 9 - TAG_LEN )); \
-	[ $$PAD_LEN -lt 0 ] && PAD_LEN=0; \
-	PADDING=$$(printf "%*s" $$PAD_LEN ""); \
-	FILE_WIDTH=$(FILE_WIDTH); \
-	printf "\033[1;36m%s\033[0m%s\033[37m%-*s\033[0m \033[1;90m│\033[0m \033[1;32m%10s\033[0m\n" "$$TAG_RAW" "$$PADDING" "$$FILE_WIDTH" "$(2)" "$$SZ_FMT" \
-	'
+  @flock /tmp/make_tui.lock sh -c ' \
+  SZ=$$(wc -c < $@ | tr -d " "); \
+  if [ $$SZ -ge 1048576 ]; then \
+    SZ_FMT=$$(awk "BEGIN {printf \"%.2f MB\", $$SZ / 1048576}"); \
+  elif [ $$SZ -ge 1024 ]; then \
+    SZ_FMT=$$(awk "BEGIN {printf \"%.2f KB\", $$SZ / 1024}"); \
+  else \
+    SZ_FMT="$${SZ} B"; \
+  fi; \
+  TAG_RAW="$(1)"; \
+  TAG_LEN=$${#TAG_RAW}; \
+  PAD_LEN=$$(( 9 - TAG_LEN )); \
+  [ $$PAD_LEN -lt 0 ] && PAD_LEN=0; \
+  PADDING=$$(printf "%*s" $$PAD_LEN ""); \
+  FILE_WIDTH=$(FILE_WIDTH); \
+  printf "\033[1;36m%s\033[0m%s\033[37m%-*s\033[0m \033[1;90m│\033[0m \033[1;32m%10s\033[0m\n" "$$TAG_RAW" "$$PADDING" "$$FILE_WIDTH" "$(2)" "$$SZ_FMT" \
+  '
 endef
 
-.PHONY: all clean simd simd_inspect
+.PHONY: all clean simd filesimd
 
 all: os.iso disk.img
 
@@ -125,7 +135,7 @@ disk.img: tools/mklaziofs.py
 	@python3 tools/mklaziofs.py $@
 endif
 
-$(BUILD_DIR)/%.o: %.asm
+$(BUILD_DIR)/%.o: %.asm Makefile
 	@mkdir -p $(@D)
 	@$(NASM) -Ox -f elf64 $< -o $@
 ifeq ($(V),1)
@@ -133,7 +143,7 @@ else
 	@$(call PRINT_TUI, [ASM   ], $<)
 endif
 
-$(BUILD_DIR)/%.o: %.c
+$(BUILD_DIR)/%.o: %.c Makefile
 	@mkdir -p $(@D)
 	@$(CC) $(CFLAGS_C) -c $< -o $@
 ifeq ($(V),1)
@@ -141,7 +151,7 @@ else
 	@$(call PRINT_TUI, $(TAG_C), $<)
 endif
 
-$(BUILD_DIR)/%.o: %.cpp
+$(BUILD_DIR)/%.o: %.cpp Makefile
 	@mkdir -p $(@D)
 	@$(CC++) $(CFLAGS_CPP) -c $< -o $@
 ifeq ($(V),1)
@@ -158,16 +168,15 @@ else
 	$(Q)$(call PRINT_TUI, [LD    ], $@)
 endif
 
-$(RUST_NET_LIB): rust/net/Cargo.toml rust/net/Cargo.lock $(RUST_NET_SOURCES) \
-	rust/smoltcp/Cargo.toml
+$(RUST_NET_LIB): rust/net/Cargo.toml rust/net/Cargo.lock $(RUST_NET_SOURCES) Makefile
 	$(Q)PATH="$(HOME)/.cargo/bin:$$PATH" CARGO_TARGET_DIR="$(abspath $(RUST_TARGET_DIR))" \
+	RUSTFLAGS="$(RUSTFLAGS) -C target-cpu=x86-64-v3" \
 	cargo build --locked --manifest-path rust/net/Cargo.toml \
 		--target $(RUST_TARGET) --release $(if $(filter 1,$(V)),,--quiet)
 	$(Q)test -f $@
 ifeq ($(V),1)
 else
-	$(Q)$(call PRINT_TUI, [RUST Os], rust/smoltcp/src/lib.rs)
-	$(Q)$(call PRINT_TUI, [RUST Os], rust/net/src/lib.rs)
+	$(Q)$(call PRINT_TUI, [RUST  ], rust/net/src/lib.rs)
 endif
 
 os.iso: $(BUILD_DIR)/os.bin grub.cfg
@@ -185,6 +194,50 @@ simd: $(BUILD_DIR)/os.bin
 	@total=$$(objdump -d $(BUILD_DIR)/os.bin 2>/dev/null | grep -E '\b(xmm|ymm|zmm)[0-9]+' | wc -l); \
 	printf "\033[32mTotal SIMD instructions generated:\033[0m \033[1;33m%5d\033[0m\n\n" "$$total"; \
 	objdump -d $(BUILD_DIR)/os.bin 2>/dev/null | grep -E '\b(xmm|ymm|zmm)[0-9]+' | awk -F'\t' '{print $$3}' | awk '{print $$1}' | sort | uniq -c | sort -nr | head -n 50 | awk '{printf "  \033[33m%-15s\033[0m : %5d times\n", $$2, $$1}'
+
+filesimd:
+	@if [ -z "$(INST)" ]; then \
+		printf "\033[31mError:\033[0m Specify INST=<name> (e.g. make filesimd INST=vmovups)\n"; \
+		exit 1; \
+	fi
+	@set -eu; \
+	inspect_dir="$(BUILD_DIR)/filesimd"; \
+	tmp=$$(mktemp); \
+	trap 'rm -f "$$tmp"' EXIT; \
+	mkdir -p "$$inspect_dir"; \
+	printf "\033[32mPreparing inspection objects:\033[0m \033[1;33m%s\033[0m\n" "$(INST)"; \
+	$(MAKE) --no-print-directory BUILD_DIR="$$inspect_dir" \
+		COMMON_FLAGS="$(COMMON_FLAGS) -g -fno-lto" \
+		$(patsubst %.asm,$(BUILD_DIR)/filesimd/%.o,$(ASM_SRCS)) \
+		$(patsubst %.c,$(BUILD_DIR)/filesimd/%.o,$(C_SRCS)) \
+		$(patsubst %.cpp,$(BUILD_DIR)/filesimd/%.o,$(C++_SRCS)) \
+		$(patsubst %.c,$(BUILD_DIR)/filesimd/%.o,$(BEARSSL_SOURCES)); \
+	printf "\n\033[32mRanking source files by SIMD instruction:\033[0m \033[1;33m%s\033[0m\n\n" "$(INST)"; \
+	find "$$inspect_dir" -type f -name '*.o' | while IFS= read -r obj; do \
+		count=$$(objdump -d --no-show-raw-insn "$$obj" 2>/dev/null | \
+			awk -v inst="$(INST)" ' \
+				/^[[:space:]]*[[:xdigit:]]+:/ { \
+					line=$$0; \
+					sub(/^[[:space:]]*[[:xdigit:]]+:[[:space:]]*/, "", line); \
+					split(line, fields, /[[:space:]]+/); \
+					if (fields[1] == inst) count++; \
+				} \
+				END { print count+0 }'); \
+		if [ "$$count" -gt 0 ]; then \
+			src=$${obj#"$$inspect_dir"/}; \
+			src=$${src%.o}; \
+			for ext in cpp c asm; do \
+				if [ -f "$$src.$$ext" ]; then src="$$src.$$ext"; break; fi; \
+			done; \
+			printf "%s %s\n" "$$count" "$$src" >> "$$tmp"; \
+		fi; \
+	done; \
+	if [ -s "$$tmp" ]; then \
+		sort -k1,1nr "$$tmp" | \
+		awk '{printf "  \033[36m%-55s\033[0m : \033[1;33m%5d\033[0m times\n", $$2, $$1}'; \
+	else \
+		printf "\033[31mNo matching instructions found.\033[0m\n"; \
+	fi
 
 clean:
 	$(Q)rm -rf $(BUILD_DIR) os.bin os.iso disk.img iso kernel.profdata kernel.afdo perf.data
