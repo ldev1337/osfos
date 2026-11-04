@@ -1,52 +1,58 @@
 NASM = nasm
 CC   = clang
 CC++ = clang++
+OPT = opt
 
-C_STD    = -std=c17
+C_STD    = -std=c11
 CPP_STD = -std=c++20
 
 INCLUDES = -Iinclude -Ikernel/programs/doomgeneric -Ithird_party/bearssl/inc \
   -Ithird_party/bearssl/src
 
-POLLY_FLAGS = -fpass-plugin=/usr/lib/LLVMPolly.so -mllvm -polly
+POLLY_PLUGIN = /usr/lib/LLVMPolly.so
+POLLY_OPT_FLAGS = -load-pass-plugin=$(POLLY_PLUGIN) \
+  -polly-optimizer=isl \
+  -polly-tiling \
+  -polly-default-tile-size=32 \
+  -polly-2nd-level-tiling \
+  -polly-2nd-level-default-tile-size=16 \
+  -polly-vectorizer=stripmine \
+  -polly-prevect-width=8 \
+  -polly-use-runtime-alias-checks \
+  '-passes=polly-custom<prepare;detect;scops;flatten;deps;simplify-0;optree;delicm;simplify-1;dce;opt-isl;ast;codegen>'
 
-EXTREME_FLAGS = \
-  -mllvm -inline-threshold=400 \
-  -mllvm -inlinehint-threshold=650 \
-  -mllvm -aggressive-ext-opt=true \
+EXTREME_FLAGS =  -mllvm -aggressive-ext-opt=true \
   -mllvm -enable-gvn-hoist=true \
   -mllvm -enable-gvn-sink=true \
   -mllvm -enable-loop-flatten=true \
   -mllvm -enable-interleaved-mem-accesses=true
 
-COMMON_FLAGS = -march=x86-64-v3 $(POLLY_FLAGS) -ffast-math -mvzeroupper -mprefer-vector-width=256 \
+COMMON_FLAGS = -march=x86-64-v3 -ffast-math -mvzeroupper -mprefer-vector-width=256 \
   -ffreestanding -Wall -Wextra -w -mno-red-zone -m64 \
   -fno-exceptions -fno-stack-protector -fno-rtti \
   -fno-unwind-tables -fno-asynchronous-unwind-tables \
   -flto=full -ffunction-sections -fdata-sections -fmerge-all-constants $(INCLUDES)
 
-FLAG_O3    = -O3
-FLAG_Oz    = -Oz
-
-CFLAGS_C        = $(COMMON_FLAGS) $(FLAG_O3) $(C_STD)
-CFLAGS_CPP      = $(COMMON_FLAGS) $(FLAG_O3) $(CPP_STD)
-CFLAGS_C_PERF   = $(COMMON_FLAGS) $(FLAG_O3) $(EXTREME_FLAGS) $(C_STD)
-CFLAGS_CPP_PERF = $(COMMON_FLAGS) $(FLAG_O3) $(EXTREME_FLAGS) $(CPP_STD)
-CFLAGS_C_SIZE   = $(COMMON_FLAGS) $(FLAG_Oz) $(C_STD)
-CFLAGS_CPP_SIZE = $(COMMON_FLAGS) $(FLAG_Oz) $(CPP_STD)
-CFLAGS_DOOM_PERF = $(COMMON_FLAGS) $(FLAG_O3) $(C_STD) \
+CFLAGS_C        = $(COMMON_FLAGS) -O2 $(C_STD)
+CFLAGS_CPP      = $(COMMON_FLAGS) -O2 $(CPP_STD)
+CFLAGS_C_PERF   = $(COMMON_FLAGS) -O3 $(EXTREME_FLAGS) $(C_STD)
+CFLAGS_CPP_PERF = $(COMMON_FLAGS) -O3 $(EXTREME_FLAGS) $(CPP_STD)
+CFLAGS_C_SIZE   = $(COMMON_FLAGS) -Os $(C_STD)
+CFLAGS_CPP_SIZE = $(COMMON_FLAGS) -Os $(CPP_STD)
+CFLAGS_DOOM_PERF = $(COMMON_FLAGS) -O2 $(C_STD) \
   -fno-ident -fno-unwind-tables -fno-asynchronous-unwind-tables \
   -fvisibility=hidden
-CFLAGS_BEARSSL = $(COMMON_FLAGS) $(FLAG_O3) $(C_STD) \
+CFLAGS_BEARSSL = $(COMMON_FLAGS) -O3 $(POLLY_FLAGS) $(C_STD) \
   -DBR_USE_URANDOM=0 -DBR_USE_UNIX_TIME=0 -DBR_USE_WIN32_RAND=0 -DBR_RDRAND=0
 
-LDFLAGS = -static -ffreestanding -nostdlib -flto=full -fuse-ld=lld $(POLLY_FLAGS) \
+LDFLAGS = -static -ffreestanding -nostdlib -flto=full -fuse-ld=lld \
   -Wl,-O3 -Wl,-n -Wl \
   -Wl,--gc-sections -Wl,--icf=all \
   -Wl,--strip-all -Wl,--build-id=none \
   -Wl,-T,arch/linker.ld
 
 ASM_SRCS = $(shell find arch kernel -name '*.asm' $(EXCLUDE))
+GAS_SRCS = $(shell find arch kernel -name '*.S' $(EXCLUDE))
 C_SRCS   = $(shell find arch kernel -name '*.c' $(EXCLUDE))
 C++_SRCS = $(shell find arch kernel -name '*.cpp' $(EXCLUDE))
 
@@ -68,6 +74,7 @@ PERF_CPP_OBJS = $(BUILD_DIR)/kernel/lib/math.o $(BUILD_DIR)/kernel/fs/vfs.o $(GR
 
 OBJS = $(sort \
   $(patsubst %.asm,$(BUILD_DIR)/%.o,$(ASM_SRCS)) \
+  $(patsubst %.S,$(BUILD_DIR)/%.o,$(GAS_SRCS)) \
   $(patsubst %.c,$(BUILD_DIR)/%.o,$(C_SRCS)) \
   $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(C++_SRCS)) \
   $(BEARSSL_OBJS) \
@@ -143,9 +150,20 @@ else
 	@$(call PRINT_TUI, [ASM   ], $<)
 endif
 
+$(BUILD_DIR)/%.o: %.S Makefile
+	@mkdir -p $(@D)
+	@$(CC) $(COMMON_FLAGS) -c -x assembler-with-cpp $< -o $@
+ifeq ($(V),1)
+else
+	@$(call PRINT_TUI, [GAS   ], $<)
+endif
+
 $(BUILD_DIR)/%.o: %.c Makefile
 	@mkdir -p $(@D)
-	@$(CC) $(CFLAGS_C) -c $< -o $@
+	@$(CC) $(CFLAGS_C) -emit-llvm -c $< -o $(@:.o=.bc)
+	@$(OPT) $(POLLY_OPT_FLAGS) $(@:.o=.bc) -o $(@:.o=.polly.bc)
+	@$(CC) $(CFLAGS_C) -c $(@:.o=.polly.bc) -o $@
+	@rm -f $(@:.o=.bc) $(@:.o=.polly.bc)
 ifeq ($(V),1)
 else
 	@$(call PRINT_TUI, $(TAG_C), $<)
@@ -153,7 +171,10 @@ endif
 
 $(BUILD_DIR)/%.o: %.cpp Makefile
 	@mkdir -p $(@D)
-	@$(CC++) $(CFLAGS_CPP) -c $< -o $@
+	@$(CC++) $(CFLAGS_CPP) -emit-llvm -c $< -o $(@:.o=.bc)
+	@$(OPT) $(POLLY_OPT_FLAGS) $(@:.o=.bc) -o $(@:.o=.polly.bc)
+	@$(CC++) $(CFLAGS_CPP) -c $(@:.o=.polly.bc) -o $@
+	@rm -f $(@:.o=.bc) $(@:.o=.polly.bc)
 ifeq ($(V),1)
 else
 	@$(call PRINT_TUI, $(TAG_CPP), $<)

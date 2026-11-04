@@ -2,9 +2,11 @@
 #include <arch/x86_64/string.h>
 #include <kernel/memory/pmm.h>
 
+#include <algorithm>
+
 namespace Kernel::Memory {
 
-PMM g_pmm;
+alignas(64) PMM g_pmm;
 static Spinlock pmm_lock;
 
 // Two-bit page states:
@@ -197,8 +199,7 @@ void PMM::free_page_block(void *ptr, size_t count) {
   }
 
   // Prevent integer overflow and out-of-range bitmap accesses.
-  if (count > bitmap_pages - start_page)
-    count = bitmap_pages - start_page;
+  count = std::min(count, bitmap_pages - start_page);
 
   for (size_t j = start_page; j < start_page + count; ++j) {
     const bool used = get_bit(j);
@@ -248,6 +249,54 @@ size_t PMM::recheck_used_memory() const {
   pmm_lock.unlock_irqrestore(flags);
 
   return used_pages * PAGE_SIZE;
+}
+
+void *PMM::allocate_huge_page() {
+  constexpr size_t huge_page_pages = 512; // 2 MiB / 4 KiB per page
+  const uint64_t flags = pmm_lock.lock_irqsave();
+
+  if (!bitmap) {
+    pmm_lock.unlock_irqrestore(flags);
+    return nullptr;
+  }
+
+  bootstrap_open = false;
+
+  size_t pages_found = 0;
+  size_t start_page = 0;
+
+  for (size_t i = 0; i < bitmap_pages; ++i) {
+    // If we are looking for a start page, ensure it is 2MiB aligned (index
+    // divisible by 512)
+    if (pages_found == 0 && (i % huge_page_pages != 0)) {
+      continue;
+    }
+
+    if (!get_bit(i) && !get_state_bit(i)) {
+      if (pages_found == 0)
+        start_page = i;
+
+      ++pages_found;
+
+      if (pages_found == huge_page_pages) {
+        for (size_t j = start_page; j < start_page + huge_page_pages; ++j)
+          set_bit(j, true);
+
+        used_pages_count += huge_page_pages;
+
+        const uintptr_t physical_address =
+            static_cast<uintptr_t>(start_page * PAGE_SIZE);
+
+        pmm_lock.unlock_irqrestore(flags);
+        return reinterpret_cast<void *>(physical_address);
+      }
+    } else {
+      pages_found = 0;
+    }
+  }
+
+  pmm_lock.unlock_irqrestore(flags);
+  return nullptr;
 }
 
 } // namespace Kernel::Memory

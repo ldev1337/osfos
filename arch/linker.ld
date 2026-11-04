@@ -7,19 +7,19 @@ PHDRS {
 }
 
 SECTIONS {
-    /* Standard higher-half or 1MB lower-half load address */
-    . = 1M;
+    /* Align base load address to 2MB huge-page boundary */
+    . = 2M;
 
     .text : {
         KEEP(*(.multiboot_header))
         *(.text .text.*)
     } :text
 
-    .rodata : ALIGN(4K) {
+    .rodata : ALIGN(2M) {
         *(.rodata .rodata.*)
     } :rodata
 
-    .data : ALIGN(4K) {
+    .data : ALIGN(2M) {
         *(.data .data.*)
     } :data
 
@@ -28,7 +28,7 @@ SECTIONS {
         *(.bss .bss.*)
     } :data
 
-    . = ALIGN(4K);
+    . = ALIGN(2M);
     PROVIDE(_kernel_end = .);
 
     /DISCARD/ : {

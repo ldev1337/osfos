@@ -46,6 +46,8 @@ public:
   size_t get_used_pages() const { return used_pages_count; }
 
   size_t get_free_pages() const { return total_pages - used_pages_count; }
+
+  void *allocate_huge_page();
 };
 
 extern PMM g_pmm;

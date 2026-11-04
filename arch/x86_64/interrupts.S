@@ -1,22 +1,37 @@
-; /arch/x86_64/interrupts.asm
-bits 64
-section .text
 
-%macro ISR_NO_ERRCODE 1
-isr%1:
-    push qword 0
-    push qword %1
+.intel_syntax noprefix
+.code64
+.altmacro
+
+.section .text
+
+.extern c_interrupt_handler
+.global isr_common_stub
+
+.type isr_common_stub, @function
+
+.macro ISR_NO_ERRCODE num
+.global isr\num
+isr\num:
+    push 0
+    push \num
     jmp isr_common_stub
-%endmacro
+.endm
 
-%macro ISR_ERRCODE 1
-isr%1:
-    push qword %1
+.macro ISR_ERRCODE num
+.global isr\num
+isr\num:
+    push \num
     jmp isr_common_stub
-%endmacro
+.endm
 
-extern c_interrupt_handler
-global isr_common_stub
+.macro SAVE_YMM_UPPER num, reg
+    vextractf128 XMMWORD PTR [rsp + 512 + (\num * 16)], \reg, 1
+.endm
+
+.macro RESTORE_YMM_UPPER num, reg
+    vinsertf128 \reg, \reg, XMMWORD PTR [rcx + 512 + (\num * 16)], 1
+.endm
 
 isr_common_stub:
     push rax
@@ -35,15 +50,15 @@ isr_common_stub:
     push r14
     push r15
 
-    ; Keep each interrupted context's SIMD/AVX state on its own stack so a
-    ; suspended thread retains it, and nested interrupts get separate storage.
+    # Preserve interrupted stack location.
     mov r12, rsp
+
+    # Allocate aligned SIMD state storage.
     sub rsp, 896
     and rsp, -64
+
     fxsave64 [rsp]
-%macro SAVE_YMM_UPPER 2
-    vextractf128 oword [rsp + 512 + (%1 * 16)], %2, 1
-%endmacro
+
     SAVE_YMM_UPPER 0, ymm0
     SAVE_YMM_UPPER 1, ymm1
     SAVE_YMM_UPPER 2, ymm2
@@ -60,17 +75,22 @@ isr_common_stub:
     SAVE_YMM_UPPER 13, ymm13
     SAVE_YMM_UPPER 14, ymm14
     SAVE_YMM_UPPER 15, ymm15
-    mov [r12 - 8], rsp    ; xstate pointer is the first InterruptFrame field.
-    lea rdi, [r12 - 8]
-    and rsp, -16          ; Interrupts can arrive with arbitrary stack alignment.
-    call c_interrupt_handler
-    mov rsp, rax          ; Switch to the new thread's stack pointer returned by scheduler
 
-    mov rcx, [rsp]
+    # InterruptFrame begins with xstate pointer.
+    mov QWORD PTR [r12 - 8], rsp
+    lea rdi, [r12 - 8]
+
+    # SysV ABI stack alignment.
+    and rsp, -16
+
+    call c_interrupt_handler
+
+    # Scheduler returns the selected context's frame pointer.
+    mov rsp, rax
+
+    mov rcx, QWORD PTR [rsp]
     fxrstor64 [rcx]
-%macro RESTORE_YMM_UPPER 2
-    vinsertf128 %2, %2, oword [rcx + 512 + (%1 * 16)], 1
-%endmacro
+
     RESTORE_YMM_UPPER 0, ymm0
     RESTORE_YMM_UPPER 1, ymm1
     RESTORE_YMM_UPPER 2, ymm2
@@ -87,7 +107,9 @@ isr_common_stub:
     RESTORE_YMM_UPPER 13, ymm13
     RESTORE_YMM_UPPER 14, ymm14
     RESTORE_YMM_UPPER 15, ymm15
-    add rsp, 8            ; Skip xstate_ptr before restoring general registers.
+
+    # Skip xstate pointer.
+    add rsp, 8
 
     pop r15
     pop r14
@@ -105,25 +127,41 @@ isr_common_stub:
     pop rbx
     pop rax
 
+    # Skip vector and error code.
     add rsp, 16
 
     iretq
 
-%assign i 0
-%rep 256
-    %if i == 8 || (i >= 10 && i <= 14) || i == 17 || i == 30
-        ISR_ERRCODE i
-    %else
-        ISR_NO_ERRCODE i
-    %endif
-    %assign i i + 1
-%endrep
+.size isr_common_stub, .-isr_common_stub
 
-section .data
-global isr_stub_table
+# Generate all 256 interrupt stubs.
+.set i, 0
+.rept 256
+    .if (i == 8) || ((i >= 10) && (i <= 14)) || (i == 17) || (i == 30)
+        ISR_ERRCODE %i
+    .else
+        ISR_NO_ERRCODE %i
+    .endif
+    .set i, i + 1
+.endr
+
+.section .data
+.p2align 3
+
+.global isr_stub_table
+.type isr_stub_table, @object
+
 isr_stub_table:
-%assign i 0
-%rep 256
-    dq isr%+i
-    %assign i i + 1
-%endrep
+.macro ISR_TABLE_ENTRY num
+    .quad isr\num
+.endm
+
+.set i, 0
+.rept 256
+    ISR_TABLE_ENTRY %i
+    .set i, i + 1
+.endr
+
+.size isr_stub_table, .-isr_stub_table
+
+.section .note.GNU-stack,"",@progbits
