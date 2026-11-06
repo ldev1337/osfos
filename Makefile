@@ -9,40 +9,25 @@ CPP_STD = -std=c++20
 INCLUDES = -Iinclude -Ikernel/programs/doomgeneric -Ithird_party/bearssl/inc \
   -Ithird_party/bearssl/src
 
-POLLY_PLUGIN = /usr/lib/LLVMPolly.so
-POLLY_OPT_FLAGS = -load-pass-plugin=$(POLLY_PLUGIN) \
-  -polly-optimizer=isl \
-  -polly-tiling \
-  -polly-default-tile-size=32 \
-  -polly-2nd-level-tiling \
-  -polly-2nd-level-default-tile-size=16 \
-  -polly-vectorizer=stripmine \
-  -polly-prevect-width=8 \
-  -polly-use-runtime-alias-checks \
-  '-passes=polly-custom<prepare;detect;scops;flatten;deps;simplify-0;optree;delicm;simplify-1;dce;opt-isl;ast;codegen>'
+COMMON_FLAGS = -march=x86-64-v3 -ffast-math \
+  -ffreestanding -Wall -Wextra -w -mno-red-zone -m64 \
+  -fno-exceptions -fno-stack-protector -fno-rtti \
+  -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fvisibility=hidden\
+  -flto=thin -ffunction-sections -fdata-sections -fmerge-all-constants $(INCLUDES)
 
-EXTREME_FLAGS =  -mllvm -aggressive-ext-opt=true \
-  -mllvm -enable-gvn-hoist=true \
+LESS_EXTR_FLAGS = -mllvm -enable-gvn-hoist=true \
   -mllvm -enable-gvn-sink=true \
   -mllvm -enable-loop-flatten=true \
   -mllvm -enable-interleaved-mem-accesses=true
 
-COMMON_FLAGS = -march=x86-64-v3 -ffast-math -mvzeroupper -mprefer-vector-width=256 \
-  -ffreestanding -Wall -Wextra -w -mno-red-zone -m64 \
-  -fno-exceptions -fno-stack-protector -fno-rtti \
-  -fno-unwind-tables -fno-asynchronous-unwind-tables \
-  -flto=full -ffunction-sections -fdata-sections -fmerge-all-constants $(INCLUDES)
-
-CFLAGS_C        = $(COMMON_FLAGS) -O2 $(C_STD)
-CFLAGS_CPP      = $(COMMON_FLAGS) -O2 $(CPP_STD)
-CFLAGS_C_PERF   = $(COMMON_FLAGS) -O3 $(EXTREME_FLAGS) $(C_STD)
-CFLAGS_CPP_PERF = $(COMMON_FLAGS) -O3 $(EXTREME_FLAGS) $(CPP_STD)
-CFLAGS_C_SIZE   = $(COMMON_FLAGS) -Os $(C_STD)
-CFLAGS_CPP_SIZE = $(COMMON_FLAGS) -Os $(CPP_STD)
-CFLAGS_DOOM_PERF = $(COMMON_FLAGS) -O2 $(C_STD) \
-  -fno-ident -fno-unwind-tables -fno-asynchronous-unwind-tables \
-  -fvisibility=hidden
-CFLAGS_BEARSSL = $(COMMON_FLAGS) -O3 $(POLLY_FLAGS) $(C_STD) \
+CFLAGS_C        = $(COMMON_FLAGS) -O2 $(LESS_EXTR_FLAGS) $(C_STD)
+CFLAGS_CPP      = $(COMMON_FLAGS) -O2 $(LESS_EXTR_FLAGS) $(CPP_STD)
+CFLAGS_C_PERF   = $(COMMON_FLAGS) -O3 $(LESS_EXTR_FLAGS) $(C_STD)   #-finline-limit=large
+CFLAGS_CPP_PERF = $(COMMON_FLAGS) -O3 $(LESS_EXTR_FLAGS) $(CPP_STD) #-finline-limit=large
+CFLAGS_C_SIZE   = $(COMMON_FLAGS) -Os $(LESS_EXTR_FLAGS) $(C_STD)
+CFLAGS_CPP_SIZE = $(COMMON_FLAGS) -Os $(LESS_EXTR_FLAGS) $(CPP_STD)
+CFLAGS_DOOM_PERF= $(COMMON_FLAGS) -O2 $(LESS_EXTR_FLAGS) $(C_STD)
+CFLAGS_BEARSSL  = $(COMMON_FLAGS) -O3 $(LESS_EXTR_FLAGS) $(C_STD) \
   -DBR_USE_URANDOM=0 -DBR_USE_UNIX_TIME=0 -DBR_USE_WIN32_RAND=0 -DBR_RDRAND=0
 
 LDFLAGS = -static -ffreestanding -nostdlib -flto=full -fuse-ld=lld \
@@ -71,6 +56,9 @@ PROGRAM_C_OBJS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(wildcard kernel/programs/doom
 GRAPHICS_OBJS = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(wildcard kernel/graphics/*.cpp))
 ARCH_PERF_C_OBJS = $(BUILD_DIR)/arch/x86_64/memory.o $(BUILD_DIR)/arch/x86_64/string.o
 PERF_CPP_OBJS = $(BUILD_DIR)/kernel/lib/math.o $(BUILD_DIR)/kernel/fs/vfs.o $(GRAPHICS_OBJS)
+DRIVER_C_OBJS   = $(patsubst %.c,$(BUILD_DIR)/%.o,$(shell find kernel/drivers -name '*.c'))
+DRIVER_CPP_OBJS = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(shell find kernel/drivers -name '*.cpp'))
+DRIVER_OBJS     = $(DRIVER_C_OBJS) $(DRIVER_CPP_OBJS)
 
 OBJS = $(sort \
   $(patsubst %.asm,$(BUILD_DIR)/%.o,$(ASM_SRCS)) \
@@ -85,12 +73,14 @@ OBJS = $(sort \
   $(ARCH_PERF_C_OBJS) \
 )
 
-$(PERF_CPP_OBJS):    CFLAGS_CPP = $(CFLAGS_CPP_PERF)
-$(ARCH_PERF_C_OBJS): CFLAGS_C   = $(CFLAGS_C_PERF)
+$(PERF_CPP_OBJS):         CFLAGS_CPP = $(CFLAGS_CPP_PERF)
+$(ARCH_PERF_C_OBJS):      CFLAGS_C   = $(CFLAGS_C_PERF)
 $(PROGRAM_PERF_CPP_OBJS): CFLAGS_CPP = $(CFLAGS_CPP_PERF)
 $(DEMO_CPP_OBJS):         CFLAGS_CPP = $(CFLAGS_CPP_SIZE)
 $(PROGRAM_C_OBJS):        CFLAGS_C   = $(CFLAGS_DOOM_PERF)
-$(BEARSSL_OBJS):     CFLAGS_C   = $(CFLAGS_BEARSSL)
+$(BEARSSL_OBJS):          CFLAGS_C   = $(CFLAGS_BEARSSL)
+$(DRIVER_C_OBJS):         CFLAGS_C   = $(CFLAGS_C_PERF)
+$(DRIVER_CPP_OBJS):       CFLAGS_CPP = $(CFLAGS_CPP_PERF)
 
 opt_flag = $(lastword $(filter -O%,$(1)))
 opt_tag  = $(patsubst -%,%,$(call opt_flag,$(1)))
@@ -123,7 +113,7 @@ define PRINT_TUI
   [ $$PAD_LEN -lt 0 ] && PAD_LEN=0; \
   PADDING=$$(printf "%*s" $$PAD_LEN ""); \
   FILE_WIDTH=$(FILE_WIDTH); \
-  printf "\033[1;36m%s\033[0m%s\033[37m%-*s\033[0m \033[1;90m│\033[0m \033[1;32m%10s\033[0m\n" "$$TAG_RAW" "$$PADDING" "$$FILE_WIDTH" "$(2)" "$$SZ_FMT" \
+  printf "\033[1;36m%s\033[0m%s\033[37m%-*s\033[0m   \033[1;32m%10s\033[0m\n" "$$TAG_RAW" "$$PADDING" "$$FILE_WIDTH" "$(2)" "$$SZ_FMT" \
   '
 endef
 
@@ -161,7 +151,7 @@ endif
 $(BUILD_DIR)/%.o: %.c Makefile
 	@mkdir -p $(@D)
 	@$(CC) $(CFLAGS_C) -emit-llvm -c $< -o $(@:.o=.bc)
-	@$(OPT) $(POLLY_OPT_FLAGS) $(@:.o=.bc) -o $(@:.o=.polly.bc)
+	@$(OPT) $(@:.o=.bc) -o $(@:.o=.polly.bc)
 	@$(CC) $(CFLAGS_C) -c $(@:.o=.polly.bc) -o $@
 	@rm -f $(@:.o=.bc) $(@:.o=.polly.bc)
 ifeq ($(V),1)
@@ -172,7 +162,7 @@ endif
 $(BUILD_DIR)/%.o: %.cpp Makefile
 	@mkdir -p $(@D)
 	@$(CC++) $(CFLAGS_CPP) -emit-llvm -c $< -o $(@:.o=.bc)
-	@$(OPT) $(POLLY_OPT_FLAGS) $(@:.o=.bc) -o $(@:.o=.polly.bc)
+	@$(OPT) $(@:.o=.bc) -o $(@:.o=.polly.bc)
 	@$(CC++) $(CFLAGS_CPP) -c $(@:.o=.polly.bc) -o $@
 	@rm -f $(@:.o=.bc) $(@:.o=.polly.bc)
 ifeq ($(V),1)

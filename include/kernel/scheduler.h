@@ -49,6 +49,7 @@ bool is_current_thread_application();
 void terminate_thread(uint64_t id);
 bool should_stop();
 void thread_yield();
+bool thread_unblock(uint64_t id);
 [[noreturn]] void thread_exit();
 void thread_block();
 // The short predicate runs with interrupts disabled to avoid lost wakeups.

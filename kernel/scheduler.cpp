@@ -553,6 +553,24 @@ void unblock_io_threads() {
   irq_restore(flags);
 }
 
+bool thread_unblock(uint64_t id) {
+  if (id == 0)
+    return false;
+
+  const uint64_t flags = irq_save();
+  for (ThreadControlBlock *thread = thread_list_head; thread;
+       thread = thread->registry_next) {
+    if (thread->id == id && thread->state == ThreadState::BLOCKED &&
+        !thread->timed_wait) {
+      enqueue(thread);
+      irq_restore(flags);
+      return true;
+    }
+  }
+  irq_restore(flags);
+  return false;
+}
+
 auto should_preempt() -> bool { return true; }
 
 auto schedule(uint64_t current_rsp) -> uint64_t {

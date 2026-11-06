@@ -56,6 +56,8 @@ extern "C" void main(unsigned long multiboot_info_addr) {
   Kernel::Drivers::PIT::init(250);
 
   if (Kernel::Drivers::E1000::detect_and_init()) {
+    if (!Kernel::Drivers::E1000::start())
+      kernel_printf("E1000 RX worker initialization failed.\n");
     uint8_t mac[6];
     Kernel::Drivers::E1000::get_mac_address(mac);
     uint64_t seed =

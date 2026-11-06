@@ -174,7 +174,7 @@ void run(const char *wad) {
                   (char *)"-iwad",
                   const_cast<char *>(wad),
                   (char *)"-mb",
-                  (char *)"12",
+                  (char *)"8",
                   (char *)"-savedir",
                   (char *)"/bin/doom/saves",};
   doom_quit_requested = false;

@@ -1,6 +1,8 @@
 #include <arch/x86_64/string.h>
 #include <kernel/drivers/framebuffer.h>
 
+#include <algorithm>
+
 namespace Kernel::Drivers::Framebuffer {
 
 static Config fb{};
@@ -212,10 +214,8 @@ void blit(const uint32_t *src, uint32_t x, uint32_t y, uint32_t w, uint32_t h,
           uint32_t src_pitch) {
   if (!initialized || !src || x >= fb.width || y >= fb.height) [[unlikely]]
     return;
-  if (w > fb.width - x)
-    w = fb.width - x;
-  if (h > fb.height - y)
-    h = fb.height - y;
+  w = std::min(w, fb.width - x);
+  h = std::min(h, fb.height - y);
   if (w == 0 || h == 0)
     return;
 

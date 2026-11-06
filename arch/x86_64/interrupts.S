@@ -1,4 +1,3 @@
-
 .intel_syntax noprefix
 .code64
 .altmacro
@@ -26,10 +25,12 @@ isr\num:
 .endm
 
 .macro SAVE_YMM_UPPER num, reg
-    vextractf128 XMMWORD PTR [rsp + 512 + (\num * 16)], \reg, 1
+    # YMM upper halves stored at [r13 + 512 + (num * 16)]
+    vextractf128 XMMWORD PTR [r13 + 512 + (\num * 16)], \reg, 1
 .endm
 
 .macro RESTORE_YMM_UPPER num, reg
+    # Restore from the saved block pointer passed via rcx
     vinsertf128 \reg, \reg, XMMWORD PTR [rcx + 512 + (\num * 16)], 1
 .endm
 
@@ -53,11 +54,19 @@ isr_common_stub:
     # Preserve interrupted stack location.
     mov r12, rsp
 
-    # Allocate aligned SIMD state storage.
-    sub rsp, 896
+    # Allocate stack frame:
+    # - 512 bytes: fxsave64 storage
+    # - 256 bytes: YMM upper halves storage (16 * 16)
+    # Total = 768 bytes. No red-zone cushion needed: kernel is built with
+    # -mno-red-zone, so the compiler never uses the 128 bytes below RSP.
+    sub rsp, 768
     and rsp, -64
 
-    fxsave64 [rsp]
+    # r13 points to the start of fxsave64 storage (base of our aligned block)
+    mov r13, rsp
+
+    # Save SIMD state
+    fxsave64 [r13]
 
     SAVE_YMM_UPPER 0, ymm0
     SAVE_YMM_UPPER 1, ymm1
@@ -76,18 +85,22 @@ isr_common_stub:
     SAVE_YMM_UPPER 14, ymm14
     SAVE_YMM_UPPER 15, ymm15
 
-    # InterruptFrame begins with xstate pointer.
-    mov QWORD PTR [r12 - 8], rsp
+    # InterruptFrame begins with xstate pointer stored at [r12 - 8]
+    mov QWORD PTR [r12 - 8], r13
     lea rdi, [r12 - 8]
 
-    # SysV ABI stack alignment.
+    # Align stack to 16 bytes for the call (SysV ABI requirement).
+    # With -mno-red-zone the compiler will not spill into memory below RSP,
+    # so no cushion is needed here.
+    mov rsp, r13
     and rsp, -16
 
     call c_interrupt_handler
 
-    # Scheduler returns the selected context's frame pointer.
+    # Scheduler returns the selected context's frame pointer in rax.
     mov rsp, rax
 
+    # Load xstate pointer
     mov rcx, QWORD PTR [rsp]
     fxrstor64 [rcx]
 

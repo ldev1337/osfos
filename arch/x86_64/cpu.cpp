@@ -39,6 +39,8 @@ struct IDTPtr {
 
 static struct IDTEntry idt_entries[256];
 static struct IDTPtr idt_ptr;
+static uint8_t pic_master_mask = 0xFF;
+static uint8_t pic_slave_mask = 0xFF;
 
 struct InterruptFrame {
   uint64_t xstate_ptr;
@@ -50,6 +52,7 @@ struct InterruptFrame {
 } __attribute__((packed));
 
 extern uint64_t isr_stub_table[];
+extern "C" void ata_irq_handler();
 
 extern "C" uint64_t c_interrupt_handler(struct InterruptFrame *frame) {
   const uint64_t vector = frame->interrupt_number;
@@ -69,6 +72,10 @@ extern "C" uint64_t c_interrupt_handler(struct InterruptFrame *frame) {
 
   if (vector == 0x2C) {
     Kernel::Drivers::Mouse::handle_interrupt();
+  }
+
+  if (vector == 0x2E) {
+    ata_irq_handler();
   }
 
   if (vector == (0x20 + Kernel::Drivers::E1000::get_irq())) {
@@ -180,8 +187,27 @@ static void init_pic(void) {
   outb(0xA1, 0x01);
   io_wait();
 
-  outb(0x21, 0xF8);
-  outb(0xA1, 0xEF);
+  pic_master_mask = 0xF8;
+  pic_slave_mask = 0xEF;
+  outb(0x21, pic_master_mask);
+  outb(0xA1, pic_slave_mask);
+}
+
+extern "C" bool cpu_pic_unmask_irq(uint8_t irq) {
+  if (irq >= 16)
+    return false;
+
+  if (irq < 8) {
+    pic_master_mask &= static_cast<uint8_t>(~(1u << irq));
+    outb(0x21, pic_master_mask);
+    return true;
+  }
+
+  pic_slave_mask &= static_cast<uint8_t>(~(1u << (irq - 8)));
+  pic_master_mask &= static_cast<uint8_t>(~(1u << 2));
+  outb(0xA1, pic_slave_mask);
+  outb(0x21, pic_master_mask);
+  return true;
 }
 
 static bool cpuid_supported(uint32_t leaf, uint32_t subleaf, uint32_t *eax,

@@ -28,6 +28,7 @@ public:
 
   static bool init(uintptr_t mmio_base);
   static bool detect_and_init();
+  static bool start();
 
   static bool send(const void *data, size_t len);
   static int receive(void *buffer, size_t max_len);
@@ -42,6 +43,10 @@ private:
   static uint32_t read_eeprom(uint8_t addr);
   static void init_rx();
   static void init_tx();
+  static void rx_worker();
+  static bool rx_work_should_block();
+  static bool rx_descriptor_ready();
+  static size_t drain_rx(size_t budget);
 
   static constexpr size_t RX_DESC_COUNT = 32;
   static constexpr size_t TX_DESC_COUNT = 32;

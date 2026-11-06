@@ -1,11 +1,12 @@
 #include <kernel/cpu.h>
 #include <kernel/drivers/e1000.h>
+#include <kernel/scheduler.h>
 
 namespace Kernel::Drivers {
 
 uintptr_t E1000::s_mmio_base = 0;
 uint8_t E1000::s_mac[6] = {0};
-uint8_t E1000::s_irq = 0;
+uint8_t E1000::s_irq = 0xFF;
 
 E1000::RxDesc E1000::s_rx_descs[RX_DESC_COUNT];
 E1000::TxDesc E1000::s_tx_descs[TX_DESC_COUNT];
@@ -15,21 +16,25 @@ uint8_t E1000::s_tx_buffers[RX_DESC_COUNT][PKT_BUFFER_SIZE];
 uint32_t E1000::s_rx_cur = 0;
 uint32_t E1000::s_tx_cur = 0;
 
-// Software packet queue for interrupt-driven buffering
 struct RxPacketNode {
   uint8_t data[1518];
   uint16_t len;
 };
 static constexpr size_t RX_QUEUE_SIZE = 16;
 static RxPacketNode s_rx_queue[RX_QUEUE_SIZE];
-static volatile size_t s_rx_queue_head = 0;
-static volatile size_t s_rx_queue_tail = 0;
+static uint32_t s_rx_queue_head = 0;
+static uint32_t s_rx_queue_tail = 0;
+static uint64_t s_rx_worker_id = 0;
+static bool s_rx_started = false;
+static bool s_rx_work_pending = false;
 
 // Register Offsets
 constexpr uint32_t REG_CTRL = 0x0000;
 constexpr uint32_t REG_STATUS = 0x0008;
 constexpr uint32_t REG_EERD = 0x0014;
+constexpr uint32_t REG_ICR = 0x00C0;
 constexpr uint32_t REG_IMS = 0x00D0;
+constexpr uint32_t REG_IMC = 0x00D8;
 constexpr uint32_t REG_RCTL = 0x0100;
 constexpr uint32_t REG_TCTL = 0x0400;
 constexpr uint32_t REG_RDBAL = 0x2800;
@@ -44,6 +49,10 @@ constexpr uint32_t REG_TDH = 0x3810;
 constexpr uint32_t REG_TDT = 0x3818;
 constexpr uint32_t REG_RAL = 0x5400;
 constexpr uint32_t REG_RAH = 0x5404;
+constexpr uint32_t RX_INTERRUPT_MASK = (1u << 4) | (1u << 6) | (1u << 7);
+constexpr size_t RX_POLL_BUDGET = 8;
+
+static_assert((RX_QUEUE_SIZE & (RX_QUEUE_SIZE - 1)) == 0);
 
 static bool fits_dma32(const void *ptr, size_t len) {
   const uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
@@ -103,6 +112,10 @@ bool E1000::detect_and_init() {
         // Read Interrupt Line (Offset 0x3C)
         outl(0xCF8, address | 0x3C);
         s_irq = static_cast<uint8_t>(inl(0xCFC) & 0xFF);
+        if (s_irq < 3 || s_irq >= 16) {
+          s_irq = 0xFF;
+          return false;
+        }
 
         return init(mmio);
       }
@@ -149,9 +162,28 @@ bool E1000::init(uintptr_t mmio_base) {
   init_rx();
   init_tx();
 
-  // Enable Interrupts (Link Status Change, RX/TX)
-  write_reg(REG_IMS, 0x1F6DC);
+  write_reg(REG_IMC, 0xFFFFFFFF);
 
+  return true;
+}
+
+bool E1000::start() {
+  if (s_mmio_base == 0 || s_irq >= 16 || s_rx_started)
+    return false;
+
+  const int worker_id = Kernel::Scheduler::thread_create(rx_worker);
+  if (worker_id < 0)
+    return false;
+
+  s_rx_worker_id = static_cast<uint64_t>(worker_id);
+  s_rx_started = true;
+  __atomic_store_n(&s_rx_work_pending, false, __ATOMIC_RELEASE);
+  write_reg(REG_IMS, 0x1F6DC);
+  if (!cpu_pic_unmask_irq(s_irq)) {
+    write_reg(REG_IMC, 0xFFFFFFFF);
+    s_rx_started = false;
+    return false;
+  }
   return true;
 }
 
@@ -225,46 +257,91 @@ bool E1000::send(const void *data, size_t len) {
 }
 
 int E1000::receive(void *buffer, size_t max_len) {
-  const int queued = poll_packet(buffer, max_len);
-  if (queued > 0)
-    return queued;
-
-  uint32_t tail = read_reg(REG_RDT);
-  uint32_t head = (tail + 1) % RX_DESC_COUNT;
-
-  if ((s_rx_descs[head].status & 0x1) != 0) {
-    uint16_t len = s_rx_descs[head].length;
-    size_t copy_len = len < max_len ? len : max_len;
-
-    for (size_t i = 0; i < copy_len; i++) {
-      static_cast<uint8_t *>(buffer)[i] = s_rx_buffers[head][i];
-    }
-
-    s_rx_descs[head].status = 0;
-    write_reg(REG_RDT, head);
-    return static_cast<int>(copy_len);
-  }
-  return 0;
+  return poll_packet(buffer, max_len);
 }
 
 int E1000::poll_packet(void *buffer, size_t max_len) {
-  if (s_rx_queue_head == s_rx_queue_tail) {
+  if (!buffer || max_len == 0)
     return 0;
-  }
 
-  const auto &pkt = s_rx_queue[s_rx_queue_head];
+  const uint32_t head = __atomic_load_n(&s_rx_queue_head, __ATOMIC_RELAXED);
+  const uint32_t tail = __atomic_load_n(&s_rx_queue_tail, __ATOMIC_ACQUIRE);
+  if (head == tail)
+    return 0;
+
+  const auto &pkt = s_rx_queue[head & (RX_QUEUE_SIZE - 1)];
   size_t copy_len = pkt.len < max_len ? pkt.len : max_len;
   for (size_t i = 0; i < copy_len; i++) {
     static_cast<uint8_t *>(buffer)[i] = pkt.data[i];
   }
 
-  s_rx_queue_head = (s_rx_queue_head + 1) % RX_QUEUE_SIZE;
+  __atomic_store_n(&s_rx_queue_head, head + 1, __ATOMIC_RELEASE);
   return static_cast<int>(copy_len);
 }
 
+bool E1000::rx_work_should_block() {
+  return !__atomic_load_n(&s_rx_work_pending, __ATOMIC_ACQUIRE);
+}
+
+bool E1000::rx_descriptor_ready() {
+  return (__atomic_load_n(&s_rx_descs[s_rx_cur].status, __ATOMIC_ACQUIRE) & 1) !=
+         0;
+}
+
+size_t E1000::drain_rx(size_t budget) {
+  size_t processed = 0;
+  while (processed < budget && rx_descriptor_ready()) {
+    const uint32_t index = s_rx_cur;
+    const uint16_t length = s_rx_descs[index].length;
+
+    if (s_rx_descs[index].errors == 0 && length != 0 && length <= 1518) {
+      const uint32_t tail =
+          __atomic_load_n(&s_rx_queue_tail, __ATOMIC_RELAXED);
+      const uint32_t head =
+          __atomic_load_n(&s_rx_queue_head, __ATOMIC_ACQUIRE);
+      if (tail - head < RX_QUEUE_SIZE) {
+        auto &packet = s_rx_queue[tail & (RX_QUEUE_SIZE - 1)];
+        for (size_t i = 0; i < length; ++i)
+          packet.data[i] = s_rx_buffers[index][i];
+        packet.len = length;
+        __atomic_store_n(&s_rx_queue_tail, tail + 1, __ATOMIC_RELEASE);
+      }
+    }
+
+    __atomic_store_n(&s_rx_descs[index].status, 0, __ATOMIC_RELEASE);
+    s_rx_cur = (index + 1) % RX_DESC_COUNT;
+    write_reg(REG_RDT, index);
+    ++processed;
+  }
+  return processed;
+}
+
+void E1000::rx_worker() {
+  for (;;) {
+    Kernel::Scheduler::thread_block_if(rx_work_should_block);
+    __atomic_store_n(&s_rx_work_pending, false, __ATOMIC_RELEASE);
+
+    const size_t processed = drain_rx(RX_POLL_BUDGET);
+    if (processed == RX_POLL_BUDGET && rx_descriptor_ready()) {
+      __atomic_store_n(&s_rx_work_pending, true, __ATOMIC_RELEASE);
+      Kernel::Scheduler::thread_yield();
+      continue;
+    }
+
+    write_reg(REG_IMS, RX_INTERRUPT_MASK);
+    if (rx_descriptor_ready() ||
+        __atomic_load_n(&s_rx_work_pending, __ATOMIC_ACQUIRE)) {
+      write_reg(REG_IMC, RX_INTERRUPT_MASK);
+      __atomic_store_n(&s_rx_work_pending, true, __ATOMIC_RELEASE);
+    }
+  }
+}
+
 void E1000::handle_interrupt() {
-  uint32_t icr =
-      read_reg(0x00C0); // Read ICR (Automatically clears pending cause bits)
+  if (s_mmio_base == 0 || !s_rx_started)
+    return;
+
+  const uint32_t icr = read_reg(REG_ICR);
   if (icr == 0)
     return;
 
@@ -275,31 +352,10 @@ void E1000::handle_interrupt() {
     (void)link_up;
   }
 
-  // 2. Packet Received Interrupt (RXT/RXDMT0/Overrun - Bits 4, 6, 7)
-  if ((icr & (1 << 6)) || (icr & (1 << 7)) || (icr & (1 << 4))) {
-    while (true) {
-      uint32_t tail = read_reg(REG_RDT);
-      uint32_t head = (tail + 1) % RX_DESC_COUNT;
-
-      if ((s_rx_descs[head].status & 0x1) != 0) { // Descriptor Done
-        uint16_t len = s_rx_descs[head].length;
-
-        size_t next_tail = (s_rx_queue_tail + 1) % RX_QUEUE_SIZE;
-        if (next_tail != s_rx_queue_head) { // Queue not full
-          size_t copy_len = len < 1518 ? len : 1518;
-          for (size_t i = 0; i < copy_len; i++) {
-            s_rx_queue[s_rx_queue_tail].data[i] = s_rx_buffers[head][i];
-          }
-          s_rx_queue[s_rx_queue_tail].len = static_cast<uint16_t>(copy_len);
-          s_rx_queue_tail = next_tail;
-        }
-
-        s_rx_descs[head].status = 0;
-        write_reg(REG_RDT, head);
-      } else {
-        break;
-      }
-    }
+  if ((icr & RX_INTERRUPT_MASK) != 0) {
+    write_reg(REG_IMC, RX_INTERRUPT_MASK);
+    __atomic_store_n(&s_rx_work_pending, true, __ATOMIC_RELEASE);
+    Kernel::Scheduler::thread_unblock(s_rx_worker_id);
   }
 }
 

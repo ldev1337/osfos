@@ -37,6 +37,7 @@ void run();
 namespace Kernel::Apps {
 void graphic_test_run();
 void stress_test_run();
+void benchmark_run();
 void shitty_excel_run();
 void memory_analyzer_run();
 void task_manager_run();
@@ -135,6 +136,7 @@ void run_doom2() { Kernel::Games::Doom::run("/bin/doom/doom2.wad"); }
 void run_tetris() { Kernel::Games::Tetris::run(); }
 void run_graphic_test() { Kernel::Apps::graphic_test_run(); }
 void run_stress_test() { Kernel::Apps::stress_test_run(); }
+void run_benchmark() { Kernel::Apps::benchmark_run(); }
 void run_shitty_excel() { Kernel::Apps::shitty_excel_run(); }
 void run_pain() { Kernel::Apps::Pain::run(); }
 void run_calc() { Kernel::Apps::Calc::run(); }
@@ -341,6 +343,7 @@ void help() {
   kernel_printf("  breakout              Play Breakout\n");
   kernel_printf("  gtest                 Run Graphic test app suite\n");
   kernel_printf("  stress                Run the stress test\n");
+  kernel_printf("  bench                 Run the system benchmark suite\n");
   kernel_printf("  shitcell              Run The Shitty Excel spreadsheet\n");
   kernel_printf("  pain                  Run THE PAIN PNG Image Viewer and "
                 "Paint shits\n");
@@ -741,6 +744,9 @@ void execute(char *line) {
   } else if (equals(line, "stress")) {
     if (!launch_app("Stress test", run_stress_test))
       kernel_printf("Could not launch stress test.\n");
+  } else if (equals(line, "bench")) {
+    if (!launch_app("System benchmark", run_benchmark))
+      kernel_printf("Could not launch system benchmark.\n");
   } else if (equals(line, "shitcell")) {
     if (!launch_app("Shitcell", run_shitty_excel))
       kernel_printf("Could not launch Shitcell.\n");
