@@ -110,7 +110,9 @@ FileStream g_streams[VFS_MAX_OPEN_FILES]{};
 
 // Dynamic block bitmap representation in RAM
 constexpr uint32_t MAX_BLOCKS = VFS_MAX_SECTORS;
-uint8_t g_block_bitmap[MAX_BLOCKS / 8]{};
+constexpr uint32_t BLOCK_BITMAP_SECTORS_MAX = (MAX_BLOCKS + 4095) / 4096;
+constexpr uint32_t BLOCK_BITMAP_BYTES = BLOCK_BITMAP_SECTORS_MAX * VFS_SECTOR_SIZE;
+uint8_t g_block_bitmap[BLOCK_BITMAP_BYTES]{};
 bool g_block_bitmap_dirty = false;
 
 // ── Utility Helpers ─────────────────────────────────────────────────────────
@@ -229,7 +231,8 @@ CacheSlot *cache_evict() {
     if (g_cache[i].age < g_cache[best].age)
       best = i;
   }
-  cache_flush_slot(g_cache[best]);
+  if (!cache_flush_slot(g_cache[best]))
+    return nullptr;
   cache_remove(g_cache[best]);
   g_cache[best].abs_lba = CACHE_INVALID_LBA;
   return &g_cache[best];
@@ -245,7 +248,7 @@ bool cached_read_sector(uint32_t rel_lba, uint8_t *out) {
     return true;
   }
   slot = cache_evict();
-  if (!Kernel::Drivers::ATADriver::read_sectors(abs, 1, slot->data))
+  if (!slot || !Kernel::Drivers::ATADriver::read_sectors(abs, 1, slot->data))
     return false;
   slot->abs_lba = abs;
   slot->age = ++g_cache_tick;
@@ -262,6 +265,8 @@ bool cached_write_sector(uint32_t rel_lba, const uint8_t *data) {
   CacheSlot *slot = cache_find(abs);
   if (!slot) {
     slot = cache_evict();
+    if (!slot)
+      return false;
     slot->abs_lba = abs;
     cache_insert(*slot);
   }
@@ -279,7 +284,7 @@ uint8_t *cached_read_sector_ptr(uint32_t rel_lba) {
   if (slot)
     return slot->data;
   slot = cache_evict();
-  if (!Kernel::Drivers::ATADriver::read_sectors(abs, 1, slot->data))
+  if (!slot || !Kernel::Drivers::ATADriver::read_sectors(abs, 1, slot->data))
     return nullptr;
   slot->abs_lba = abs;
   slot->age = ++g_cache_tick;
@@ -383,7 +388,6 @@ int lookup_inode_in_dir(uint32_t dir_inode_idx, const char *name) {
     return -1;
 
   uint8_t sector_buf[VFS_SECTOR_SIZE];
-  uint32_t processed = 0;
 
   for (uint32_t e = 0; e < dir.extents_count; ++e) {
     uint32_t block = dir.extents[e].start_block;
@@ -547,54 +551,80 @@ void free_inode_bitmap(uint32_t ino) {
 
 // ── Mount Validation ────────────────────────────────────────────────────────
 bool mount_internal() {
+  g_mounted = false;
+  g_inode_bitmap_dirty = false;
+  g_block_bitmap_dirty = false;
+  bytes_zero(g_inode_dirty, sizeof(g_inode_dirty));
+  bytes_zero(g_inode_bitmap, sizeof(g_inode_bitmap));
+  bytes_zero(g_block_bitmap, sizeof(g_block_bitmap));
+
   uint8_t sector[VFS_SECTOR_SIZE];
   if (!Kernel::Drivers::ATADriver::read_sectors(VFS_START_LBA, 1, sector))
     return false;
   bytes_copy(&g_sb, sector, sizeof(g_sb));
 
-  if (hash_fnv1a(reinterpret_cast<const uint8_t *>(&g_sb), 48) != g_sb.checksum)
+  constexpr uint32_t expected_inode_table_sectors =
+      (VFS_MAX_INODES * sizeof(Inode) + VFS_SECTOR_SIZE - 1) / VFS_SECTOR_SIZE;
+  const uint32_t expected_block_bitmap_sectors =
+      (g_sb.total_sectors + 4095) / 4096;
+  for (size_t i = 0; i < sizeof(FS_MAGIC); ++i) {
+    if (g_sb.magic[i] != FS_MAGIC[i])
+      return false;
+  }
+  if (g_sb.version != FS_VERSION || g_sb.sector_size != VFS_SECTOR_SIZE ||
+      g_sb.total_sectors < 4096 || g_sb.total_sectors > VFS_MAX_SECTORS ||
+      g_sb.total_inodes != VFS_MAX_INODES ||
+      g_sb.inode_bitmap_sectors != INODE_BITMAP_SECTORS ||
+      g_sb.block_bitmap_sectors != expected_block_bitmap_sectors ||
+      g_sb.inode_table_sectors != expected_inode_table_sectors ||
+      g_sb.inode_bitmap_start != 1 ||
+      g_sb.block_bitmap_start != g_sb.inode_bitmap_start + g_sb.inode_bitmap_sectors ||
+      g_sb.inode_table_start != g_sb.block_bitmap_start + g_sb.block_bitmap_sectors ||
+      g_sb.data_start != g_sb.inode_table_start + g_sb.inode_table_sectors ||
+      g_sb.data_start >= g_sb.total_sectors ||
+      hash_fnv1a(reinterpret_cast<const uint8_t *>(&g_sb), 48) != g_sb.checksum)
     return false;
-  // if (!bytes_equal(g_sb.magic, FS_MAGIC, sizeof(FS_MAGIC)) ||
-  //     g_sb.version != FS_VERSION)
-  //   return false;
 
-  // Load bitmaps
-  uint32_t inode_bm_secs = (g_sb.total_inodes + 4095) / 4096;
-  for (uint32_t s = 0; s < inode_bm_secs; ++s) {
+  for (uint32_t s = 0; s < g_sb.inode_bitmap_sectors; ++s) {
     if (!Kernel::Drivers::ATADriver::read_sectors(
             VFS_START_LBA + g_sb.inode_bitmap_start + s, 1,
             g_inode_bitmap + s * VFS_SECTOR_SIZE))
       return false;
   }
-  uint32_t block_bm_secs = (g_sb.total_sectors + 4095) / 4096;
-  for (uint32_t s = 0; s < block_bm_secs; ++s) {
+  for (uint32_t s = 0; s < g_sb.block_bitmap_sectors; ++s) {
     if (!Kernel::Drivers::ATADriver::read_sectors(
             VFS_START_LBA + g_sb.block_bitmap_start + s, 1,
             g_block_bitmap + s * VFS_SECTOR_SIZE))
       return false;
   }
 
-  // Load Inode Table
   uint8_t sec_buf[VFS_SECTOR_SIZE];
   for (uint32_t i = 0; i < VFS_MAX_INODES; ++i) {
-    uint32_t table_sec =
-        g_sb.inode_table_start + (i * sizeof(Inode)) / VFS_SECTOR_SIZE;
-    if ((i * sizeof(Inode)) % VFS_SECTOR_SIZE == 0) {
-      if (!Kernel::Drivers::ATADriver::read_sectors(VFS_START_LBA + table_sec,
-                                                    1, sec_buf))
-        return false;
-    }
-    // Cached / loaded during cache init
-    bytes_copy(&g_inodes[i], sec_buf + ((i * sizeof(Inode)) % VFS_SECTOR_SIZE),
+    uint32_t inode_offset = i * sizeof(Inode);
+    uint32_t table_sec = g_sb.inode_table_start + inode_offset / VFS_SECTOR_SIZE;
+    if (inode_offset % VFS_SECTOR_SIZE == 0 &&
+        !Kernel::Drivers::ATADriver::read_sectors(VFS_START_LBA + table_sec, 1,
+                                                  sec_buf))
+      return false;
+    bytes_copy(&g_inodes[i], sec_buf + inode_offset % VFS_SECTOR_SIZE,
                sizeof(Inode));
   }
 
+  if ((g_inode_bitmap[0] & 1U) == 0 || g_inodes[0].flags != INODE_DIR ||
+      g_inodes[0].extents_count == 0 ||
+      g_inodes[0].extents_count > MAX_EXTENTS_PER_INODE)
+    return false;
+  for (uint32_t i = 0; i < VFS_MAX_INODES; ++i) {
+    if (g_inodes[i].extents_count > MAX_EXTENTS_PER_INODE)
+      return false;
+  }
+
   cache_init();
-  g_mounted = true;
   g_next_free_inode = 0;
   g_next_free_block = g_sb.data_start;
   for (uint32_t i = 0; i < VFS_MAX_OPEN_FILES; ++i)
     g_streams[i].used = false;
+  g_mounted = true;
   return true;
 }
 
@@ -662,51 +692,93 @@ bool VFS::is_mounted() { return g_mounted; }
 bool VFS::format(uint32_t total_sectors) {
   if (total_sectors < 4096 || total_sectors > VFS_MAX_SECTORS)
     return false;
+  if (g_mounted && !vfs_sync())
+    return false;
+
+  g_mounted = false;
+  cache_init();
   bytes_zero(&g_sb, sizeof(g_sb));
   bytes_copy(g_sb.magic, FS_MAGIC, sizeof(FS_MAGIC));
   g_sb.version = FS_VERSION;
   g_sb.sector_size = VFS_SECTOR_SIZE;
   g_sb.total_sectors = total_sectors;
   g_sb.inode_bitmap_start = 1;
-  g_sb.inode_bitmap_sectors = 1;
-  g_sb.block_bitmap_start = 2;
+  g_sb.inode_bitmap_sectors = INODE_BITMAP_SECTORS;
+  g_sb.block_bitmap_start = g_sb.inode_bitmap_start + g_sb.inode_bitmap_sectors;
   g_sb.block_bitmap_sectors = (total_sectors + 4095) / 4096;
   g_sb.inode_table_start = g_sb.block_bitmap_start + g_sb.block_bitmap_sectors;
   g_sb.inode_table_sectors =
       (VFS_MAX_INODES * sizeof(Inode) + VFS_SECTOR_SIZE - 1) / VFS_SECTOR_SIZE;
   g_sb.data_start = g_sb.inode_table_start + g_sb.inode_table_sectors;
   g_sb.total_inodes = VFS_MAX_INODES;
+  if (g_sb.data_start >= total_sectors)
+    return false;
   g_sb.checksum = hash_fnv1a(reinterpret_cast<const uint8_t *>(&g_sb), 48);
 
-  cache_init();
   bytes_zero(g_inode_bitmap, sizeof(g_inode_bitmap));
   bytes_zero(g_block_bitmap, sizeof(g_block_bitmap));
   bytes_zero(g_inodes, sizeof(g_inodes));
+  bytes_zero(g_inode_dirty, sizeof(g_inode_dirty));
+  g_inode_bitmap_dirty = false;
+  g_block_bitmap_dirty = false;
 
-  // Mark metadata blocks as used in block bitmap
-  for (uint32_t b = 0; b < g_sb.data_start; ++b) {
-    g_block_bitmap[b / 8] |= (1 << (b % 8));
-  }
+  for (uint32_t b = 0; b <= g_sb.data_start; ++b)
+    g_block_bitmap[b / 8] |= static_cast<uint8_t>(1U << (b % 8));
 
-  // Create root inode (Inode 0)
-  g_inode_bitmap[0] |= (1 << 0);
+  g_inode_bitmap[0] = 1;
   g_inodes[0].flags = INODE_DIR;
-  g_inodes[0].size = 0;
   g_inodes[0].links_count = 1;
   g_inodes[0].extents_count = 1;
   g_inodes[0].extents[0].start_block = g_sb.data_start;
-  g_inodes[0].extents[0].count = 1; // 1 block for root dir
+  g_inodes[0].extents[0].count = 1;
 
-  // Mark root dir block used
-  g_block_bitmap[g_sb.data_start / 8] |= (1 << (g_sb.data_start % 8));
+  // Persist the complete metadata before publishing the superblock.
+  for (uint32_t sec = 0; sec < g_sb.inode_bitmap_sectors; ++sec) {
+    if (!Kernel::Drivers::ATADriver::write_sectors(
+            VFS_START_LBA + g_sb.inode_bitmap_start + sec, 1,
+            g_inode_bitmap + sec * VFS_SECTOR_SIZE))
+      return false;
+  }
+  for (uint32_t sec = 0; sec < g_sb.block_bitmap_sectors; ++sec) {
+    if (!Kernel::Drivers::ATADriver::write_sectors(
+            VFS_START_LBA + g_sb.block_bitmap_start + sec, 1,
+            g_block_bitmap + sec * VFS_SECTOR_SIZE))
+      return false;
+  }
 
-  // Write Superblock, Bitmaps, and Inode Table to disk
-  uint8_t sec[VFS_SECTOR_SIZE]{};
+  const uint8_t *inode_bytes = reinterpret_cast<const uint8_t *>(g_inodes);
+  uint8_t sec[VFS_SECTOR_SIZE];
+  for (uint32_t sec_idx = 0; sec_idx < g_sb.inode_table_sectors; ++sec_idx) {
+    bytes_zero(sec, sizeof(sec));
+    size_t byte_offset = static_cast<size_t>(sec_idx) * VFS_SECTOR_SIZE;
+    size_t inode_bytes_left = sizeof(g_inodes) > byte_offset
+                                  ? sizeof(g_inodes) - byte_offset
+                                  : 0;
+    size_t copy_len = inode_bytes_left < VFS_SECTOR_SIZE
+                          ? inode_bytes_left
+                          : VFS_SECTOR_SIZE;
+    if (copy_len)
+      bytes_copy(sec, inode_bytes + byte_offset, copy_len);
+    if (!Kernel::Drivers::ATADriver::write_sectors(
+            VFS_START_LBA + g_sb.inode_table_start + sec_idx, 1, sec))
+      return false;
+  }
+
+  bytes_zero(sec, sizeof(sec));
+  if (!Kernel::Drivers::ATADriver::write_sectors(
+          VFS_START_LBA + g_sb.data_start, 1, sec))
+    return false;
+
+  bytes_zero(sec, sizeof(sec));
   bytes_copy(sec, &g_sb, sizeof(g_sb));
   if (!Kernel::Drivers::ATADriver::write_sectors(VFS_START_LBA, 1, sec))
     return false;
 
-  cache_flush_all();
+  cache_init();
+  g_next_free_inode = 1;
+  g_next_free_block = g_sb.data_start + 1;
+  for (uint32_t i = 0; i < VFS_MAX_OPEN_FILES; ++i)
+    g_streams[i].used = false;
   g_mounted = true;
   return true;
 }
@@ -846,7 +918,8 @@ bool add_inode_to_dir(uint32_t parent_ino, uint32_t new_ino,
             de->file_type = INODE_FILE;
             bytes_copy(de->name, filename, name_len + 1);
             de->name[name_len] = '\0';
-            cached_mark_dirty(rel_block);
+            if (!cached_write_sector(rel_block, sector_buf))
+              return false;
             dir.size += needed_len;
             g_inode_dirty[parent_ino] = true;
             return true;
@@ -868,7 +941,8 @@ bool add_inode_to_dir(uint32_t parent_ino, uint32_t new_ino,
             new_de->file_type = INODE_FILE;
             bytes_copy(new_de->name, filename, name_len + 1);
             new_de->name[name_len] = '\0';
-            cached_mark_dirty(rel_block);
+            if (!cached_write_sector(rel_block, sector_buf))
+              return false;
             dir.size += needed_len;
             g_inode_dirty[parent_ino] = true;
             return true;
@@ -926,47 +1000,58 @@ void *VFS::vfs_open(const char *path, const char *mode) {
     return nullptr;
 
   int ino = find_inode_by_path(normalized);
+  if (ino >= 0 && g_inodes[ino].flags != INODE_FILE)
+    return nullptr;
   if (ino < 0) {
     if (!w)
       return nullptr;
-
     char parent_path[VFS_MAX_PATH];
     char filename[VFS_MAX_PATH];
     if (!split_path(normalized, parent_path, filename))
       return nullptr;
-
+    size_t filename_len = str_length(filename);
+    if (filename_len == 0 || filename_len > UINT8_MAX ||
+        filename_len + 8 > VFS_SECTOR_SIZE)
+      return nullptr;
     int parent_ino = find_inode_by_path(parent_path);
     if (parent_ino < 0)
       return nullptr;
-
     int new_ino = allocate_inode();
     if (new_ino < 0)
       return nullptr;
-
     bytes_zero(&g_inodes[new_ino], sizeof(Inode));
     g_inodes[new_ino].flags = INODE_FILE;
     g_inodes[new_ino].links_count = 1;
     g_inode_dirty[new_ino] = true;
-
     if (!add_inode_to_dir(static_cast<uint32_t>(parent_ino),
                           static_cast<uint32_t>(new_ino), filename)) {
       free_inode_bitmap(static_cast<uint32_t>(new_ino));
-      g_inodes[new_ino].flags = INODE_FREE;
+      bytes_zero(&g_inodes[new_ino], sizeof(Inode));
       g_inode_dirty[new_ino] = true;
       return nullptr;
     }
-
     ino = new_ino;
   }
 
   FileStream *stream = acquire_stream();
   if (!stream)
     return nullptr;
+  Inode &inode = g_inodes[ino];
+  if (t) {
+    for (uint32_t e = 0; e < inode.extents_count; ++e) {
+      for (uint32_t b = 0; b < inode.extents[e].count; ++b)
+        free_block_bitmap(inode.extents[e].start_block + b);
+    }
+    bytes_zero(inode.extents, sizeof(inode.extents));
+    inode.extents_count = 0;
+    inode.size = 0;
+    g_inode_dirty[ino] = true;
+  }
   stream->inode_index = static_cast<uint32_t>(ino);
   stream->readable = r;
   stream->writable = w;
   stream->append = a;
-  stream->offset = a ? g_inodes[ino].size : 0;
+  stream->offset = a ? inode.size : 0;
   return stream;
 }
 
@@ -994,7 +1079,11 @@ size_t VFS::vfs_write(const void *buffer, size_t size, size_t count,
   FileStream *s = validate_stream(stream);
   if (!s || !s->writable || !buffer || size == 0 || count == 0)
     return 0;
+  if (count > UINT32_MAX / size)
+    return 0;
   uint32_t bytes = static_cast<uint32_t>(size * count);
+  if (bytes > UINT32_MAX - s->offset)
+    return 0;
   Inode &inode = g_inodes[s->inode_index];
 
   uint32_t written = 0;
@@ -1065,9 +1154,9 @@ int VFS::vfs_close(void *stream) {
   FileStream *s = validate_stream(stream);
   if (!s)
     return -1;
-  vfs_sync();
+  bool synced = vfs_sync();
   s->used = false;
-  return 0;
+  return synced ? 0 : -1;
 }
 
 long VFS::vfs_tell(void *stream) {

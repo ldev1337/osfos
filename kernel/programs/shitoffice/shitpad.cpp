@@ -187,39 +187,49 @@ auto load_from_vfs(TextBuffer &buf, const char *filepath) -> bool {
   void *stream = Kernel::FS::VFS::vfs_open(filepath, "r");
   if (stream == nullptr)
     return false;
-  if (Kernel::FS::VFS::vfs_size(stream) == 0) {
-    Kernel::FS::VFS::vfs_close(stream);
-    return false;
-  }
 
   buf.clear();
   char read_buf[128];
   size_t bytes_read = 0;
   size_t cur_line = 0;
   size_t cur_col = 0;
+  bool ended_with_newline = false;
+  bool previous_cr = false;
 
   while ((bytes_read = Kernel::FS::VFS::vfs_read(read_buf, 1, sizeof(read_buf),
                                                  stream)) > 0) {
     for (size_t i = 0; i < bytes_read; ++i) {
       char ch = read_buf[i];
       if (ch == '\n' || ch == '\r') {
-        buf.lines[cur_line][cur_col] = '\0';
-        ++cur_line;
-        if (cur_line >= MAX_LINES)
+        if (ch == '\n' && previous_cr) {
+          previous_cr = false;
+          continue;
+        }
+        previous_cr = ch == '\r';
+        if (cur_line + 1 >= MAX_LINES)
           break;
+        ++cur_line;
         cur_col = 0;
         buf.lines[cur_line][0] = '\0';
-      } else if (cur_col < MAX_LINE_LEN - 1) {
-        buf.lines[cur_line][cur_col++] = ch;
-        buf.lines[cur_line][cur_col] = '\0';
+        ended_with_newline = true;
+      } else {
+        previous_cr = false;
+        ended_with_newline = false;
+        if (cur_col < MAX_LINE_LEN - 1) {
+          buf.lines[cur_line][cur_col++] = ch;
+          buf.lines[cur_line][cur_col] = '\0';
+        }
       }
     }
-    if (cur_line >= MAX_LINES)
+    if (cur_line + 1 >= MAX_LINES)
       break;
   }
-  buf.line_count = cur_line > 0 ? cur_line : 1;
-  Kernel::FS::VFS::vfs_close(stream);
-  return true;
+  buf.line_count = cur_line + ((ended_with_newline && cur_line > 0) ? 0 : 1);
+  if (buf.line_count == 0)
+    buf.line_count = 1;
+  if (buf.line_count > MAX_LINES)
+    buf.line_count = MAX_LINES;
+  return Kernel::FS::VFS::vfs_close(stream) == 0;
 }
 
 bool hit(int mx, int my, int x, int y, int w, int h) {
