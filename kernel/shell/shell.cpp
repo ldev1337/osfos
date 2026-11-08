@@ -18,7 +18,6 @@
 #include <cstddef>
 #include <cstdint>
 
-
 namespace Kernel::Games {
 namespace Spong {
 void run(uint32_t speed, bool ai);
@@ -46,6 +45,9 @@ namespace Pain {
 void run();
 }
 namespace Calc {
+void run();
+}
+namespace Cube3D {
 void run();
 }
 } // namespace Kernel::Apps
@@ -138,8 +140,9 @@ void run_tetris() { Kernel::Games::Tetris::run(); }
 void run_graphic_test() { Kernel::Apps::graphic_test_run(); }
 void run_stress_test() { Kernel::Apps::stress_test_run(); }
 void run_benchmark() { Kernel::Apps::benchmark_run(); }
-void run_shitty_excel() { Kernel::Apps::shitty_excel_run();}
+void run_shitty_excel() { Kernel::Apps::shitty_excel_run(); }
 void run_shitpad() { Kernel::Apps::shitpad_run(); }
+void run_c3d() { Kernel::Apps::Cube3D::run(); }
 void run_pain() { Kernel::Apps::Pain::run(); }
 void run_calc() { Kernel::Apps::Calc::run(); }
 
@@ -325,8 +328,10 @@ void help() {
   kernel_printf("  ping <host>           Send ICMP echo requests\n");
   kernel_printf("  netup                 Acquire network settings with DHCP\n");
   kernel_printf("  netinfo               Show network interface settings\n");
-  kernel_printf("  fetch <url>           Fetch a bounded HTTP or verified HTTPS response\n");
-  kernel_printf("  tcp-echo <host> <port> <text>  Send text to a TCP echo service\n");
+  kernel_printf("  fetch <url>           Fetch a bounded HTTP or verified "
+                "HTTPS response\n");
+  kernel_printf(
+      "  tcp-echo <host> <port> <text>  Send text to a TCP echo service\n");
   kernel_printf("  about                 Kernel shell information\n");
   kernel_printf("  mem                   Memory-manager test commands\n");
   kernel_printf("  taskman               List running apps and task stats\n");
@@ -335,7 +340,8 @@ void help() {
   kernel_printf(
       "  pmm-test [pages]      Allocate/free physical pages (default 1)\n");
   kernel_printf("  disk-init             Initialize LazIOfs disk\n");
-  kernel_printf("  xhci-init             Probe and initialize a USB xHCI controller\n");
+  kernel_printf(
+      "  xhci-init             Probe and initialize a USB xHCI controller\n");
   kernel_printf("  disk-check <file>     Check if a file exists on disk and "
                 "print info\n");
   kernel_printf("  spong                 Play Shitty Pong\n");
@@ -347,8 +353,10 @@ void help() {
   kernel_printf("  stress                Run the stress test\n");
   kernel_printf("  bench                 Run the system benchmark suite\n");
   kernel_printf("  shitcell              Run The Shitty Excel spreadsheet\n");
+  kernel_printf("  shitpad               Run The Shitpad Editor\n");
   kernel_printf("  pain                  Run THE PAIN PNG Image Viewer and "
                 "Paint shits\n");
+  kernel_printf("  c3d                   Run the 3D showoff\n");
   kernel_printf("  calc                  Use your brain, a pen and a paper "
                 "before this\n");
   kernel_printf("  exit                  Explain how to leave the shell\n");
@@ -475,9 +483,8 @@ void run_xhci_init(const char *) {
 }
 
 void print_ipv4(uint32_t address) {
-  kernel_printf("%u.%u.%u.%u", (address >> 24) & 255,
-                (address >> 16) & 255, (address >> 8) & 255,
-                address & 255);
+  kernel_printf("%u.%u.%u.%u", (address >> 24) & 255, (address >> 16) & 255,
+                (address >> 8) & 255, address & 255);
 }
 
 void run_netup(const char *) {
@@ -495,9 +502,8 @@ void run_netinfo(const char *) {
     kernel_printf("netinfo: network stack unavailable\n");
     return;
   }
-  kernel_printf("MAC %02X:%02X:%02X:%02X:%02X:%02X\n", info.mac[0],
-                info.mac[1], info.mac[2], info.mac[3], info.mac[4],
-                info.mac[5]);
+  kernel_printf("MAC %02X:%02X:%02X:%02X:%02X:%02X\n", info.mac[0], info.mac[1],
+                info.mac[2], info.mac[3], info.mac[4], info.mac[5]);
   if (!info.configured) {
     kernel_printf("IPv4: not configured (run netup)\n");
     return;
@@ -524,8 +530,8 @@ void run_ping(const char *host) {
   }
   for (uint32_t sequence = 0; sequence < 4; ++sequence) {
     if (stats.received_mask & (1u << sequence))
-      kernel_printf("reply from %s: seq=%u time=%u ms\n", host,
-                    sequence + 1, stats.rtt_ms[sequence]);
+      kernel_printf("reply from %s: seq=%u time=%u ms\n", host, sequence + 1,
+                    stats.rtt_ms[sequence]);
     else
       kernel_printf("request timed out (seq=%u)\n", sequence + 1);
   }
@@ -560,9 +566,9 @@ void run_tcp_echo(char *args) {
   }
 
   char response[512]{};
-  const int length = Kernel::Net::tcp_echo(host, static_cast<uint16_t>(port),
-                                           args, response,
-                                           sizeof(response) - 1, 5000);
+  const int length =
+      Kernel::Net::tcp_echo(host, static_cast<uint16_t>(port), args, response,
+                            sizeof(response) - 1, 5000);
   if (length < 0) {
     kernel_printf("tcp-echo: failed (%d)\n", length);
     return;
@@ -587,11 +593,13 @@ void run_fetch(const char *url) {
     return;
   }
   if (length == -5) {
-    kernel_printf("fetch: RTC time unavailable; HTTPS certificate checks refused\n");
+    kernel_printf(
+        "fetch: RTC time unavailable; HTTPS certificate checks refused\n");
     return;
   }
   if (length == -6) {
-    kernel_printf("fetch: HTTPS handshake or certificate verification failed\n");
+    kernel_printf(
+        "fetch: HTTPS handshake or certificate verification failed\n");
     return;
   }
   if (length <= -1000) {
@@ -704,8 +712,7 @@ void execute(char *line) {
   else if (equals(line, "taskman")) {
     if (!launch_app("Task Manager", Apps::task_manager_run))
       kernel_printf("Could not launch Task Manager.\n");
-  }
-  else if (equals(line, "heap-test"))
+  } else if (equals(line, "heap-test"))
     run_heap_test(args);
   else if (equals(line, "pmm-test"))
     run_pmm_test(args);
@@ -757,9 +764,12 @@ void execute(char *line) {
       kernel_printf("Could not launch Pain.\n");
   } else if (equals(line, "calc")) {
     if (!launch_app("Calculator", run_calc))
-      kernel_printf("Could not launch calculator.\n"); 
+      kernel_printf("Could not launch calculator.\n");
   } else if (equals(line, "shitpad")) {
     if (!launch_app("Shitpad Editor", run_shitpad))
+      kernel_printf("Could not launch calculator.\n");
+  } else if (equals(line, "c3d")) {
+    if (!launch_app("Cube3D", run_c3d))
       kernel_printf("Could not launch calculator.\n");
   } else
     kernel_printf("command not found: %s\nType 'help' to list commands.\n",
