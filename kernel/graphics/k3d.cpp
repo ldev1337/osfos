@@ -256,9 +256,11 @@ void Renderer3D::render_mesh(VirtualFramebuffer &vfb, const Vertex *vertices,
         (s1.position.x - s0.position.x) * (s2.position.y - s0.position.y) -
         (s1.position.y - s0.position.y) * (s2.position.x - s0.position.x);
 
-    if (edge_cross <= 0.0f) {
+    if (edge_cross >= 0.0f) {
       continue; // Back-facing or degenerate triangle culled
     }
+
+    std::swap(s1, s2);
 
     // 6. Flat Directional Shading calculation
     Vec3 face_normal =

@@ -56,7 +56,6 @@ std::array<size_t, MAX_WINDOWS> z_order{};
 size_t focused_index_in_z = 0;
 
 uint32_t screen_w = 0, screen_h = 0;
-VirtualFramebuffer desktop;
 int drag_x = 0, drag_y = 0;
 bool dragging = false, old_left = false;
 int cursor_x = -1, cursor_y = -1;
@@ -72,15 +71,16 @@ void copy_name(char *dst, const char *src) {
   dst[i] = '\0';
 }
 
-void draw_glyph(int gx, int gy, char ch, uint32_t color, int cl, int ct, int cr,
-                int cb) {
+void draw_glyph(VirtualFramebuffer &fb, int gx, int gy, char ch, uint32_t color,
+                int cl, int ct, int cr, int cb) {
   if (gx + 8 <= cl || gx >= cr || gy + 8 <= ct || gy >= cb)
     return;
   const auto c = static_cast<unsigned char>(ch);
   const auto *bits =
       Kernel::Graphics::Font::Basic8x8[(c >= 32 && c <= 127) ? c - 32
                                                              : '?' - 32];
-  auto *buf = desktop.buffer();
+  auto *buf = fb.buffer();
+  const int fb_w = fb.width();
   const int y_start = std::max(0, ct - gy);
   const int y_end = std::min(8, cb - gy);
   const int x_start = std::max(0, cl - gx);
@@ -88,28 +88,33 @@ void draw_glyph(int gx, int gy, char ch, uint32_t color, int cl, int ct, int cr,
 
   for (int py = y_start; py < y_end; ++py) {
     const uint8_t row = bits[py];
-    auto *dst = buf + static_cast<size_t>(gy + py) * screen_w;
+    const int screen_y = gy + py;
+    auto *dst = buf + static_cast<size_t>(screen_y - ct) * fb_w;
     for (int px = x_start; px < x_end; ++px) {
-      if (row & (1u << px))
-        dst[gx + px] = color;
+      if (row & (1u << px)) {
+        const int screen_x = gx + px;
+        dst[screen_x - cl] = color;
+      }
     }
   }
 }
 
-void draw_text(int x, int y, const char *s, uint32_t color, int cl, int ct,
-               int cr, int cb) {
-  if (!s || !desktop.valid())
+void draw_text(VirtualFramebuffer &fb, int x, int y, const char *s,
+               uint32_t color, int cl, int ct, int cr, int cb) {
+  if (!s || !fb.valid())
     return;
   for (; *s && x < cr; x += 8, ++s) {
     if (x + 8 > cl)
-      draw_glyph(x, y, *s, color, cl, ct, cr, cb);
+      draw_glyph(fb, x, y, *s, color, cl, ct, cr, cb);
   }
 }
 
 void free_window_pixels(Window &w) {
   for (auto *&p : w.pixels) {
-    kfree(p);
-    p = nullptr;
+    if (p) {
+      kfree(p);
+      p = nullptr;
+    }
   }
 }
 
@@ -120,12 +125,13 @@ bool allocate_frames(uint32_t width, uint32_t height,
     f = static_cast<uint32_t *>(kmalloc(bytes));
     if (!f) {
       for (auto *&c : frames) {
-        kfree(c);
-        c = nullptr;
+        if (c) {
+          kfree(c);
+          c = nullptr;
+        }
       }
       return false;
     }
-    memset(f, 0, bytes);
   }
   return true;
 }
@@ -152,14 +158,15 @@ void mark_window_dirty(const Window &w) {
              w.y + TITLE_H + static_cast<int>(w.height) + 1);
 }
 
-void fill_rect_clipped(int x, int y, int width, int height, uint32_t color,
-                       int left, int top, int right, int bottom) {
+void fill_rect_clipped(VirtualFramebuffer &fb, int x, int y, int width,
+                       int height, uint32_t color, int left, int top, int right,
+                       int bottom) {
   const int cl = std::max(x, left);
   const int ct = std::max(y, top);
   const int cr = std::min(x + width, right);
   const int cb = std::min(y + height, bottom);
   if (cl < cr && ct < cb)
-    desktop.fill_rect(cl, ct, cr - cl, cb - ct, color);
+    fb.fill_rect(cl - left, ct - top, cr - cl, cb - ct, color);
 }
 
 bool clip_to_screen(int &l, int &t, int &r, int &b) {
@@ -170,30 +177,39 @@ bool clip_to_screen(int &l, int &t, int &r, int &b) {
   return l < r && t < b;
 }
 
-void blit_desktop_region(int left, int top, int right, int bottom) {
-  if (!clip_to_screen(left, top, right, bottom))
-    return;
-  const auto *src =
-      desktop.buffer() + static_cast<size_t>(top) * screen_w + left;
-  Kernel::Drivers::Framebuffer::blit(src, left, top, right - left, bottom - top,
-                                     desktop.pitch());
-}
-
 void bring_to_front(size_t w_idx) {
-  auto *end = z_order.data() + window_count;
-  auto *it = std::find(z_order.data(), end, w_idx);
-  if (it == end)
+  if (window_count == 0)
     return;
-  std::rotate(it, it + 1, end);
+  size_t pos = window_count;
+  for (size_t i = 0; i < window_count; ++i) {
+    if (z_order[i] == w_idx) {
+      pos = i;
+      break;
+    }
+  }
+  if (pos == window_count || pos == window_count - 1) {
+    if (pos == window_count - 1)
+      focused_index_in_z = pos;
+    return;
+  }
+  for (size_t i = pos; i + 1 < window_count; ++i)
+    z_order[i] = z_order[i + 1];
+  z_order[window_count - 1] = w_idx;
   focused_index_in_z = window_count - 1;
 }
 
 void remove_from_z_order(size_t window_index) {
-  auto *end = z_order.data() + window_count;
-  auto *it = std::find(z_order.data(), end, window_index);
-  if (it == end)
+  size_t pos = window_count;
+  for (size_t i = 0; i < window_count; ++i) {
+    if (z_order[i] == window_index) {
+      pos = i;
+      break;
+    }
+  }
+  if (pos == window_count)
     return;
-  std::move(it + 1, end, it);
+  for (size_t i = pos; i + 1 < window_count; ++i)
+    z_order[i] = z_order[i + 1];
   focused_index_in_z = --window_count ? window_count - 1 : 0;
 }
 
@@ -220,7 +236,7 @@ void unregister_window_index(size_t i) {
 
 int register_window_locked(uint64_t thread_id, const char *title, bool launcher,
                            uint32_t width, uint32_t height) {
-  if (!desktop.valid() || !thread_id)
+  if (!Kernel::Drivers::Framebuffer::valid() || !thread_id)
     return -1;
 
   size_t slot = MAX_WINDOWS;
@@ -263,8 +279,6 @@ int register_window_locked(uint64_t thread_id, const char *title, bool launcher,
                          recycled.write_index == INVALID_BUFFER;
   if (can_reuse) {
     frames = recycled.pixels;
-    for (auto *f : frames)
-      memset(f, 0, static_cast<size_t>(width) * height * sizeof(uint32_t));
   } else {
     free_window_pixels(recycled);
     if (!allocate_frames(width, height, frames))
@@ -299,15 +313,23 @@ int register_window_locked(uint64_t thread_id, const char *title, bool launcher,
 
 void render_region(const RenderWindow *rendered_windows, size_t rendered_count,
                    int left, int top, int right, int bottom) {
-  if (!desktop.valid() || !clip_to_screen(left, top, right, bottom))
+  if (!clip_to_screen(left, top, right, bottom))
     return;
 
-  desktop.fill_rect(left, top, right - left, bottom - top, DESKTOP);
+  const uint32_t w_w = static_cast<uint32_t>(right - left);
+  const uint32_t w_h = static_cast<uint32_t>(bottom - top);
+  VirtualFramebuffer region_fb;
+  if (!region_fb.init(left, top, w_w, w_h))
+    return;
+
+  region_fb.fill_rect(0, 0, w_w, w_h, DESKTOP);
 
   if (top < 30) {
-    fill_rect_clipped(0, 0, screen_w, 30, 0x22313E, left, top, right, bottom);
+    fill_rect_clipped(region_fb, 0, 0, screen_w, 30, 0x22313E, left, top, right,
+                      bottom);
     if (left < 150)
-      draw_text(12, 10, "OSFOS DESKTOP", TEXT, left, top, right, bottom);
+      draw_text(region_fb, 12, 10, "OSFOS DESKTOP", TEXT, left, top, right,
+                bottom);
   }
 
   for (size_t i = 0; i < rendered_count; ++i) {
@@ -322,21 +344,23 @@ void render_region(const RenderWindow *rendered_windows, size_t rendered_count,
       continue;
 
     const uint32_t title_color = w.focused ? TITLE_ACTIVE : TITLE_INACTIVE;
-    fill_rect_clipped(wl, wt, outer_w, outer_h, BORDER, left, top, right,
-                      bottom);
-    fill_rect_clipped(w.x, w.y, w.width, TITLE_H, title_color, left, top, right,
-                      bottom);
-    draw_text(w.x + 9, w.y + 8, w.title, TEXT, left, top,
+    fill_rect_clipped(region_fb, wl, wt, outer_w, outer_h, BORDER, left, top,
+                      right, bottom);
+    fill_rect_clipped(region_fb, w.x, w.y, w.width, TITLE_H, title_color, left,
+                      top, right, bottom);
+    draw_text(region_fb, w.x + 9, w.y + 8, w.title, TEXT, left, top,
               std::min(w.x + static_cast<int>(w.width) - 24, right), bottom);
 
     const int btn_x = w.x + static_cast<int>(w.width) - 22;
     const int btn_y = w.y + 4;
-    fill_rect_clipped(btn_x, btn_y, 16, 16, 0x9E4D55, left, top, right, bottom);
-    draw_glyph(btn_x + 4, btn_y + 4, 'X', TEXT, left, top, right, bottom);
+    fill_rect_clipped(region_fb, btn_x, btn_y, 16, 16, 0x9E4D55, left, top,
+                      right, bottom);
+    draw_glyph(region_fb, btn_x + 4, btn_y + 4, 'X', TEXT, left, top, right,
+               bottom);
 
     const int body_top = w.y + TITLE_H;
-    fill_rect_clipped(w.x, body_top, w.width, w.height, 0x101820, left, top,
-                      right, bottom);
+    fill_rect_clipped(region_fb, w.x, body_top, w.width, w.height, 0x101820,
+                      left, top, right, bottom);
 
     if (w.pixels) {
       const int cl = std::max(w.x, left);
@@ -347,16 +371,19 @@ void render_region(const RenderWindow *rendered_windows, size_t rendered_count,
         const auto *src = w.pixels +
                           static_cast<size_t>(ct - body_top) * w.width +
                           (cl - w.x);
-        desktop.blit(src, cl, ct, cr - cl, cb - ct, w.width * sizeof(uint32_t));
+        region_fb.blit(src, cl - left, ct - top, cr - cl, cb - ct,
+                       w.width * sizeof(uint32_t));
       }
     }
   }
 
-  fill_rect_clipped(cursor_x - 1, cursor_y - 7, 3, 15, TEXT, left, top, right,
-                    bottom);
-  fill_rect_clipped(cursor_x - 7, cursor_y - 1, 15, 3, TEXT, left, top, right,
-                    bottom);
-  blit_desktop_region(left, top, right, bottom);
+  fill_rect_clipped(region_fb, cursor_x - 1, cursor_y - 7, 3, 15, TEXT, left,
+                    top, right, bottom);
+  fill_rect_clipped(region_fb, cursor_x - 7, cursor_y - 1, 15, 3, TEXT, left,
+                    top, right, bottom);
+
+  Kernel::Drivers::Framebuffer::blit(region_fb.buffer(), left, top, w_w, w_h,
+                                     region_fb.pitch());
 }
 
 void mouse_update() {
@@ -482,8 +509,7 @@ bool initialize() {
     return false;
   screen_w = Kernel::Drivers::Framebuffer::width();
   screen_h = Kernel::Drivers::Framebuffer::height();
-  return (screen_w >= 240 && screen_h >= 160) &&
-         desktop.init(0, 0, screen_w, screen_h);
+  return (screen_w >= 240 && screen_h >= 160);
 }
 
 int register_window(uint64_t thread_id, const char *title, bool launcher,
@@ -596,8 +622,18 @@ bool present(uint64_t thread_id, const uint32_t *pixels, uint32_t width,
   if (write_index < 0 || (destination == nullptr) || (target_window == nullptr))
     return false;
 
-  memcpy(destination, pixels,
-         static_cast<size_t>(destination_width) * height * sizeof(uint32_t));
+  const uint8_t *src_row = reinterpret_cast<const uint8_t *>(pixels);
+  const uint32_t row_bytes = destination_width * sizeof(uint32_t);
+  if (pitch == row_bytes) {
+    memcpy(destination, pixels, static_cast<size_t>(row_bytes) * height);
+  } else {
+    uint8_t *dst_row = reinterpret_cast<uint8_t *>(destination);
+    for (uint32_t row = 0; row < height; ++row) {
+      memcpy(dst_row, src_row, row_bytes);
+      dst_row += row_bytes;
+      src_row += pitch;
+    }
+  }
 
   SpinlockGuard guard(compositor_lock);
   if (std::cmp_equal(target_window->write_index, write_index)) {
