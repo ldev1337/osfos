@@ -16,7 +16,6 @@
 extern "C" void main(unsigned long multiboot_info_addr) {
   cpu_init();
 
-  // Parse framebuffer info from Multiboot2 tags
   auto fb_info = Kernel::Boot::parse_framebuffer_info(multiboot_info_addr);
 
   Kernel::Drivers::Framebuffer::init({
@@ -34,8 +33,9 @@ extern "C" void main(unsigned long multiboot_info_addr) {
           multiboot_info_addr, framebuffer_phys, fb_info.pitch,
           fb_info.height)) {
     kernel_printf("PMM initialization failed: no usable RAM.\n");
-    for (;;)
+    for (;;) {
       __asm__ volatile("cli; hlt");
+    };
   }
 
   size_t initial_heap_pages = 16384;
@@ -56,14 +56,15 @@ extern "C" void main(unsigned long multiboot_info_addr) {
   Kernel::Drivers::PIT::init(250);
 
   if (Kernel::Drivers::E1000::detect_and_init()) {
-    if (!Kernel::Drivers::E1000::start())
+    if (!Kernel::Drivers::E1000::start()) {
       kernel_printf("E1000 RX worker initialization failed.\n");
+    }
     uint8_t mac[6];
     Kernel::Drivers::E1000::get_mac_address(mac);
     uint64_t seed =
         Kernel::Lib::Random::rdtsc() ^ Kernel::Drivers::PIT::get_ticks();
-    for (unsigned char i : mac) {
-      seed = (seed << 8) ^ i;
+    for (unsigned char iii : mac) {
+      seed = (seed << 8) ^ iii;
     }
     if (Kernel::Net::initialize(mac, seed) != 0) {
       kernel_printf("Network stack initialization failed.\n");

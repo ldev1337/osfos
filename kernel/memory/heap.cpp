@@ -23,11 +23,26 @@ constexpr unsigned CLASS_COUNT = 12;
 constexpr size_t CLASS_SIZE[CLASS_COUNT] = {16,  32,  48,  64,  96,  128,
                                             192, 256, 384, 512, 768, 1024};
 
+// Compile-time O(1) lookup table for slab class selection up to 1024 bytes
+struct ClassLookupTable {
+  uint8_t table[1025];
+  constexpr ClassLookupTable() : table{} {
+    for (size_t s = 0; s <= 1024; ++s) {
+      unsigned idx = 0;
+      while (idx < CLASS_COUNT && CLASS_SIZE[idx] < s) {
+        ++idx;
+      }
+      table[s] = static_cast<uint8_t>(idx);
+    }
+  }
+};
+
+constexpr ClassLookupTable CLASS_LOOKUP_TABLE{};
+
 constexpr size_t BLOCK_USED = 1;
 constexpr size_t BLOCK_SLAB = 2;
 constexpr size_t BLOCK_FLAGS = 0xF;
-constexpr size_t MIN_BLOCK_SIZE = 32; // Optimized: reduced from 64 to 32 to
-                                      // minimize tiny-allocation fragmentation
+constexpr size_t MIN_BLOCK_SIZE = 32;
 
 constexpr uint32_t TAG_FREE = 0x46524545U;  // "FREE"
 constexpr uint32_t TAG_LARGE = 0x4C415247U; // "LARG"
@@ -36,11 +51,6 @@ constexpr uint32_t TAG_SLAB_MASK = 0xFFFF0000U;
 constexpr uint64_t SLAB_MAGIC = 0x534C414250414745ULL; // "SLABPAGE"
 constexpr uint64_t HUGE_MAGIC = 0x48554745ULL;         // "HUGE"
 
-// Unified Block structure:
-// Uses a union to eliminate the separate AllocHeader for large allocations.
-// - Free state: uses free_prev and free_next for TLSF segregated bins.
-// - Allocated state: repurposes the same space for owner, requested size, and
-// tag.
 struct alignas(16) Block {
   size_t size_flags;
   size_t prev_size;
@@ -110,14 +120,14 @@ static inline uintptr_t align_up_ptr(uintptr_t n, size_t a) {
 }
 
 static inline unsigned msb_index(size_t n) {
-  return 63u - (unsigned)__builtin_clzll((unsigned long long)n);
+  return 63u - (unsigned)__builtin_clzll(static_cast<unsigned long long>(n));
 }
 
 static bool mapping_insert(size_t size, unsigned &fl, unsigned &sl) {
-  if (size < MIN_BLOCK_SIZE)
+  if (__builtin_expect(size < MIN_BLOCK_SIZE, 0))
     return false;
   fl = msb_index(size);
-  if (fl < SL_BITS || fl >= FL_COUNT)
+  if (__builtin_expect(fl < SL_BITS || fl >= FL_COUNT, 0))
     return false;
   const unsigned shift = fl - SL_BITS;
   sl = (unsigned)(size >> shift) - SL_COUNT;
@@ -127,16 +137,18 @@ static bool mapping_insert(size_t size, unsigned &fl, unsigned &sl) {
 static bool mapping_search(size_t size, unsigned &fl, unsigned &sl) {
   size = std::max(size, MIN_BLOCK_SIZE);
   const unsigned f = msb_index(size);
-  if (f < SL_BITS || f >= FL_COUNT)
+  if (__builtin_expect(f < SL_BITS || f >= FL_COUNT, 0))
     return false;
   const size_t step = static_cast<size_t>(1) << (f - SL_BITS);
-  if (size > static_cast<size_t>(-1) - (step - 1))
+  if (__builtin_expect(size > static_cast<size_t>(-1) - (step - 1), 0))
     return false;
   const size_t rounded = (size + step - 1) & ~(step - 1);
   return mapping_insert(rounded, fl, sl);
 }
 
-static unsigned class_for_size(size_t size) {
+static inline unsigned class_for_size(size_t size) {
+  if (__builtin_expect(size <= 1024, 1))
+    return CLASS_LOOKUP_TABLE.table[size];
   unsigned lo = 0, hi = CLASS_COUNT;
   while (lo < hi) {
     const unsigned mid = (lo + hi) >> 1;
@@ -158,7 +170,7 @@ void KernelHeap::insert_free_block(void *raw) {
   Block *head = static_cast<Block *>(free_bins[fl][sl]);
   b->free_prev = nullptr;
   b->free_next = head;
-  if (head)
+  if (__builtin_expect(head != nullptr, 1))
     head->free_prev = b;
   free_bins[fl][sl] = b;
   sl_bitmap[fl] |= static_cast<uint8_t>(1u << sl);
@@ -193,7 +205,7 @@ void *KernelHeap::find_suitable_block(size_t size) {
     sl = static_cast<unsigned>(__builtin_ctz(static_cast<unsigned>(available)));
     return free_bins[fl][sl];
   }
-  if (fl == FL_COUNT - 1)
+  if (__builtin_expect(fl == FL_COUNT - 1, 0))
     return nullptr;
   const uint64_t higher = fl_bitmap & (~static_cast<uint64_t>(0) << (fl + 1));
   if (!higher)
@@ -208,11 +220,13 @@ void *KernelHeap::find_suitable_block(size_t size) {
 
 void *KernelHeap::allocate_block(size_t payload_size, size_t alignment,
                                  uint32_t flags, void **block_out) {
-  if (!first_block ||
-      payload_size > (size_t)-1 - sizeof(Block) - (ALIGNMENT - 1))
+  if (__builtin_expect(!first_block || payload_size > (size_t)-1 -
+                                                          sizeof(Block) -
+                                                          (ALIGNMENT - 1),
+                       0))
     return nullptr;
   alignment = std::max(alignment, ALIGNMENT);
-  if ((alignment & (alignment - 1)) != 0)
+  if (__builtin_expect((alignment & (alignment - 1)) != 0, 0))
     return nullptr;
   size_t needed = align_up_size(sizeof(Block) + payload_size, ALIGNMENT);
   size_t search_size = needed;
@@ -223,12 +237,13 @@ void *KernelHeap::allocate_block(size_t payload_size, size_t alignment,
     search_size += extra;
   }
   Block *b = static_cast<Block *>(find_suitable_block(search_size));
-  if (!b)
+  if (__builtin_expect(!b, 0))
     return nullptr;
   remove_free_block(b);
   const size_t original_size = block_size(b);
   const uintptr_t payload_base = (uintptr_t)b + sizeof(Block);
-  if (payload_base > static_cast<uintptr_t>(-1) - (alignment - 1)) {
+  if (__builtin_expect(
+          payload_base > static_cast<uintptr_t>(-1) - (alignment - 1), 0)) {
     insert_free_block(b);
     return nullptr;
   }
@@ -236,8 +251,9 @@ void *KernelHeap::allocate_block(size_t payload_size, size_t alignment,
   const size_t prefix = static_cast<size_t>(aligned_payload - payload_base);
   const size_t free_prefix = prefix >= MIN_BLOCK_SIZE ? prefix : 0;
   const size_t inside_prefix = prefix - free_prefix;
-  if (needed > original_size - free_prefix ||
-      inside_prefix > original_size - free_prefix - needed) {
+  if (__builtin_expect(needed > original_size - free_prefix ||
+                           inside_prefix > original_size - free_prefix - needed,
+                       0)) {
     insert_free_block(b);
     return nullptr;
   }
@@ -359,11 +375,11 @@ void KernelHeap::release_slab_page(void *raw) {
 void *KernelHeap::allocate_slab_locked(unsigned class_index, size_t size,
                                        uint64_t owner) {
   SlabPage *page = static_cast<SlabPage *>(slab_free[class_index]);
-  if (!page) {
+  if (__builtin_expect(!page, 0)) {
     void *backing = nullptr;
     void *memory =
         allocate_block(SLAB_SIZE, SLAB_SIZE, (uint32_t)BLOCK_SLAB, &backing);
-    if (!memory)
+    if (__builtin_expect(!memory, 0))
       return nullptr;
     page = static_cast<SlabPage *>(memory);
     memset(page, 0, sizeof(SlabPage));
@@ -407,19 +423,19 @@ void *KernelHeap::allocate_slab_locked(unsigned class_index, size_t size,
 }
 
 void *KernelHeap::allocate_locked(size_t size, uint64_t owner) {
-  if (!size || size > UINT32_MAX)
+  if (__builtin_expect(!size || size > UINT32_MAX, 0))
     return nullptr;
   if (size <= CLASS_SIZE[CLASS_COUNT - 1]) {
     const unsigned idx = class_for_size(size);
     if (idx < CLASS_COUNT)
       return allocate_slab_locked(idx, size, owner);
   }
-  if (size > (size_t)-1 - sizeof(Block) - (ALIGNMENT - 1))
+  if (__builtin_expect(size > (size_t)-1 - sizeof(Block) - (ALIGNMENT - 1), 0))
     return nullptr;
   const size_t rounded = align_up_size(size, ALIGNMENT);
   void *block_raw = nullptr;
   void *payload = allocate_block(rounded, ALIGNMENT, 0, &block_raw);
-  if (!payload)
+  if (__builtin_expect(!payload, 0))
     return nullptr;
   Block *block = static_cast<Block *>(block_raw);
   block->alloc.owner = owner;
@@ -446,7 +462,7 @@ void KernelHeap::free_slab_locked(void *ptr, void *raw_header, void *raw_page) {
 }
 
 void KernelHeap::free_locked(void *ptr) {
-  if (!ptr)
+  if (__builtin_expect(!ptr, 0))
     return;
   Block *block = reinterpret_cast<Block *>(ptr) - 1;
   if (block_slab(block)) {
@@ -463,10 +479,10 @@ void KernelHeap::free_locked(void *ptr) {
 }
 
 bool KernelHeap::resize_large_locked(void *raw_block, size_t size) {
-  if (!size || size > UINT32_MAX)
+  if (__builtin_expect(!size || size > UINT32_MAX, 0))
     return false;
   Block *block = static_cast<Block *>(raw_block);
-  if (size > (size_t)-1 - sizeof(Block) - (ALIGNMENT - 1))
+  if (__builtin_expect(size > (size_t)-1 - sizeof(Block) - (ALIGNMENT - 1), 0))
     return false;
   const size_t needed = sizeof(Block) + align_up_size(size, ALIGNMENT);
   const size_t old_total = block_size(block);
@@ -568,13 +584,14 @@ void KernelHeap::init(void *heap_start_addr, size_t initial_size) {
 
 void *KernelHeap::kmalloc_huge(size_t size) {
   constexpr size_t HUGE_PAGE_SIZE = 2 * 1024 * 1024; // 2 MiB
-  size_t total_needed = sizeof(HugeAllocHeader) + size;
-  size_t num_huge_pages = (total_needed + HUGE_PAGE_SIZE - 1) / HUGE_PAGE_SIZE;
+  const size_t total_needed = sizeof(HugeAllocHeader) + size;
+  const size_t num_huge_pages =
+      (total_needed + HUGE_PAGE_SIZE - 1) / HUGE_PAGE_SIZE;
 
   void *phys_addr = nullptr;
   for (size_t i = 0; i < num_huge_pages; ++i) {
     void *p = g_pmm.allocate_huge_page();
-    if (!p) {
+    if (__builtin_expect(!p, 0) != 0) {
       if (i > 0) {
         g_pmm.free_page_block(phys_addr, i * 512);
       }
@@ -584,8 +601,8 @@ void *KernelHeap::kmalloc_huge(size_t size) {
       phys_addr = p;
   }
 
-  uintptr_t virt_addr = reinterpret_cast<uintptr_t>(phys_addr);
-  HugeAllocHeader *header = reinterpret_cast<HugeAllocHeader *>(virt_addr);
+  const auto virt_addr = reinterpret_cast<uintptr_t>(phys_addr);
+  auto *header = reinterpret_cast<HugeAllocHeader *>(virt_addr);
   header->magic = HUGE_MAGIC;
   header->size = num_huge_pages * HUGE_PAGE_SIZE;
 
@@ -593,9 +610,9 @@ void *KernelHeap::kmalloc_huge(size_t size) {
 }
 
 void *KernelHeap::kmalloc(size_t size) {
-  if (!size)
+  if (__builtin_expect(!size, 0))
     return nullptr;
-  if (size >= 2 * 1024 * 1024) {
+  if (__builtin_expect(size >= 2 * 1024 * 1024, 0)) {
     return kmalloc_huge(size);
   }
   const uint64_t flags = heap_lock.lock_irqsave();
@@ -605,12 +622,12 @@ void *KernelHeap::kmalloc(size_t size) {
 }
 
 void KernelHeap::kfree(void *ptr) {
-  if (!ptr)
+  if (__builtin_expect(!ptr, 0))
     return;
   HugeAllocHeader *huge_header = reinterpret_cast<HugeAllocHeader *>(ptr) - 1;
-  if (huge_header->magic == HUGE_MAGIC) {
-    size_t total_size = huge_header->size;
-    size_t num_huge_pages = total_size / (2 * 1024 * 1024);
+  if (__builtin_expect(huge_header->magic == HUGE_MAGIC, 0)) {
+    const size_t total_size = huge_header->size;
+    const size_t num_huge_pages = total_size / (2 * 1024 * 1024);
     void *phys_addr = reinterpret_cast<void *>(huge_header);
     g_pmm.free_page_block(phys_addr, num_huge_pages * 512);
     return;
@@ -845,10 +862,10 @@ bool KernelHeap::validate() const {
       if (b)
         valid = false;
       if (free_bins[fl][sl])
-        expected_sl |= (uint8_t)(1u << sl);
+        expected_sl |= static_cast<uint8_t>(1u << sl);
     }
     if (expected_sl)
-      expected_fl |= (uint64_t)1 << fl;
+      expected_fl |= static_cast<uint64_t>(1) << fl;
     if (expected_sl != sl_bitmap[fl])
       valid = false;
   }

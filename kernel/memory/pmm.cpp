@@ -18,8 +18,8 @@ static Spinlock pmm_lock;
 //   1          1        Not yet registered / unavailable
 
 void PMM::set_bit(size_t page_index, bool value) {
-  const size_t byte_index = page_index / 8;
-  const uint8_t mask = static_cast<uint8_t>(1u << (page_index % 8));
+  const size_t byte_index = page_index >> 3;
+  const uint8_t mask = static_cast<uint8_t>(1u << (page_index & 7));
 
   if (value)
     bitmap[byte_index] |= mask;
@@ -28,15 +28,15 @@ void PMM::set_bit(size_t page_index, bool value) {
 }
 
 bool PMM::get_bit(size_t page_index) const {
-  const size_t byte_index = page_index / 8;
-  const uint8_t mask = static_cast<uint8_t>(1u << (page_index % 8));
+  const size_t byte_index = page_index >> 3;
+  const uint8_t mask = static_cast<uint8_t>(1u << (page_index & 7));
 
   return (bitmap[byte_index] & mask) != 0;
 }
 
 void PMM::set_state_bit(size_t page_index, bool value) {
-  const size_t byte_index = page_index / 8;
-  const uint8_t mask = static_cast<uint8_t>(1u << (page_index % 8));
+  const size_t byte_index = page_index >> 3;
+  const uint8_t mask = static_cast<uint8_t>(1u << (page_index & 7));
 
   if (value)
     state_bitmap[byte_index] |= mask;
@@ -45,8 +45,8 @@ void PMM::set_state_bit(size_t page_index, bool value) {
 }
 
 bool PMM::get_state_bit(size_t page_index) const {
-  const size_t byte_index = page_index / 8;
-  const uint8_t mask = static_cast<uint8_t>(1u << (page_index % 8));
+  const size_t byte_index = page_index >> 3;
+  const uint8_t mask = static_cast<uint8_t>(1u << (page_index & 7));
 
   return (state_bitmap[byte_index] & mask) != 0;
 }
@@ -63,7 +63,7 @@ void PMM::init(void *bitmap_buffer, size_t mem_size) {
   used_pages_count = 0;
   bootstrap_open = false;
 
-  if (!bitmap_buffer || mem_size == 0) {
+  if (__builtin_expect(!bitmap_buffer || mem_size == 0, 0)) {
     pmm_lock.unlock_irqrestore(flags);
     return;
   }
@@ -77,7 +77,7 @@ void PMM::init(void *bitmap_buffer, size_t mem_size) {
   const size_t SIZE_MAX_VALUE = static_cast<size_t>(-1);
 
   // Two bitmap planes must fit in the supplied buffer.
-  if (bitmap_size > SIZE_MAX_VALUE / 2) {
+  if (__builtin_expect(bitmap_size > SIZE_MAX_VALUE / 2, 0)) {
     bitmap_pages = 0;
     bitmap_size = 0;
 
@@ -102,7 +102,7 @@ void PMM::init(void *bitmap_buffer, size_t mem_size) {
 void PMM::reserve_page(size_t page_index) {
   const uint64_t flags = pmm_lock.lock_irqsave();
 
-  if (bitmap && page_index < bitmap_pages) {
+  if (__builtin_expect(bitmap && page_index < bitmap_pages, 1)) {
     const bool used = get_bit(page_index);
     const bool state = get_state_bit(page_index);
 
@@ -125,12 +125,12 @@ void PMM::reserve_page(size_t page_index) {
 }
 
 void *PMM::allocate_page_block(size_t count) {
-  if (count == 0)
+  if (__builtin_expect(count == 0, 0))
     return nullptr;
 
   const uint64_t flags = pmm_lock.lock_irqsave();
 
-  if (!bitmap) {
+  if (__builtin_expect(!bitmap, 0)) {
     pmm_lock.unlock_irqrestore(flags);
     return nullptr;
   }
@@ -139,38 +139,76 @@ void *PMM::allocate_page_block(size_t count) {
   // the first allocation.
   bootstrap_open = false;
 
-  if (used_pages_count > total_pages ||
-      count > total_pages - used_pages_count) {
+  if (__builtin_expect(used_pages_count > total_pages ||
+                           count > total_pages - used_pages_count,
+                       0)) {
     pmm_lock.unlock_irqrestore(flags);
     return nullptr;
   }
 
-  size_t pages_found = 0;
-  size_t start_page = 0;
+  // Optimized fast-path for single page allocations using 64-bit word batching
+  if (count == 1) {
+    const size_t num_words = bitmap_pages / 64;
+    const uint64_t *bm64 = reinterpret_cast<const uint64_t *>(bitmap);
+    const uint64_t *sm64 = reinterpret_cast<const uint64_t *>(state_bitmap);
 
-  for (size_t i = 0; i < bitmap_pages; ++i) {
-    // Only state 00 is allocatable.
-    if (!get_bit(i) && !get_state_bit(i)) {
-      if (pages_found == 0)
-        start_page = i;
+    for (size_t w = 0; w < num_words; ++w) {
+      const uint64_t free_mask = ~(bm64[w] | sm64[w]);
+      if (free_mask != 0) {
+        const unsigned bit = __builtin_ctzll(free_mask);
+        const size_t i = (w << 6) + bit;
+        if (i < bitmap_pages) {
+          set_bit(i, true);
+          ++used_pages_count;
 
-      ++pages_found;
+          const uintptr_t physical_address =
+              static_cast<uintptr_t>(i * PAGE_SIZE);
+          pmm_lock.unlock_irqrestore(flags);
+          return reinterpret_cast<void *>(physical_address);
+        }
+      }
+    }
 
-      if (pages_found == count) {
-        for (size_t j = start_page; j < start_page + count; ++j)
-          set_bit(j, true);
-
-        used_pages_count += count;
+    // Check remaining tail bits if bitmap_pages is not a multiple of 64
+    for (size_t i = num_words << 6; i < bitmap_pages; ++i) {
+      if (!get_bit(i) && !get_state_bit(i)) {
+        set_bit(i, true);
+        ++used_pages_count;
 
         const uintptr_t physical_address =
-            static_cast<uintptr_t>(start_page * PAGE_SIZE);
-
+            static_cast<uintptr_t>(i * PAGE_SIZE);
         pmm_lock.unlock_irqrestore(flags);
-
         return reinterpret_cast<void *>(physical_address);
       }
-    } else {
-      pages_found = 0;
+    }
+  } else {
+    size_t pages_found = 0;
+    size_t start_page = 0;
+
+    for (size_t i = 0; i < bitmap_pages; ++i) {
+      // Only state 00 is allocatable.
+      if (!get_bit(i) && !get_state_bit(i)) {
+        if (pages_found == 0)
+          start_page = i;
+
+        ++pages_found;
+
+        if (pages_found == count) {
+          for (size_t j = start_page; j < start_page + count; ++j)
+            set_bit(j, true);
+
+          used_pages_count += count;
+
+          const uintptr_t physical_address =
+              static_cast<uintptr_t>(start_page * PAGE_SIZE);
+
+          pmm_lock.unlock_irqrestore(flags);
+
+          return reinterpret_cast<void *>(physical_address);
+        }
+      } else {
+        pages_found = 0;
+      }
     }
   }
 
@@ -179,21 +217,21 @@ void *PMM::allocate_page_block(size_t count) {
 }
 
 void PMM::free_page_block(void *ptr, size_t count) {
-  if (count == 0)
+  if (__builtin_expect(count == 0, 0))
     return;
 
   // Physical address zero is valid during memory-map registration.
   // Page zero must be reserved before the allocator starts.
   const uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
 
-  if (address & (PAGE_SIZE - 1))
+  if (__builtin_expect((address & (PAGE_SIZE - 1)) != 0, 0))
     return;
 
   const uint64_t flags = pmm_lock.lock_irqsave();
 
   const size_t start_page = address / PAGE_SIZE;
 
-  if (!bitmap || start_page >= bitmap_pages) {
+  if (__builtin_expect(!bitmap || start_page >= bitmap_pages, 0)) {
     pmm_lock.unlock_irqrestore(flags);
     return;
   }
@@ -255,7 +293,7 @@ void *PMM::allocate_huge_page() {
   constexpr size_t huge_page_pages = 512; // 2 MiB / 4 KiB per page
   const uint64_t flags = pmm_lock.lock_irqsave();
 
-  if (!bitmap) {
+  if (__builtin_expect(!bitmap, 0)) {
     pmm_lock.unlock_irqrestore(flags);
     return nullptr;
   }
@@ -266,10 +304,14 @@ void *PMM::allocate_huge_page() {
   size_t start_page = 0;
 
   for (size_t i = 0; i < bitmap_pages; ++i) {
-    // If we are looking for a start page, ensure it is 2MiB aligned (index
+    // Fast-forward alignment jump if looking for a 2MiB boundary (index
     // divisible by 512)
-    if (pages_found == 0 && (i % huge_page_pages != 0)) {
-      continue;
+    if (pages_found == 0) {
+      const size_t rem = i & (huge_page_pages - 1);
+      if (rem != 0) {
+        i += (huge_page_pages - rem) - 1;
+        continue;
+      }
     }
 
     if (!get_bit(i) && !get_state_bit(i)) {

@@ -1,9 +1,10 @@
+#include <algorithm>
 #include <arch/x86_64/string.h>
+#include <cstddef>
+#include <cstdint>
 #include <kernel/drivers/pit.h>
 #include <kernel/memory/heap.h>
 #include <kernel/scheduler.h>
-#include <stddef.h>
-#include <stdint.h>
 
 namespace Kernel::Scheduler {
 
@@ -411,7 +412,8 @@ void mark_current_thread_as_application(const char *name) {
     current_thread->application_start_ticks = Kernel::Drivers::PIT::get_ticks();
     size_t index = 0;
     if (name) {
-      while (name[index] && index + 1 < sizeof(current_thread->application_name)) {
+      while (name[index] &&
+             index + 1 < sizeof(current_thread->application_name)) {
         current_thread->application_name[index] = name[index];
         ++index;
       }
@@ -432,8 +434,7 @@ size_t get_application_tasks(ApplicationTaskInfo *tasks, size_t capacity) {
   const uint64_t flags = irq_save();
   for (ThreadControlBlock *thread = thread_list_head;
        thread && count < capacity; thread = thread->registry_next) {
-    if (!thread->application_thread ||
-        thread->state == ThreadState::TERMINATED)
+    if (!thread->application_thread || thread->state == ThreadState::TERMINATED)
       continue;
 
     ApplicationTaskInfo &task = tasks[count++];
@@ -523,8 +524,7 @@ auto thread_block_if(bool (*should_block)()) -> bool {
 void thread_sleep_ms(uint32_t milliseconds) {
   if (milliseconds == 0)
     milliseconds = 1;
-  if (milliseconds > MAX_SLEEP_MS)
-    milliseconds = MAX_SLEEP_MS;
+  milliseconds = std::min(milliseconds, MAX_SLEEP_MS);
 
   const uint64_t flags = irq_save();
   if (!current_thread || current_thread == idle_thread) {

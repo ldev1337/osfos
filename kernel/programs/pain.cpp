@@ -388,12 +388,11 @@ void run() {
   const auto sw = static_cast<int32_t>(vfb.width());
   const auto sh = static_cast<int32_t>(vfb.height());
   const uint32_t canvas_w = sw;
-  const uint32_t canvas_h = sh > 100 ? sh - 100 : sh;
+  const uint32_t canvas_h = sh > 120 ? sh - 120 : sh;
 
   const uint32_t COLOR_BG = 0xFF1E1E2E;
   const uint32_t COLOR_CANVAS = 0xFFFFFFFF;
   const uint32_t COLOR_TEXT = 0xFFCDD6F4;
-  const uint32_t COLOR_ACCENT = 0xFF89B4FA;
   const uint32_t COLOR_CURSOR = 0xFFF38BA8;
 
   uint32_t *canvas =
@@ -407,23 +406,80 @@ void run() {
   memcpy(backup_canvas, canvas, canvas_w * canvas_h * sizeof(uint32_t));
 
   Tool current_tool = Tool::Pencil;
-  uint8_t cur_r = 0;
-  uint8_t cur_g = 0;
-  uint8_t cur_b = 0;
-  int brush_width = 2;
-  char status_msg[64] = "Ready. Drag & drop tools enabled.";
+  int cur_r = 0;
+  int cur_g = 0;
+  int cur_b = 0;
+  char status_msg[64] = "Ready. Use widgets & RGB sliders to paint.";
 
   bool mouse_down_prev = false;
   int start_x = -1, start_y = -1;
   bool dragging = false;
 
+  // --- Instantiate UI Widgets in Panel ---
+  // Tool buttons (Row 1: y = canvas_h + 8)
+  Kernel::UICommon::Button btn_pencil(10, canvas_h + 8, 55, 24, "Pencil");
+  Kernel::UICommon::Button btn_eraser(70, canvas_h + 8, 55, 24, "Eraser");
+  Kernel::UICommon::Button btn_line(130, canvas_h + 8, 50, 24, "Line");
+  Kernel::UICommon::Button btn_rect(185, canvas_h + 8, 55, 24, "Rect");
+  Kernel::UICommon::Button btn_fillrect(245, canvas_h + 8, 65, 24, "FillR");
+  Kernel::UICommon::Button btn_circle(315, canvas_h + 8, 55, 24, "Circle");
+  Kernel::UICommon::Button btn_fillcircle(375, canvas_h + 8, 65, 24, "FillC");
+  Kernel::UICommon::Button btn_bucket(445, canvas_h + 8, 65, 24, "Bucket");
+  Kernel::UICommon::Button btn_drop(515, canvas_h + 8, 65, 24, "Drop");
+
+  // Action buttons & Sliders (Row 2: y = canvas_h + 42)
+  Kernel::UICommon::Button btn_save(10, canvas_h + 42, 55, 24, "Save");
+  Kernel::UICommon::Button btn_open(70, canvas_h + 42, 55, 24, "Open");
+  Kernel::UICommon::Button btn_quit(130, canvas_h + 42, 50, 24, "Quit",
+                                    0xFFF38BA8, 0xFF1E1E2E, 0);
+
+  Kernel::UICommon::Label lbl_brush(190, canvas_h + 48, "Size:");
+  Kernel::UICommon::Slider slider_brush(230, canvas_h + 46, 80, 20, 1, 20, 2);
+
+  // RGB Sliders
+  Kernel::UICommon::Label lbl_r(325, canvas_h + 48, "R:");
+  Kernel::UICommon::Slider slider_r(340, canvas_h + 46, 110, 20, 0, 255, 0);
+
+  Kernel::UICommon::Label lbl_g(460, canvas_h + 48, "G:");
+  Kernel::UICommon::Slider slider_g(475, canvas_h + 46, 110, 20, 0, 255, 0);
+
+  Kernel::UICommon::Label lbl_b(595, canvas_h + 48, "B:");
+  Kernel::UICommon::Slider slider_b(610, canvas_h + 46, 110, 20, 0, 255, 0);
+
+  // Status Bar
+  Kernel::UICommon::StatusBar status_bar(10, canvas_h + 82, sw - 20, 28,
+                                         status_msg);
+
+  bool panel_redraw_needed = true;
+  bool old_left = false;
   bool running = true;
+
+  // Track previous mouse position to detect movement
+  int prev_mx = -1;
+  int prev_my = -1;
+
   while (running && !Kernel::Scheduler::should_stop()) {
     int mx = Kernel::AppCommon::get_mouse_x();
     int my = Kernel::AppCommon::get_mouse_y();
+
+    // Force a redraw when the mouse moves
+    if (mx != prev_mx || my != prev_my) {
+      panel_redraw_needed = true;
+      prev_mx = mx;
+      prev_my = my;
+    }
+
     bool m_left = Kernel::AppCommon::is_left_pressed();
+    bool m_released = old_left && !m_left;
+
+    // Update RGB and brush size from sliders
+    cur_r = slider_r.get_value();
+    cur_g = slider_g.get_value();
+    cur_b = slider_b.get_value();
+    int brush_width = slider_brush.get_value();
 
     if (my < static_cast<int>(canvas_h)) {
+      // --- Canvas Interaction ---
       if (m_left) {
         if (!mouse_down_prev) {
           start_x = mx;
@@ -433,24 +489,32 @@ void run() {
 
           if (current_tool == Tool::FloodFill) {
             flood_fill(canvas, canvas_w, canvas_h, mx, my,
-                       0xFF000000 | (cur_r << 16) | (cur_g << 8) | cur_b);
+                       0xFF000000 | (static_cast<uint32_t>(cur_r) << 16) |
+                           (static_cast<uint32_t>(cur_g) << 8) |
+                           static_cast<uint32_t>(cur_b));
             memcpy(backup_canvas, canvas,
                    canvas_w * canvas_h * sizeof(uint32_t));
             strcpy(status_msg, "Filled area.");
+            status_bar.set_status(status_msg);
             dragging = false;
+            panel_redraw_needed = true;
           } else if (current_tool == Tool::Eyedropper) {
             uint32_t col = canvas[my * canvas_w + mx];
-            cur_r = (col >> 16) & 0xFF;
-            cur_g = (col >> 8) & 0xFF;
-            cur_b = col & 0xFF;
-            strcpy(status_msg, "Picked color!");
+            slider_r.set_value((col >> 16) & 0xFF);
+            slider_g.set_value((col >> 8) & 0xFF);
+            slider_b.set_value(col & 0xFF);
+            strcpy(status_msg, "Picked color from canvas!");
+            status_bar.set_status(status_msg);
             dragging = false;
+            panel_redraw_needed = true;
           }
         } else {
+          uint32_t col = 0xFF000000 | (static_cast<uint32_t>(cur_r) << 16) |
+                         (static_cast<uint32_t>(cur_g) << 8) |
+                         static_cast<uint32_t>(cur_b);
           if (current_tool == Tool::Pencil) {
-            draw_line_pixels(
-                canvas, canvas_w, canvas_h, start_x, start_y, mx, my,
-                0xFF000000 | (cur_r << 16) | (cur_g << 8) | cur_b, brush_width);
+            draw_line_pixels(canvas, canvas_w, canvas_h, start_x, start_y, mx,
+                             my, col, brush_width);
             start_x = mx;
             start_y = my;
             memcpy(backup_canvas, canvas,
@@ -468,7 +532,6 @@ void run() {
                      current_tool == Tool::FillCircle) {
             memcpy(canvas, backup_canvas,
                    canvas_w * canvas_h * sizeof(uint32_t));
-            uint32_t col = 0xFF000000 | (cur_r << 16) | (cur_g << 8) | cur_b;
             if (current_tool == Tool::Line) {
               draw_line_pixels(canvas, canvas_w, canvas_h, start_x, start_y, mx,
                                my, col, brush_width);
@@ -494,181 +557,181 @@ void run() {
           dragging = false;
           memcpy(backup_canvas, canvas, canvas_w * canvas_h * sizeof(uint32_t));
           strcpy(status_msg, "Shape applied.");
+          status_bar.set_status(status_msg);
+          panel_redraw_needed = true;
         }
       }
     } else {
-      if (m_left && !mouse_down_prev) {
-
-        if (my >= static_cast<int>(canvas_h) + 5 &&
-            my <= static_cast<int>(canvas_h) + 30) {
-          if (mx >= 10 && mx < 70) {
-            current_tool = Tool::Pencil;
-            strcpy(status_msg, "Tool: Pencil");
-          } else if (mx >= 75 && mx < 135) {
-            current_tool = Tool::Eraser;
-            strcpy(status_msg, "Tool: Eraser");
-          } else if (mx >= 140 && mx < 190) {
-            current_tool = Tool::Line;
-            strcpy(status_msg, "Tool: Line");
-          } else if (mx >= 195 && mx < 255) {
-            current_tool = Tool::Rect;
-            strcpy(status_msg, "Tool: Rectangle");
-          } else if (mx >= 260 && mx < 330) {
-            current_tool = Tool::FillRect;
-            strcpy(status_msg, "Tool: Fill Rect");
-          } else if (mx >= 335 && mx < 395) {
-            current_tool = Tool::Circle;
-            strcpy(status_msg, "Tool: Circle");
-          } else if (mx >= 400 && mx < 475) {
-            current_tool = Tool::FillCircle;
-            strcpy(status_msg, "Tool: Fill Circle");
-          } else if (mx >= 480 && mx < 545) {
-            current_tool = Tool::FloodFill;
-            strcpy(status_msg, "Tool: Bucket Fill");
-          } else if (mx >= 550 && mx < 620) {
-            current_tool = Tool::Eyedropper;
-            strcpy(status_msg, "Tool: Eyedropper");
-          }
-        }
-
-        else if (my >= static_cast<int>(canvas_h) + 35 &&
-                 my <= static_cast<int>(canvas_h) + 60) {
-          if (mx >= 10 && mx < 70) {
-            char filename[64] = "drawing.png";
-            if (Kernel::UICommon::prompt_filename(
-                    vfb, "Save filename:", filename, sizeof(filename))) {
-              save_png(filename, canvas, canvas_w, canvas_h);
-              strcpy(status_msg, "File saved successfully.");
-            }
-          } else if (mx >= 75 && mx < 135) {
-            char filename[64] = "drawing.png";
-            if (Kernel::UICommon::prompt_filename(
-                    vfb, "Open filename:", filename, sizeof(filename))) {
-              if (load_png(filename, canvas, canvas_w, canvas_h)) {
-                memcpy(backup_canvas, canvas,
-                       canvas_w * canvas_h * sizeof(uint32_t));
-                strcpy(status_msg, "File loaded successfully.");
-              } else {
-                strcpy(status_msg, "Error loading file.");
-              }
-            }
-          } else if (mx >= 140 && mx < 180) {
-            brush_width = brush_width > 1 ? brush_width - 1 : 1;
-          } else if (mx >= 185 && mx < 225) {
-            brush_width = brush_width < 20 ? brush_width + 1 : 20;
-          } else if (mx >= 230 && mx < 280) {
-            running = false;
-          }
-        }
-
-        else if (my >= static_cast<int>(canvas_h) + 65) {
-          int cp_x = 10;
-          if (mx >= cp_x && mx < cp_x + 200 &&
-              my >= static_cast<int>(canvas_h) + 65 &&
-              my < static_cast<int>(canvas_h) + 90) {
-            float ratio = static_cast<float>(mx - cp_x) / 200.0f;
-            if (ratio < 0.25f) {
-              cur_r = 255;
-              cur_g = static_cast<uint8_t>(ratio * 4.0f * 255.0f);
-              cur_b = 0;
-            } else if (ratio < 0.5f) {
-              cur_r = static_cast<uint8_t>((2.0f - ratio * 4.0f) * 255.0f);
-              cur_g = 255;
-              cur_b = 0;
-            } else if (ratio < 0.75f) {
-              cur_r = 0;
-              cur_g = 255;
-              cur_b = static_cast<uint8_t>((ratio * 4.0f - 2.0f) * 255.0f);
-            } else {
-              cur_r = 0;
-              cur_g = static_cast<uint8_t>((4.0f - ratio * 4.0f) * 255.0f);
-              cur_b = 255;
-            }
-            strcpy(status_msg, "Selected color from fancy wheel.");
-          }
-        }
+      // --- UI Panel Interaction ---
+      if (btn_pencil.handle_mouse(mx, my, m_left, m_released)) {
+        current_tool = Tool::Pencil;
+        strcpy(status_msg, "Tool: Pencil");
+        status_bar.set_status(status_msg);
+        panel_redraw_needed = true;
       }
+      if (btn_eraser.handle_mouse(mx, my, m_left, m_released)) {
+        current_tool = Tool::Eraser;
+        strcpy(status_msg, "Tool: Eraser");
+        status_bar.set_status(status_msg);
+        panel_redraw_needed = true;
+      }
+      if (btn_line.handle_mouse(mx, my, m_left, m_released)) {
+        current_tool = Tool::Line;
+        strcpy(status_msg, "Tool: Line");
+        status_bar.set_status(status_msg);
+        panel_redraw_needed = true;
+      }
+      if (btn_rect.handle_mouse(mx, my, m_left, m_released)) {
+        current_tool = Tool::Rect;
+        strcpy(status_msg, "Tool: Rectangle");
+        status_bar.set_status(status_msg);
+        panel_redraw_needed = true;
+      }
+      if (btn_fillrect.handle_mouse(mx, my, m_left, m_released)) {
+        current_tool = Tool::FillRect;
+        strcpy(status_msg, "Tool: Filled Rectangle");
+        status_bar.set_status(status_msg);
+        panel_redraw_needed = true;
+      }
+      if (btn_circle.handle_mouse(mx, my, m_left, m_released)) {
+        current_tool = Tool::Circle;
+        strcpy(status_msg, "Tool: Circle");
+        status_bar.set_status(status_msg);
+        panel_redraw_needed = true;
+      }
+      if (btn_fillcircle.handle_mouse(mx, my, m_left, m_released)) {
+        current_tool = Tool::FillCircle;
+        strcpy(status_msg, "Tool: Filled Circle");
+        status_bar.set_status(status_msg);
+        panel_redraw_needed = true;
+      }
+      if (btn_bucket.handle_mouse(mx, my, m_left, m_released)) {
+        current_tool = Tool::FloodFill;
+        strcpy(status_msg, "Tool: Flood Fill Bucket");
+        status_bar.set_status(status_msg);
+        panel_redraw_needed = true;
+      }
+      if (btn_drop.handle_mouse(mx, my, m_left, m_released)) {
+        current_tool = Tool::Eyedropper;
+        strcpy(status_msg, "Tool: Eyedropper");
+        status_bar.set_status(status_msg);
+        panel_redraw_needed = true;
+      }
+
+      if (btn_save.handle_mouse(mx, my, m_left, m_released)) {
+        char filename[64] = "drawing.png";
+        if (Kernel::UICommon::prompt_filename(vfb, "Save filename:", filename,
+                                              sizeof(filename))) {
+          save_png(filename, canvas, canvas_w, canvas_h);
+          strcpy(status_msg, "File saved successfully.");
+          status_bar.set_status(status_msg);
+        }
+        panel_redraw_needed = true;
+      }
+
+      if (btn_open.handle_mouse(mx, my, m_left, m_released)) {
+        char filename[64] = "drawing.png";
+        if (Kernel::UICommon::prompt_filename(vfb, "Open filename:", filename,
+                                              sizeof(filename))) {
+          if (load_png(filename, canvas, canvas_w, canvas_h)) {
+            memcpy(backup_canvas, canvas,
+                   canvas_w * canvas_h * sizeof(uint32_t));
+            strcpy(status_msg, "File loaded successfully.");
+          } else {
+            strcpy(status_msg, "Error loading file.");
+          }
+          status_bar.set_status(status_msg);
+        }
+        panel_redraw_needed = true;
+      }
+
+      if (btn_quit.handle_mouse(mx, my, m_left, m_released)) {
+        running = false;
+      }
+
+      if (slider_brush.handle_mouse(mx, my, m_left, m_released))
+        panel_redraw_needed = true;
+      if (slider_r.handle_mouse(mx, my, m_left, m_released))
+        panel_redraw_needed = true;
+      if (slider_g.handle_mouse(mx, my, m_left, m_released))
+        panel_redraw_needed = true;
+      if (slider_b.handle_mouse(mx, my, m_left, m_released))
+        panel_redraw_needed = true;
     }
 
     mouse_down_prev = m_left;
+    old_left = m_left;
 
-    vfb.clear(COLOR_BG);
-    vfb.blit(canvas, 0, 0, canvas_w, canvas_h, canvas_w * sizeof(uint32_t));
+    // Check if any widget needs dirty redraw
+    if (btn_pencil.is_dirty() || btn_eraser.is_dirty() || btn_line.is_dirty() ||
+        btn_rect.is_dirty() || btn_fillrect.is_dirty() ||
+        btn_circle.is_dirty() || btn_fillcircle.is_dirty() ||
+        btn_bucket.is_dirty() || btn_drop.is_dirty() || btn_save.is_dirty() ||
+        btn_open.is_dirty() || btn_quit.is_dirty() || slider_brush.is_dirty() ||
+        slider_r.is_dirty() || slider_g.is_dirty() || slider_b.is_dirty() ||
+        status_bar.is_dirty() || panel_redraw_needed) {
 
-    vfb.fill_rect(0, canvas_h, sw, 100, 0xFF313244);
-    vfb.draw_rect(0, canvas_h, sw, 100, 0xFF45475A);
+      // Render Canvas
+      vfb.clear(COLOR_BG);
+      vfb.blit(canvas, 0, 0, canvas_w, canvas_h, canvas_w * sizeof(uint32_t));
 
-    const char *tool_names[] = {"Pencil", "Eraser", "Line",   "Rect", "FillR",
-                                "Circle", "FillC",  "Bucket", "Drop"};
-    int btn_x = 10;
-    for (int i = 0; i < 9; ++i) {
-      bool active = (static_cast<int>(current_tool) == i);
-      Kernel::UICommon::draw_button(vfb, btn_x, canvas_h + 5, 55, 24,
-                                    tool_names[i],
-                                    active ? 0xFF89B4FA : 0xFF45475A,
-                                    active ? 0xFF1E1E2E : COLOR_TEXT, 0);
-      btn_x += 65;
-    }
+      // Render Control Panel Background
+      vfb.fill_rect(0, canvas_h, sw, 120, 0xFF313244);
+      vfb.draw_rect(0, canvas_h, sw, 120, 0xFF45475A);
 
-    Kernel::UICommon::draw_button(vfb, 10, canvas_h + 35, 60, 24, "Save",
-                                  0xFF45475A, COLOR_TEXT, 0);
-    Kernel::UICommon::draw_button(vfb, 75, canvas_h + 35, 60, 24, "Open",
-                                  0xFF45475A, COLOR_TEXT, 0);
-    Kernel::UICommon::draw_button(vfb, 140, canvas_h + 35, 38, 24, "-",
-                                  0xFF45475A, COLOR_TEXT, 0);
-    Kernel::UICommon::draw_button(vfb, 185, canvas_h + 38, 38, 24, "+",
-                                  0xFF45475A, COLOR_TEXT, 0);
-    Kernel::UICommon::draw_button(vfb, 230, canvas_h + 35, 50, 24, "Quit",
-                                  0xFFF38BA8, 0xFF1E1E2E, 0);
+      // Draw Tool Buttons (highlight active tool)
+      btn_pencil.draw(vfb);
+      btn_eraser.draw(vfb);
+      btn_line.draw(vfb);
+      btn_rect.draw(vfb);
+      btn_fillrect.draw(vfb);
+      btn_circle.draw(vfb);
+      btn_fillcircle.draw(vfb);
+      btn_bucket.draw(vfb);
+      btn_drop.draw(vfb);
 
-    char width_buf[32] = "W:";
-    int idx = 2;
-    if (brush_width >= 10) {
-      width_buf[idx++] = '0' + (brush_width / 10);
-      width_buf[idx++] = '0' + (brush_width % 10);
-    } else {
-      width_buf[idx++] = '0' + brush_width;
-    }
-    width_buf[idx] = '\0';
-    Kernel::AppCommon::text(vfb, 290, canvas_h + 41, width_buf, COLOR_TEXT);
+      // Draw Action Buttons
+      btn_save.draw(vfb);
+      btn_open.draw(vfb);
+      btn_quit.draw(vfb);
 
-    int cp_x = 10;
-    for (int i = 0; i < 200; ++i) {
-      float ratio = static_cast<float>(i) / 200.0f;
-      uint8_t r = 0, g = 0, b = 0;
-      if (ratio < 0.25f) {
-        r = 255;
-        g = static_cast<uint8_t>(ratio * 4.0f * 255.0f);
-        b = 0;
-      } else if (ratio < 0.5f) {
-        r = static_cast<uint8_t>((2.0f - ratio * 4.0f) * 255.0f);
-        g = 255;
-        b = 0;
-      } else if (ratio < 0.75f) {
-        r = 0;
-        g = 255;
-        b = static_cast<uint8_t>((ratio * 4.0f - 2.0f) * 255.0f);
-      } else {
-        r = 0;
-        g = static_cast<uint8_t>((4.0f - ratio * 4.0f) * 255.0f);
-        b = 255;
+      // Draw Brush Size & RGB Sliders and Labels
+      lbl_brush.draw(vfb);
+      slider_brush.draw(vfb);
+
+      lbl_r.draw(vfb);
+      slider_r.draw(vfb);
+
+      lbl_g.draw(vfb);
+      slider_g.draw(vfb);
+
+      lbl_b.draw(vfb);
+      slider_b.draw(vfb);
+
+      // Draw Color Preview Box
+      uint32_t preview_col = 0xFF000000 | (static_cast<uint32_t>(cur_r) << 16) |
+                             (static_cast<uint32_t>(cur_g) << 8) |
+                             static_cast<uint32_t>(cur_b);
+      vfb.fill_rect(830, canvas_h + 44, 45, 22, preview_col);
+      vfb.draw_rect(830, canvas_h + 44, 45, 22, COLOR_TEXT);
+
+      // Draw Status Bar
+      status_bar.draw(vfb);
+
+      // Draw Custom Cursor on Canvas
+      if (my < static_cast<int>(canvas_h)) {
+        vfb.draw_rect(mx - 3, my - 3, 7, 7, COLOR_CURSOR);
       }
-      uint32_t col = 0xFF000000 | (r << 16) | (g << 8) | b;
-      vfb.fill_rect(cp_x + i, canvas_h + 65, 1, 22, col);
+
+      vfb.flush();
+      panel_redraw_needed = false;
+    } else {
+      Kernel::Scheduler::thread_sleep_ms(5);
     }
-    vfb.draw_rect(cp_x, canvas_h + 65, 200, 22, 0xFFCDD6F4);
-
-    uint32_t current_color = 0xFF000000 | (cur_r << 16) | (cur_g << 8) | cur_b;
-    vfb.fill_rect(220, canvas_h + 65, 40, 22, current_color);
-    vfb.draw_rect(220, canvas_h + 65, 40, 22, 0xFFCDD6F4);
-
-    Kernel::UICommon::draw_status_bar(vfb, 10, canvas_h + 90, sw - 20, 0,
-                                      status_msg, 0xFF313244, COLOR_TEXT, 0);
-    vfb.draw_rect(mx - 3, my - 3, 7, 7, COLOR_CURSOR);
-
-    vfb.flush();
   }
 
+  kfree(canvas);
+  kfree(backup_canvas);
 }
 
 } // namespace Kernel::Apps::Pain

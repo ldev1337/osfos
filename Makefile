@@ -22,11 +22,10 @@ LESS_EXTR_FLAGS = -mllvm -enable-gvn-hoist=true \
 
 CFLAGS_C        = $(COMMON_FLAGS) -O2 $(LESS_EXTR_FLAGS) $(C_STD)
 CFLAGS_CPP      = $(COMMON_FLAGS) -O2 $(LESS_EXTR_FLAGS) $(CPP_STD)
-CFLAGS_C_PERF   = $(COMMON_FLAGS) -O3 $(LESS_EXTR_FLAGS) $(C_STD)   #-finline-limit=large
-CFLAGS_CPP_PERF = $(COMMON_FLAGS) -O3 $(LESS_EXTR_FLAGS) $(CPP_STD) #-finline-limit=large
+CFLAGS_C_PERF   = $(COMMON_FLAGS) -O3 $(LESS_EXTR_FLAGS) $(C_STD)
+CFLAGS_CPP_PERF = $(COMMON_FLAGS) -O3 $(LESS_EXTR_FLAGS) $(CPP_STD)
 CFLAGS_C_SIZE   = $(COMMON_FLAGS) -Os $(LESS_EXTR_FLAGS) $(C_STD)
 CFLAGS_CPP_SIZE = $(COMMON_FLAGS) -Os $(LESS_EXTR_FLAGS) $(CPP_STD)
-CFLAGS_DOOM_PERF= $(COMMON_FLAGS) -O2 $(LESS_EXTR_FLAGS) $(C_STD)
 CFLAGS_BEARSSL  = $(COMMON_FLAGS) -O3 $(LESS_EXTR_FLAGS) $(C_STD) \
   -DBR_USE_URANDOM=0 -DBR_USE_UNIX_TIME=0 -DBR_USE_WIN32_RAND=0 -DBR_RDRAND=0
 
@@ -46,19 +45,31 @@ RUST_TARGET = x86_64-unknown-none
 RUST_TARGET_DIR = $(BUILD_DIR)/rust
 RUST_NET_LIB = $(RUST_TARGET_DIR)/$(RUST_TARGET)/release/libosfos_net.a
 RUST_NET_SOURCES = $(shell find rust/net/src -type f -name '*.rs')
+
 BEARSSL_SOURCES = $(shell find third_party/bearssl/src -type f -name '*.c')
 BEARSSL_OBJS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(BEARSSL_SOURCES))
-PROGRAM_OBJS = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(wildcard kernel/programs/*.cpp))
-PROGRAM_CPP_OBJS = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(shell find kernel/programs -name '*.cpp'))
-DEMO_CPP_OBJS = $(BUILD_DIR)/kernel/programs/graphic_test.o $(BUILD_DIR)/kernel/programs/stress_test.o
-PROGRAM_PERF_CPP_OBJS = $(filter-out $(DEMO_CPP_OBJS),$(PROGRAM_CPP_OBJS))
-PROGRAM_C_OBJS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(wildcard kernel/programs/doomgeneric/*.c))
-GRAPHICS_OBJS = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(wildcard kernel/graphics/*.cpp))
+
+KERNEL_LIB_C_OBJS       = $(patsubst %.c,$(BUILD_DIR)/%.o,$(shell find kernel/lib -name '*.c' 2>/dev/null))
+KERNEL_LIB_CPP_OBJS     = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(shell find kernel/lib -name '*.cpp' 2>/dev/null))
+KERNEL_NET_C_OBJS       = $(patsubst %.c,$(BUILD_DIR)/%.o,$(shell find kernel/net -name '*.c' 2>/dev/null))
+KERNEL_NET_CPP_OBJS     = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(shell find kernel/net -name '*.cpp' 2>/dev/null))
+KERNEL_MEMORY_C_OBJS    = $(patsubst %.c,$(BUILD_DIR)/%.o,$(shell find kernel/memory -name '*.c' 2>/dev/null))
+KERNEL_MEMORY_CPP_OBJS  = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(shell find kernel/memory -name '*.cpp' 2>/dev/null))
+KERNEL_FS_C_OBJS        = $(patsubst %.c,$(BUILD_DIR)/%.o,$(shell find kernel/fs -name '*.c' 2>/dev/null))
+KERNEL_FS_CPP_OBJS      = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(shell find kernel/fs -name '*.cpp' 2>/dev/null))
+
+KERNEL_O3_C_OBJS   = $(KERNEL_LIB_C_OBJS) $(KERNEL_NET_C_OBJS) $(KERNEL_MEMORY_C_OBJS) $(KERNEL_FS_C_OBJS)
+KERNEL_O3_CPP_OBJS = $(KERNEL_LIB_CPP_OBJS) $(KERNEL_NET_CPP_OBJS) $(KERNEL_MEMORY_CPP_OBJS) $(KERNEL_FS_CPP_OBJS)
+
+PROGRAM_C_OBJS   = $(patsubst %.c,$(BUILD_DIR)/%.o,$(shell find kernel/programs -name '*.c' 2>/dev/null))
+PROGRAM_CPP_OBJS = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(shell find kernel/programs -name '*.cpp' 2>/dev/null))
+
+GRAPHICS_OBJS    = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(wildcard kernel/graphics/*.cpp))
 ARCH_PERF_C_OBJS = $(BUILD_DIR)/arch/x86_64/memory.o $(BUILD_DIR)/arch/x86_64/string.o
-PERF_CPP_OBJS = $(BUILD_DIR)/kernel/lib/math.o $(BUILD_DIR)/kernel/fs/vfs.o $(GRAPHICS_OBJS)
-DRIVER_C_OBJS   = $(patsubst %.c,$(BUILD_DIR)/%.o,$(shell find kernel/drivers -name '*.c'))
-DRIVER_CPP_OBJS = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(shell find kernel/drivers -name '*.cpp'))
-DRIVER_OBJS     = $(DRIVER_C_OBJS) $(DRIVER_CPP_OBJS)
+
+DRIVER_C_OBJS    = $(patsubst %.c,$(BUILD_DIR)/%.o,$(shell find kernel/drivers -name '*.c'))
+DRIVER_CPP_OBJS  = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(shell find kernel/drivers -name '*.cpp'))
+DRIVER_OBJS      = $(DRIVER_C_OBJS) $(DRIVER_CPP_OBJS)
 
 OBJS = $(sort \
   $(patsubst %.asm,$(BUILD_DIR)/%.o,$(ASM_SRCS)) \
@@ -66,21 +77,23 @@ OBJS = $(sort \
   $(patsubst %.c,$(BUILD_DIR)/%.o,$(C_SRCS)) \
   $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(C++_SRCS)) \
   $(BEARSSL_OBJS) \
-  $(PROGRAM_OBJS) \
   $(PROGRAM_CPP_OBJS) \
   $(PROGRAM_C_OBJS) \
   $(GRAPHICS_OBJS) \
   $(ARCH_PERF_C_OBJS) \
+  $(KERNEL_O3_C_OBJS) \
+  $(KERNEL_O3_CPP_OBJS) \
+  $(DRIVER_C_OBJS) \
+  $(DRIVER_CPP_OBJS) \
 )
 
-$(PERF_CPP_OBJS):         CFLAGS_CPP = $(CFLAGS_CPP_PERF)
-$(ARCH_PERF_C_OBJS):      CFLAGS_C   = $(CFLAGS_C_PERF)
-$(PROGRAM_PERF_CPP_OBJS): CFLAGS_CPP = $(CFLAGS_CPP_PERF)
-$(DEMO_CPP_OBJS):         CFLAGS_CPP = $(CFLAGS_CPP_SIZE)
-$(PROGRAM_C_OBJS):        CFLAGS_C   = $(CFLAGS_DOOM_PERF)
-$(BEARSSL_OBJS):          CFLAGS_C   = $(CFLAGS_BEARSSL)
-$(DRIVER_C_OBJS):         CFLAGS_C   = $(CFLAGS_C_PERF)
-$(DRIVER_CPP_OBJS):       CFLAGS_CPP = $(CFLAGS_CPP_PERF)
+$(KERNEL_O3_C_OBJS):    CFLAGS_C   = $(CFLAGS_C_PERF)
+$(KERNEL_O3_CPP_OBJS):  CFLAGS_CPP = $(CFLAGS_CPP_PERF)
+$(GRAPHICS_OBJS):       CFLAGS_CPP = $(CFLAGS_CPP_PERF)
+$(ARCH_PERF_C_OBJS):    CFLAGS_C   = $(CFLAGS_C_PERF)
+$(BEARSSL_OBJS):        CFLAGS_C   = $(CFLAGS_BEARSSL)
+$(DRIVER_C_OBJS):       CFLAGS_C   = $(CFLAGS_C_PERF)
+$(DRIVER_CPP_OBJS):     CFLAGS_CPP = $(CFLAGS_CPP_PERF)
 
 opt_flag = $(lastword $(filter -O%,$(1)))
 opt_tag  = $(patsubst -%,%,$(call opt_flag,$(1)))
