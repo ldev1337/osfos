@@ -39,6 +39,7 @@ void graphic_test_run();
 void stress_test_run();
 void benchmark_run();
 void shitty_excel_run();
+void shitpad_run();
 void memory_analyzer_run();
 void task_manager_run();
 namespace Pain {
@@ -137,7 +138,8 @@ void run_tetris() { Kernel::Games::Tetris::run(); }
 void run_graphic_test() { Kernel::Apps::graphic_test_run(); }
 void run_stress_test() { Kernel::Apps::stress_test_run(); }
 void run_benchmark() { Kernel::Apps::benchmark_run(); }
-void run_shitty_excel() { Kernel::Apps::shitty_excel_run(); }
+void run_shitty_excel() { Kernel::Apps::shitty_excel_run();}
+void run_shitpad() { Kernel::Apps::shitpad_run(); }
 void run_pain() { Kernel::Apps::Pain::run(); }
 void run_calc() { Kernel::Apps::Calc::run(); }
 
@@ -755,6 +757,9 @@ void execute(char *line) {
       kernel_printf("Could not launch Pain.\n");
   } else if (equals(line, "calc")) {
     if (!launch_app("Calculator", run_calc))
+      kernel_printf("Could not launch calculator.\n"); 
+  } else if (equals(line, "shitpad")) {
+    if (!launch_app("Shitpad Editor", run_shitpad))
       kernel_printf("Could not launch calculator.\n");
   } else
     kernel_printf("command not found: %s\nType 'help' to list commands.\n",
