@@ -1,5 +1,6 @@
 #include <arch/x86_64/string.h>
 #include <kernel/drivers/framebuffer.h>
+#include <kernel/init.h>
 
 #include <algorithm>
 
@@ -40,7 +41,7 @@ static void copy_bytes(uint8_t *dst, const uint8_t *src, size_t size) {
     *dst++ = *src++;
 }
 
-bool init(const Config &config) {
+bool __init init(const Config &config) {
   initialized = false;
   const uint8_t bpp = bytes_per_pixel(config.format);
   if (!config.address || !config.width || !config.height || !bpp)

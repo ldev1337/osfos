@@ -1,8 +1,8 @@
 #include <arch/x86_64/string.h>
 #include <kernel/drivers/framebuffer.h>
+#include <kernel/graphics/lwm.h>
 #include <kernel/graphics/simplefonts.h>
 #include <kernel/graphics/vfb.h>
-#include <kernel/graphics/window_manager.h>
 #include <kernel/lib/math.h>
 #include <kernel/memory/heap.h>
 #include <kernel/scheduler.h>
@@ -114,7 +114,9 @@ VirtualFramebuffer::operator=(VirtualFramebuffer &&other) noexcept {
     buffer_ = other.buffer_;
     pitch_ = other.pitch_;
     initialized_ = other.initialized_;
+    owns_buffer_ = other.owns_buffer_;
     other.buffer_ = nullptr;
+    other.owns_buffer_ = true;
     other.initialized_ = false;
     other.width_ = other.height_ = 0;
   }
@@ -143,6 +145,22 @@ bool VirtualFramebuffer::init(int32_t x, int32_t y, uint32_t width,
   return true;
 }
 
+bool VirtualFramebuffer::attach(uint32_t *buffer, int32_t x, int32_t y,
+                                uint32_t width, uint32_t height) {
+  destroy();
+  if (!buffer || width == 0 || height == 0)
+    return false;
+  x_ = x;
+  y_ = y;
+  width_ = width;
+  height_ = height;
+  pitch_ = width * sizeof(uint32_t);
+  buffer_ = buffer;
+  owns_buffer_ = false;
+  initialized_ = true;
+  return true;
+}
+
 bool VirtualFramebuffer::open_window(uint32_t requested_width,
                                      uint32_t requested_height,
                                      uint32_t min_width, uint32_t min_height) {
@@ -164,10 +182,10 @@ bool VirtualFramebuffer::has_focus() const {
 }
 
 void VirtualFramebuffer::destroy() {
-  if (buffer_ && initialized_) {
+  if (buffer_ && initialized_ && owns_buffer_)
     kfree(buffer_);
-    buffer_ = nullptr;
-  }
+  buffer_ = nullptr;
+  owns_buffer_ = true;
   initialized_ = false;
   width_ = 0;
   height_ = 0;

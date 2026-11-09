@@ -9,6 +9,7 @@ private:
   uint32_t width_ = 0, height_ = 0, pitch_ = 0;
   uint32_t *buffer_ = nullptr;
   bool initialized_ = false;
+  bool owns_buffer_ = true;
 
 public:
   VirtualFramebuffer() = default;
@@ -35,6 +36,7 @@ public:
   uint32_t pitch() const { return pitch_; }
   uint32_t *buffer() { return buffer_; }
   const uint32_t *buffer() const { return buffer_; }
+  bool attach(uint32_t *buffer, int32_t x, int32_t y, uint32_t width, uint32_t height);
 
   void flush() const;
 

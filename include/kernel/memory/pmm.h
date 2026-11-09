@@ -13,6 +13,7 @@ private:
   size_t total_pages;  // Actual usable pages registered from mmap
   size_t bitmap_size;
   size_t used_pages_count;
+  size_t hint_word;
 
   bool bootstrap_open;
 

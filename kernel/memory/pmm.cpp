@@ -17,10 +17,31 @@ static Spinlock pmm_lock;
 //   0          1        Usable but permanently reserved
 //   1          1        Not yet registered / unavailable
 
+namespace {
+
+using word_t = uint64_t __attribute__((may_alias));
+
+constexpr size_t HUGE_PAGES = 512; // 2 MiB / 4 KiB
+constexpr size_t HUGE_WORDS = HUGE_PAGES / 64;
+
+struct IrqGuard {
+  uint64_t flags;
+  IrqGuard() : flags(pmm_lock.lock_irqsave()) {}
+  ~IrqGuard() { pmm_lock.unlock_irqrestore(flags); }
+  IrqGuard(const IrqGuard &) = delete;
+  IrqGuard &operator=(const IrqGuard &) = delete;
+};
+
+inline uint64_t range_mask(size_t lo, size_t hi) {
+  const uint64_t top = (hi == 64) ? ~0ull : ((1ull << hi) - 1);
+  return top & (~0ull << lo);
+}
+
+} // namespace
+
 void PMM::set_bit(size_t page_index, bool value) {
   const size_t byte_index = page_index >> 3;
   const uint8_t mask = static_cast<uint8_t>(1u << (page_index & 7));
-
   if (value)
     bitmap[byte_index] |= mask;
   else
@@ -28,16 +49,12 @@ void PMM::set_bit(size_t page_index, bool value) {
 }
 
 bool PMM::get_bit(size_t page_index) const {
-  const size_t byte_index = page_index >> 3;
-  const uint8_t mask = static_cast<uint8_t>(1u << (page_index & 7));
-
-  return (bitmap[byte_index] & mask) != 0;
+  return (bitmap[page_index >> 3] >> (page_index & 7)) & 1;
 }
 
 void PMM::set_state_bit(size_t page_index, bool value) {
   const size_t byte_index = page_index >> 3;
   const uint8_t mask = static_cast<uint8_t>(1u << (page_index & 7));
-
   if (value)
     state_bitmap[byte_index] |= mask;
   else
@@ -45,174 +62,145 @@ void PMM::set_state_bit(size_t page_index, bool value) {
 }
 
 bool PMM::get_state_bit(size_t page_index) const {
-  const size_t byte_index = page_index >> 3;
-  const uint8_t mask = static_cast<uint8_t>(1u << (page_index & 7));
-
-  return (state_bitmap[byte_index] & mask) != 0;
+  return (state_bitmap[page_index >> 3] >> (page_index & 7)) & 1;
 }
 
 void PMM::init(void *bitmap_buffer, size_t mem_size) {
-  const uint64_t flags = pmm_lock.lock_irqsave();
+  IrqGuard guard;
 
   bitmap = nullptr;
   state_bitmap = nullptr;
-
   bitmap_pages = 0;
   total_pages = 0;
   bitmap_size = 0;
   used_pages_count = 0;
   bootstrap_open = false;
+  hint_word = 0;
 
-  if (__builtin_expect(!bitmap_buffer || mem_size == 0, 0)) {
-    pmm_lock.unlock_irqrestore(flags);
+  if (__builtin_expect(!bitmap_buffer || mem_size == 0 ||
+                           (reinterpret_cast<uintptr_t>(bitmap_buffer) & 7),
+                       0))
     return;
-  }
 
-  // mem_size represents the maximum physical address (exclusive),
-  // not the sum of all available RAM regions.
-  bitmap_pages = mem_size / PAGE_SIZE + (mem_size % PAGE_SIZE != 0);
+  const size_t pages = mem_size / PAGE_SIZE + (mem_size % PAGE_SIZE != 0);
+  const size_t words = pages / 64 + (pages % 64 != 0);
 
-  bitmap_size = bitmap_pages / 8 + (bitmap_pages % 8 != 0);
-
-  const size_t SIZE_MAX_VALUE = static_cast<size_t>(-1);
-
-  // Two bitmap planes must fit in the supplied buffer.
-  if (__builtin_expect(bitmap_size > SIZE_MAX_VALUE / 2, 0)) {
-    bitmap_pages = 0;
-    bitmap_size = 0;
-
-    pmm_lock.unlock_irqrestore(flags);
+  if (__builtin_expect(words > (static_cast<size_t>(-1) / 16), 0))
     return;
-  }
 
+  bitmap_pages = pages;
+  bitmap_size = words * 8;
   bitmap = static_cast<uint8_t *>(bitmap_buffer);
   state_bitmap = bitmap + bitmap_size;
-
-  // Initially everything is unavailable.
-  // The bootloader memory map will register actual usable regions.
   memset(bitmap, 0xFF, bitmap_size * 2);
 
-  total_pages = 0;
-  used_pages_count = 0;
   bootstrap_open = true;
-
-  pmm_lock.unlock_irqrestore(flags);
 }
 
 void PMM::reserve_page(size_t page_index) {
-  const uint64_t flags = pmm_lock.lock_irqsave();
+  IrqGuard guard;
 
-  if (__builtin_expect(bitmap && page_index < bitmap_pages, 1)) {
-    const bool used = get_bit(page_index);
-    const bool state = get_state_bit(page_index);
+  if (__builtin_expect(!bitmap || page_index >= bitmap_pages, 0))
+    return;
 
-    // State 11: not registered as usable RAM.
-    // Leave it unavailable.
-    if (!(used && state)) {
+  const size_t byte_index = page_index >> 3;
+  const uint8_t mask = static_cast<uint8_t>(1u << (page_index & 7));
+  const bool used = bitmap[byte_index] & mask;
+  const bool state = state_bitmap[byte_index] & mask;
 
-      // State 00: free usable page becoming reserved.
-      if (!used && !state)
-        ++used_pages_count;
+  if (used && state)
+    return;
 
-      // Convert either free or allocated usable memory
-      // into permanently reserved memory.
-      set_bit(page_index, false);
-      set_state_bit(page_index, true);
-    }
-  }
+  if (!used && !state)
+    ++used_pages_count;
 
-  pmm_lock.unlock_irqrestore(flags);
+  bitmap[byte_index] &= static_cast<uint8_t>(~mask);
+  state_bitmap[byte_index] |= mask;
 }
 
 void *PMM::allocate_page_block(size_t count) {
   if (__builtin_expect(count == 0, 0))
     return nullptr;
 
-  const uint64_t flags = pmm_lock.lock_irqsave();
+  IrqGuard guard;
 
-  if (__builtin_expect(!bitmap, 0)) {
-    pmm_lock.unlock_irqrestore(flags);
+  if (__builtin_expect(!bitmap, 0))
     return nullptr;
-  }
 
-  // All usable regions must have been registered before
-  // the first allocation.
   bootstrap_open = false;
 
   if (__builtin_expect(used_pages_count > total_pages ||
                            count > total_pages - used_pages_count,
-                       0)) {
-    pmm_lock.unlock_irqrestore(flags);
+                       0))
+    return nullptr;
+
+  word_t *const bm = reinterpret_cast<word_t *>(bitmap);
+  const word_t *const sm = reinterpret_cast<const word_t *>(state_bitmap);
+  const size_t words = bitmap_size >> 3;
+
+  if (count == 1) {
+    for (size_t w = hint_word; w < words; ++w) {
+      const uint64_t free_mask = ~(bm[w] | sm[w]);
+      if (free_mask) {
+        const unsigned bit = __builtin_ctzll(free_mask);
+        bm[w] |= 1ull << bit;
+        ++used_pages_count;
+        hint_word = w;
+        return reinterpret_cast<void *>(
+            static_cast<uintptr_t>(((w << 6) + bit) * PAGE_SIZE));
+      }
+    }
+    hint_word = words; // nothing free anywhere
     return nullptr;
   }
 
-  // Optimized fast-path for single page allocations using 64-bit word batching
-  if (count == 1) {
-    const size_t num_words = bitmap_pages / 64;
-    const uint64_t *bm64 = reinterpret_cast<const uint64_t *>(bitmap);
-    const uint64_t *sm64 = reinterpret_cast<const uint64_t *>(state_bitmap);
+  size_t run = 0;
+  size_t start = 0;
 
-    for (size_t w = 0; w < num_words; ++w) {
-      const uint64_t free_mask = ~(bm64[w] | sm64[w]);
-      if (free_mask != 0) {
-        const unsigned bit = __builtin_ctzll(free_mask);
-        const size_t i = (w << 6) + bit;
-        if (i < bitmap_pages) {
-          set_bit(i, true);
-          ++used_pages_count;
+  for (size_t w = hint_word; w < words; ++w) {
+    const uint64_t f = ~(bm[w] | sm[w]);
 
-          const uintptr_t physical_address =
-              static_cast<uintptr_t>(i * PAGE_SIZE);
-          pmm_lock.unlock_irqrestore(flags);
-          return reinterpret_cast<void *>(physical_address);
-        }
-      }
+    if (f == 0) {
+      run = 0;
+      continue;
     }
 
-    // Check remaining tail bits if bitmap_pages is not a multiple of 64
-    for (size_t i = num_words << 6; i < bitmap_pages; ++i) {
-      if (!get_bit(i) && !get_state_bit(i)) {
-        set_bit(i, true);
-        ++used_pages_count;
-
-        const uintptr_t physical_address =
-            static_cast<uintptr_t>(i * PAGE_SIZE);
-        pmm_lock.unlock_irqrestore(flags);
-        return reinterpret_cast<void *>(physical_address);
+    size_t pos = 0;
+    while (pos < 64) {
+      const uint64_t rest = f >> pos;
+      if (rest == 0) {
+        run = 0;
+        break;
       }
-    }
-  } else {
-    size_t pages_found = 0;
-    size_t start_page = 0;
 
-    for (size_t i = 0; i < bitmap_pages; ++i) {
-      // Only state 00 is allocatable.
-      if (!get_bit(i) && !get_state_bit(i)) {
-        if (pages_found == 0)
-          start_page = i;
+      const unsigned zeros = __builtin_ctzll(rest);
+      if (zeros) {
+        run = 0;
+        pos += zeros;
+      }
 
-        ++pages_found;
+      const unsigned ones = __builtin_ctzll(~(f >> pos));
+      if (run == 0)
+        start = (w << 6) + pos;
+      run += ones;
+      pos += ones;
 
-        if (pages_found == count) {
-          for (size_t j = start_page; j < start_page + count; ++j)
-            set_bit(j, true);
-
-          used_pages_count += count;
-
-          const uintptr_t physical_address =
-              static_cast<uintptr_t>(start_page * PAGE_SIZE);
-
-          pmm_lock.unlock_irqrestore(flags);
-
-          return reinterpret_cast<void *>(physical_address);
+      if (run >= count) {
+        const size_t end = start + count;
+        size_t first = start >> 6;
+        const size_t last = (end - 1) >> 6;
+        for (; first <= last; ++first) {
+          const size_t lo = (first == (start >> 6)) ? (start & 63) : 0;
+          const size_t hi = (first == last) ? (((end - 1) & 63) + 1) : 64;
+          bm[first] |= range_mask(lo, hi);
         }
-      } else {
-        pages_found = 0;
+        used_pages_count += count;
+        return reinterpret_cast<void *>(
+            static_cast<uintptr_t>(start * PAGE_SIZE));
       }
     }
   }
 
-  pmm_lock.unlock_irqrestore(flags);
   return nullptr;
 }
 
@@ -220,124 +208,108 @@ void PMM::free_page_block(void *ptr, size_t count) {
   if (__builtin_expect(count == 0, 0))
     return;
 
-  // Physical address zero is valid during memory-map registration.
-  // Page zero must be reserved before the allocator starts.
   const uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
-
   if (__builtin_expect((address & (PAGE_SIZE - 1)) != 0, 0))
     return;
 
-  const uint64_t flags = pmm_lock.lock_irqsave();
-
+  IrqGuard guard;
   const size_t start_page = address / PAGE_SIZE;
 
-  if (__builtin_expect(!bitmap || start_page >= bitmap_pages, 0)) {
-    pmm_lock.unlock_irqrestore(flags);
+  if (__builtin_expect(!bitmap || start_page >= bitmap_pages, 0))
     return;
-  }
 
-  // Prevent integer overflow and out-of-range bitmap accesses.
   count = std::min(count, bitmap_pages - start_page);
+  const size_t end_page = start_page + count;
 
-  for (size_t j = start_page; j < start_page + count; ++j) {
-    const bool used = get_bit(j);
-    const bool state = get_state_bit(j);
+  word_t *const bm = reinterpret_cast<word_t *>(bitmap);
+  word_t *const sm = reinterpret_cast<word_t *>(state_bitmap);
 
-    if (used && !state) {
-      // State 10? No: state 01.
-      // A normally allocated usable page.
-      set_bit(j, false);
+  const size_t first_w = start_page >> 6;
+  const size_t last_w = (end_page - 1) >> 6;
 
-      if (used_pages_count != 0)
-        --used_pages_count;
-    } else if (used && state && bootstrap_open) {
-      // State 11.
-      // During boot, this operation registers a validated
-      // usable memory-map region.
-      //
-      // Once the first allocation happens, bootstrap_open
-      // becomes false and this operation is no longer allowed.
+  size_t freed = 0; // 10 -> 00
+  size_t newly = 0; // 11 -> 00 (bootstrap registration)
 
-      set_bit(j, false);
-      set_state_bit(j, false);
+  for (size_t w = first_w; w <= last_w; ++w) {
+    const size_t lo = (w == first_w) ? (start_page & 63) : 0;
+    const size_t hi = (w == last_w) ? (((end_page - 1) & 63) + 1) : 64;
+    const uint64_t m = range_mask(lo, hi);
 
-      if (total_pages < bitmap_pages)
-        ++total_pages;
+    const uint64_t b = bm[w];
+    const uint64_t s = sm[w];
+
+    if (bootstrap_open) {
+      const uint64_t f10 = b & ~s & m;
+      const uint64_t f11 = b & s & m;
+      bm[w] = b & ~m;
+      sm[w] = s & ~f11;
+      freed += __builtin_popcountll(f10);
+      newly += __builtin_popcountll(f11);
+    } else {
+      const uint64_t t = b & ~s & m; // only allocated pages may be freed
+      bm[w] = b & ~t;
+      freed += __builtin_popcountll(t);
     }
   }
 
-  pmm_lock.unlock_irqrestore(flags);
+  used_pages_count -= std::min(used_pages_count, freed);
+  total_pages = std::min(total_pages + newly, bitmap_pages);
+
+  if ((freed | newly) && first_w < hint_word)
+    hint_word = first_w;
 }
 
 size_t PMM::recheck_used_memory() const {
-  const uint64_t flags = pmm_lock.lock_irqsave();
+  IrqGuard guard;
+
+  if (!bitmap)
+    return 0;
+
+  // States 01 and 10 count as used; 00 and 11 do not. That is bm XOR sm.
+  const word_t *const bm = reinterpret_cast<const word_t *>(bitmap);
+  const word_t *const sm = reinterpret_cast<const word_t *>(state_bitmap);
+  const size_t words = bitmap_size >> 3;
 
   size_t used_pages = 0;
-
-  for (size_t page = 0; page < bitmap_pages; ++page) {
-    const bool used = get_bit(page);
-    const bool state = get_state_bit(page);
-
-    // States 01 and 10 are managed but unavailable.
-    // States 00 and 11 are not counted as used.
-    if (used != state)
-      ++used_pages;
-  }
-
-  pmm_lock.unlock_irqrestore(flags);
+  for (size_t w = 0; w < words; ++w)
+    used_pages += __builtin_popcountll(bm[w] ^ sm[w]);
 
   return used_pages * PAGE_SIZE;
 }
 
 void *PMM::allocate_huge_page() {
-  constexpr size_t huge_page_pages = 512; // 2 MiB / 4 KiB per page
-  const uint64_t flags = pmm_lock.lock_irqsave();
+  IrqGuard guard;
 
-  if (__builtin_expect(!bitmap, 0)) {
-    pmm_lock.unlock_irqrestore(flags);
+  if (__builtin_expect(!bitmap, 0))
     return nullptr;
-  }
 
   bootstrap_open = false;
 
-  size_t pages_found = 0;
-  size_t start_page = 0;
+  if (__builtin_expect(used_pages_count > total_pages ||
+                           HUGE_PAGES > total_pages - used_pages_count,
+                       0))
+    return nullptr;
 
-  for (size_t i = 0; i < bitmap_pages; ++i) {
-    // Fast-forward alignment jump if looking for a 2MiB boundary (index
-    // divisible by 512)
-    if (pages_found == 0) {
-      const size_t rem = i & (huge_page_pages - 1);
-      if (rem != 0) {
-        i += (huge_page_pages - rem) - 1;
-        continue;
-      }
-    }
+  word_t *const bm = reinterpret_cast<word_t *>(bitmap);
+  const word_t *const sm = reinterpret_cast<const word_t *>(state_bitmap);
+  const size_t words = bitmap_size >> 3;
 
-    if (!get_bit(i) && !get_state_bit(i)) {
-      if (pages_found == 0)
-        start_page = i;
+  for (size_t w = hint_word & ~(HUGE_WORDS - 1); w + HUGE_WORDS <= words;
+       w += HUGE_WORDS) {
+    uint64_t busy = 0;
+    for (size_t k = 0; k < HUGE_WORDS; ++k)
+      busy |= bm[w + k] | sm[w + k];
 
-      ++pages_found;
+    if (busy == 0) {
+      for (size_t k = 0; k < HUGE_WORDS; ++k)
+        bm[w + k] = ~0ull;
 
-      if (pages_found == huge_page_pages) {
-        for (size_t j = start_page; j < start_page + huge_page_pages; ++j)
-          set_bit(j, true);
-
-        used_pages_count += huge_page_pages;
-
-        const uintptr_t physical_address =
-            static_cast<uintptr_t>(start_page * PAGE_SIZE);
-
-        pmm_lock.unlock_irqrestore(flags);
-        return reinterpret_cast<void *>(physical_address);
-      }
-    } else {
-      pages_found = 0;
+      used_pages_count += HUGE_PAGES;
+      return reinterpret_cast<void *>(
+          static_cast<uintptr_t>((w << 6) * PAGE_SIZE));
     }
   }
 
-  pmm_lock.unlock_irqrestore(flags);
   return nullptr;
 }
 

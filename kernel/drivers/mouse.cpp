@@ -1,6 +1,7 @@
 #include <kernel/cpu.h>
 #include <kernel/drivers/framebuffer.h>
 #include <kernel/drivers/mouse.h>
+#include <kernel/init.h>
 
 #define PS2_DATA_PORT 0x60
 #define PS2_STATUS_PORT 0x64
@@ -19,7 +20,7 @@ bool Mouse::left_pressed_ = false;
 bool Mouse::right_pressed_ = false;
 bool Mouse::middle_pressed_ = false;
 
-void Mouse::wait(uint8_t type) {
+void __init Mouse::wait(uint8_t type) {
   uint32_t timeout = 100000;
   if (type == 0) {
     while (timeout--) {
@@ -34,19 +35,19 @@ void Mouse::wait(uint8_t type) {
   }
 }
 
-void Mouse::write_cmd(uint8_t write) {
+void __init Mouse::write_cmd(uint8_t write) {
   wait(0);
   outb(PS2_COMMAND_PORT, 0xD4);
   wait(0);
   outb(PS2_DATA_PORT, write);
 }
 
-uint8_t Mouse::read_data() {
+uint8_t __init Mouse::read_data() {
   wait(1);
   return inb(PS2_DATA_PORT);
 }
 
-void Mouse::init() {
+void __init Mouse::init() {
   uint8_t status;
 
   for (int i = 0; i < 1000; ++i) {

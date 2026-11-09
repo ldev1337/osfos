@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <kernel/bootinfo.h>
+#include <kernel/init.h>
 #include <kernel/memory/pmm.h>
 
 extern "C" uint8_t _kernel_end[];
@@ -117,10 +118,10 @@ FramebufferInfo parse_framebuffer_info(unsigned long multiboot_info_addr) {
   return fb;
 }
 
-bool initialize_pmm_from_multiboot(unsigned long multiboot_info_addr,
-                                   uintptr_t framebuffer_addr,
-                                   uint32_t framebuffer_pitch,
-                                   uint32_t framebuffer_height) {
+bool __init initialize_pmm_from_multiboot(unsigned long multiboot_info_addr,
+                                          uintptr_t framebuffer_addr,
+                                          uint32_t framebuffer_pitch,
+                                          uint32_t framebuffer_height) {
   constexpr uint64_t PAGE = Kernel::Memory::PMM::PAGE_SIZE;
   constexpr uint64_t U64_MAX = ~uint64_t{0};
 

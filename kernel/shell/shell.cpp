@@ -5,8 +5,8 @@
 #include <kernel/drivers/pci.h>
 #include <kernel/drivers/usb/xhci.h>
 #include <kernel/fs/laziofs.h>
+#include <kernel/graphics/lwm.h>
 #include <kernel/graphics/vfb.h>
-#include <kernel/graphics/window_manager.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/memory/heap.h>
 #include <kernel/memory/pmm.h>
@@ -17,6 +17,15 @@
 #include <cstdarg>
 #include <cstddef>
 #include <cstdint>
+
+namespace Kernel::Debug {
+struct KernelDebugInfo {
+  size_t reclaimed_init_bytes;
+  size_t reclaimed_init_pages;
+  bool init_reclaimed;
+};
+extern KernelDebugInfo g_kernel_debug_info;
+} // namespace Kernel::Debug
 
 namespace Kernel::Games {
 namespace Spong {
@@ -805,6 +814,13 @@ void initialize_screen() {
   memset(screen, ' ', sizeof(screen));
   reset_terminal_view();
 
+  // Print stored kernel debug info from main.cpp once screen is ready
+  if (Kernel::Debug::g_kernel_debug_info.init_reclaimed) {
+    kernel_printf("Reclaimed %zu bytes (%zu pages) of init memory.\n",
+                  Kernel::Debug::g_kernel_debug_info.reclaimed_init_bytes,
+                  Kernel::Debug::g_kernel_debug_info.reclaimed_init_pages);
+  }
+
   kernel_printf("OSFOS kernel shell ready.\nType 'help' to get started.\n");
 }
 } // namespace
@@ -879,7 +895,7 @@ void kernel_printf(const char *fmt, ...) {
     while (*fmt >= '0' && *fmt <= '9')
       width = width * 10 + (*fmt++ - '0');
 
-    bool is_long = false, is_long_long = false;
+    bool is_long = false, is_long_long = false, is_size = false;
     if (*fmt == 'l') {
       ++fmt;
       if (*fmt == 'l') {
@@ -887,6 +903,9 @@ void kernel_printf(const char *fmt, ...) {
         ++fmt;
       } else
         is_long = true;
+    } else if (*fmt == 'z') {
+      is_size = true;
+      ++fmt;
     }
 
     if (!*fmt)
@@ -900,9 +919,10 @@ void kernel_printf(const char *fmt, ...) {
     }
     case 'd':
     case 'i': {
-      long long val = is_long_long
-                          ? va_arg(args, long long)
-                          : (is_long ? va_arg(args, long) : va_arg(args, int));
+      long long val = is_size ? static_cast<long long>(va_arg(args, size_t))
+                              : (is_long_long ? va_arg(args, long long)
+                                              : (is_long ? va_arg(args, long)
+                                                         : va_arg(args, int)));
       Kernel::Shell::print_int(val, 10, false, true, width, pad_char,
                                Kernel::Shell::FG);
       break;
@@ -912,10 +932,11 @@ void kernel_printf(const char *fmt, ...) {
     case 'X': {
       int base = (*fmt == 'u') ? 10 : 16;
       bool uppercase = (*fmt == 'X');
-      unsigned long long val = is_long_long
-                                   ? va_arg(args, unsigned long long)
-                                   : (is_long ? va_arg(args, unsigned long)
-                                              : va_arg(args, unsigned int));
+      unsigned long long val =
+          is_size ? static_cast<unsigned long long>(va_arg(args, size_t))
+                  : (is_long_long ? va_arg(args, unsigned long long)
+                                  : (is_long ? va_arg(args, unsigned long)
+                                             : va_arg(args, unsigned int)));
       Kernel::Shell::print_int(static_cast<long long>(val), base, uppercase,
                                false, width, pad_char, Kernel::Shell::FG);
       break;

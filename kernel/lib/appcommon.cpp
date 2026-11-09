@@ -2,7 +2,7 @@
 #include <kernel/drivers/keyboard.h>
 #include <kernel/drivers/mouse.h>
 #include <kernel/drivers/pit.h>
-#include <kernel/graphics/window_manager.h>
+#include <kernel/graphics/lwm.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/memory/heap.h>
 #include <kernel/scheduler.h>

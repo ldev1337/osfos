@@ -3,7 +3,7 @@
 #include <kernel/drivers/keyboard.h>
 #include <kernel/drivers/pit.h>
 #include <kernel/fs/laziofs.h>
-#include <kernel/graphics/window_manager.h>
+#include <kernel/graphics/lwm.h>
 #include <kernel/graphics/vfb.h>
 #include <kernel/scheduler.h>
 

@@ -1,6 +1,7 @@
 #include <kernel/cpu.h>
 #include <kernel/drivers/keyboard.h>
-#include <kernel/graphics/window_manager.h>
+#include <kernel/graphics/lwm.h>
+#include <kernel/init.h>
 #include <kernel/scheduler.h>
 
 namespace Kernel::Drivers {
@@ -84,7 +85,7 @@ constexpr uint8_t SCANCODE_SCROLLLOCK = 0x46;
 constexpr uint8_t SCANCODE_EXTENDED = 0xE0;
 constexpr uint8_t SCANCODE_PAUSE1 = 0xE1;
 
-void Keyboard::init() {
+void __init Keyboard::init() {
   for (int i = 0; i < 10000; ++i) {
     if (!(inb(0x64) & 0x01))
       break;

@@ -10,9 +10,10 @@
 #include <kernel/drivers/mouse.h>
 #include <kernel/graphics/simplefonts.h>
 #include <kernel/graphics/vfb.h>
-#include <kernel/graphics/window_manager.h>
+#include <kernel/graphics/lwm.h>
 #include <kernel/memory/heap.h>
 #include <kernel/scheduler.h>
+#include <kernel/init.h>
 
 namespace Kernel::Graphics::WindowManager {
 namespace {
@@ -24,29 +25,29 @@ constexpr uint32_t TITLE_ACTIVE = 0x42698A;
 constexpr uint32_t TITLE_INACTIVE = 0x344657;
 constexpr uint32_t BORDER = 0x8AAFC4;
 constexpr uint32_t TEXT = 0xF1F5F8;
-constexpr size_t FRAME_BUFFER_COUNT = 3;
-constexpr uint8_t INVALID_BUFFER = 0xFF;
+constexpr int STRIP_ROWS_MAX = 16;
+constexpr int RETRY = -2;
+constexpr int MAX_WAIT_TRIES = 16;
 
+// One presented surface per window (the app's VFB is the only other copy).
+// `rendering`: compositor is reading `pixels`.  `copying`: present() is
+// writing `pixels`.  The two never overlap, so a single surface is tear-free.
 struct Window {
   uint64_t thread_id;
   char title[32];
-  std::array<uint32_t *, FRAME_BUFFER_COUNT> pixels{};
-  uint8_t front_index;
-  uint8_t render_index;
-  uint8_t write_index;
+  uint32_t *pixels;
   uint32_t width, height;
   int x, y;
   bool alive, has_frame;
+  bool rendering, copying;
 };
 
 struct RenderWindow {
   Window *owner;
-  uint64_t thread_id;
   const char *title;
   const uint32_t *pixels;
   uint32_t width, height;
   int x, y;
-  uint8_t buffer_index;
   bool focused;
 };
 
@@ -60,6 +61,8 @@ int drag_x = 0, drag_y = 0;
 bool dragging = false, old_left = false;
 int cursor_x = -1, cursor_y = -1;
 Spinlock compositor_lock;
+uint32_t *strip_buf = nullptr; // scratch for compositing, screen_w * strip_rows
+int strip_rows = 0;
 bool damage_valid = false;
 int damage_left = 0, damage_top = 0, damage_right = 0, damage_bottom = 0;
 
@@ -110,30 +113,23 @@ void draw_text(VirtualFramebuffer &fb, int x, int y, const char *s,
 }
 
 void free_window_pixels(Window &w) {
-  for (auto *&p : w.pixels) {
-    if (p) {
-      kfree(p);
-      p = nullptr;
-    }
+  if (w.pixels) {
+    kfree(w.pixels);
+    w.pixels = nullptr;
   }
 }
 
-bool allocate_frames(uint32_t width, uint32_t height,
-                     std::array<uint32_t *, FRAME_BUFFER_COUNT> &frames) {
-  const size_t bytes = static_cast<size_t>(width) * height * sizeof(uint32_t);
-  for (auto *&f : frames) {
-    f = static_cast<uint32_t *>(kmalloc(bytes));
-    if (!f) {
-      for (auto *&c : frames) {
-        if (c) {
-          kfree(c);
-          c = nullptr;
-        }
-      }
-      return false;
-    }
-  }
-  return true;
+uint32_t *allocate_surface(uint32_t width, uint32_t height) {
+  return static_cast<uint32_t *>(
+      kmalloc(static_cast<size_t>(width) * height * sizeof(uint32_t)));
+}
+
+bool window_busy(const Window &w) { return w.rendering || w.copying; }
+
+bool window_intersects(const Window &w, int l, int t, int r, int b) {
+  return !(w.x - 1 >= r || w.x + static_cast<int>(w.width) + 1 <= l ||
+           w.y - 1 >= b ||
+           w.y + TITLE_H + static_cast<int>(w.height) + 1 <= t);
 }
 
 void mark_dirty(int left, int top, int right, int bottom) {
@@ -229,8 +225,8 @@ void unregister_window_index(size_t i) {
   auto &w = windows[i];
   mark_window_dirty(w);
   w.alive = false;
-  if (w.render_index == INVALID_BUFFER && w.write_index == INVALID_BUFFER)
-    free_window_pixels(w);
+  if (!window_busy(w))
+    free_window_pixels(w); // otherwise freed by whoever finishes with it
   remove_from_z_order(i);
 }
 
@@ -240,12 +236,15 @@ int register_window_locked(uint64_t thread_id, const char *title, bool launcher,
     return -1;
 
   size_t slot = MAX_WINDOWS;
+  bool busy_dead = false;
   for (size_t i = 0; i < MAX_WINDOWS; ++i) {
     if (windows[i].alive) {
       if (windows[i].thread_id == thread_id) {
         bring_to_front(i);
         return static_cast<int>(focused_index_in_z);
       }
+    } else if (window_busy(windows[i])) {
+      busy_dead = true; // surface still in use; can't recycle yet
     } else if (slot == MAX_WINDOWS) {
       slot = i;
     }
@@ -253,11 +252,15 @@ int register_window_locked(uint64_t thread_id, const char *title, bool launcher,
 
   // Never refuse an app: evict bottom-most window if at limit
   if (slot == MAX_WINDOWS) {
+    if (busy_dead)
+      return RETRY;
     if (window_count > 0) {
       slot = z_order[0];
       const uint64_t evict_tid = windows[slot].thread_id;
       unregister_window_index(slot);
       Kernel::Scheduler::terminate_thread(evict_tid);
+      if (window_busy(windows[slot]))
+        return RETRY;
     } else {
       slot = 0;
     }
@@ -271,28 +274,18 @@ int register_window_locked(uint64_t thread_id, const char *title, bool launcher,
                  ? (screen_h > 100 ? screen_h - 100 : screen_h - TITLE_H - 2)
                  : 200;
 
-  std::array<uint32_t *, FRAME_BUFFER_COUNT> frames{};
-  auto &recycled = windows[slot];
-  const bool can_reuse = recycled.width == width && recycled.height == height &&
-                         (recycled.pixels[0] != nullptr) &&
-                         recycled.render_index == INVALID_BUFFER &&
-                         recycled.write_index == INVALID_BUFFER;
-  if (can_reuse) {
-    frames = recycled.pixels;
-  } else {
-    free_window_pixels(recycled);
-    if (!allocate_frames(width, height, frames))
-      return -1;
-  }
-
   auto &w = windows[slot];
+  free_window_pixels(w);
+  uint32_t *surface = allocate_surface(width, height);
+  if (!surface)
+    return -1;
+
   w.thread_id = thread_id;
   copy_name(w.title, title);
-  w.pixels = frames;
-  w.front_index = 0;
-  w.render_index = w.write_index = INVALID_BUFFER;
+  w.pixels = surface;
   w.width = width;
   w.height = height;
+  w.rendering = w.copying = false;
 
   const int offset = static_cast<int>((slot % 8) * 26);
   w.x =
@@ -311,15 +304,13 @@ int register_window_locked(uint64_t thread_id, const char *title, bool launcher,
   return static_cast<int>(focused_index_in_z);
 }
 
-void render_region(const RenderWindow *rendered_windows, size_t rendered_count,
-                   int left, int top, int right, int bottom) {
-  if (!clip_to_screen(left, top, right, bottom))
-    return;
-
+// Composites one horizontal strip into the shared scratch buffer and blits it.
+void render_strip(const RenderWindow *rendered_windows, size_t rendered_count,
+                  int left, int top, int right, int bottom) {
   const uint32_t w_w = static_cast<uint32_t>(right - left);
   const uint32_t w_h = static_cast<uint32_t>(bottom - top);
-  VirtualFramebuffer region_fb;
-  if (!region_fb.init(left, top, w_w, w_h))
+  VirtualFramebuffer region_fb; // non-owning view of strip_buf
+  if (!region_fb.attach(strip_buf, left, top, w_w, w_h))
     return;
 
   region_fb.fill_rect(0, 0, w_w, w_h, DESKTOP);
@@ -338,7 +329,6 @@ void render_region(const RenderWindow *rendered_windows, size_t rendered_count,
     const int outer_h = static_cast<int>(w.height) + TITLE_H + 2;
     const int wl = w.x - 1, wt = w.y - 1;
 
-    // Early window culling against dirty rectangle
     if (wl + outer_w <= left || wl >= right || wt + outer_h <= top ||
         wt >= bottom)
       continue;
@@ -359,10 +349,8 @@ void render_region(const RenderWindow *rendered_windows, size_t rendered_count,
                bottom);
 
     const int body_top = w.y + TITLE_H;
-    fill_rect_clipped(region_fb, w.x, body_top, w.width, w.height, 0x101820,
-                      left, top, right, bottom);
-
     if (w.pixels) {
+      // The blit covers the whole clipped body, no placeholder fill needed.
       const int cl = std::max(w.x, left);
       const int ct = std::max(body_top, top);
       const int cr = std::min(w.x + static_cast<int>(w.width), right);
@@ -374,6 +362,9 @@ void render_region(const RenderWindow *rendered_windows, size_t rendered_count,
         region_fb.blit(src, cl - left, ct - top, cr - cl, cb - ct,
                        w.width * sizeof(uint32_t));
       }
+    } else {
+      fill_rect_clipped(region_fb, w.x, body_top, w.width, w.height, 0x101820,
+                        left, top, right, bottom);
     }
   }
 
@@ -382,8 +373,17 @@ void render_region(const RenderWindow *rendered_windows, size_t rendered_count,
   fill_rect_clipped(region_fb, cursor_x - 7, cursor_y - 1, 15, 3, TEXT, left,
                     top, right, bottom);
 
-  Kernel::Drivers::Framebuffer::blit(region_fb.buffer(), left, top, w_w, w_h,
+  Kernel::Drivers::Framebuffer::blit(strip_buf, left, top, w_w, w_h,
                                      region_fb.pitch());
+}
+
+void render_region(const RenderWindow *rendered_windows, size_t rendered_count,
+                   int left, int top, int right, int bottom) {
+  if (!strip_buf || strip_rows <= 0 || !clip_to_screen(left, top, right, bottom))
+    return;
+  for (int y = top; y < bottom; y += strip_rows)
+    render_strip(rendered_windows, rendered_count, left, y, right,
+                 std::min(y + strip_rows, bottom));
 }
 
 void mouse_update() {
@@ -462,28 +462,35 @@ bool take_damage_locked(RenderWindow *rendered_windows, size_t &rendered_count,
   top = std::clamp(damage_top, 0, static_cast<int>(screen_h));
   right = std::clamp(damage_right, 0, static_cast<int>(screen_w));
   bottom = std::clamp(damage_bottom, 0, static_cast<int>(screen_h));
-  damage_valid = false;
 
-  if (left >= right || top >= bottom)
+  if (left >= right || top >= bottom) {
+    damage_valid = false;
     return false;
+  }
+
+  // A window in the middle of present() would be read half-written: keep the
+  // damage queued and try again on the next compositor tick (<1 ms copies).
+  for (const auto &w : windows) {
+    if (w.alive && w.copying && window_intersects(w, left, top, right, bottom))
+      return false;
+  }
+  damage_valid = false;
 
   rendered_count = 0;
   for (size_t z = 0; z < window_count; ++z) {
     auto &w = windows[z_order[z]];
-    if (!w.alive)
+    if (!w.alive || !window_intersects(w, left, top, right, bottom))
       continue;
     auto &s = rendered_windows[rendered_count++];
     s.owner = &w;
-    s.thread_id = w.thread_id;
     s.title = w.title;
-    s.pixels = w.has_frame ? w.pixels[w.front_index] : nullptr;
+    s.pixels = w.has_frame ? w.pixels : nullptr;
     s.width = w.width;
     s.height = w.height;
     s.x = w.x;
     s.y = w.y;
-    s.buffer_index = w.front_index;
     s.focused = (z == focused_index_in_z);
-    w.render_index = w.front_index;
+    w.rendering = true;
   }
   return true;
 }
@@ -492,30 +499,52 @@ void release_render_buffers(const RenderWindow *rendered_windows,
                             size_t rendered_count) {
   SpinlockGuard guard(compositor_lock);
   for (size_t i = 0; i < rendered_count; ++i) {
-    const auto &s = rendered_windows[i];
-    auto &w = *s.owner;
-    if (w.thread_id == s.thread_id && w.render_index == s.buffer_index)
-      w.render_index = INVALID_BUFFER;
-    if (!w.alive && w.render_index == INVALID_BUFFER &&
-        w.write_index == INVALID_BUFFER)
+    auto &w = *rendered_windows[i].owner;
+    w.rendering = false;
+    if (!w.alive && !window_busy(w))
       free_window_pixels(w);
   }
 }
 
 } // namespace
 
-bool initialize() {
+bool __init initialize() {
   if (!Kernel::Drivers::Framebuffer::valid())
     return false;
   screen_w = Kernel::Drivers::Framebuffer::width();
   screen_h = Kernel::Drivers::Framebuffer::height();
-  return (screen_w >= 240 && screen_h >= 160);
+  if (screen_w < 240 || screen_h < 160)
+    return false;
+
+  if (strip_buf) {
+    kfree(strip_buf);
+    strip_buf = nullptr;
+    strip_rows = 0;
+  }
+  for (int rows = STRIP_ROWS_MAX; rows >= 1; rows /= 2) {
+    strip_buf = static_cast<uint32_t *>(
+        kmalloc(static_cast<size_t>(screen_w) * rows * sizeof(uint32_t)));
+    if (strip_buf) {
+      strip_rows = rows;
+      break;
+    }
+  }
+  return strip_buf != nullptr;
 }
 
 int register_window(uint64_t thread_id, const char *title, bool launcher,
                     uint32_t width, uint32_t height) {
-  SpinlockGuard guard(compositor_lock);
-  return register_window_locked(thread_id, title, launcher, width, height);
+  for (int attempt = 0; attempt < MAX_WAIT_TRIES; ++attempt) {
+    {
+      SpinlockGuard guard(compositor_lock);
+      const int r =
+          register_window_locked(thread_id, title, launcher, width, height);
+      if (r != RETRY)
+        return r;
+    }
+    Kernel::Scheduler::thread_sleep_ms(1);
+  }
+  return -1;
 }
 
 bool request_window_size(uint64_t thread_id, uint32_t requested_width,
@@ -525,55 +554,67 @@ bool request_window_size(uint64_t thread_id, uint32_t requested_width,
       !actual_height)
     return false;
 
+  for (int attempt = 0; attempt < MAX_WAIT_TRIES; ++attempt) {
+    {
+      SpinlockGuard guard(compositor_lock);
+      auto *window = find_window(thread_id);
+      if (!window) {
+        const int r = register_window_locked(thread_id, "App", false,
+                                             requested_width, requested_height);
+        if (r < 0 && r != RETRY)
+          return false;
+        if (r >= 0) {
+          window = find_window(thread_id);
+          if (!window)
+            return false;
+          *actual_width = window->width;
+          *actual_height = window->height;
+          return true;
+        }
+        // RETRY: fall through to sleep
+      } else if (window->width == requested_width &&
+                 window->height == requested_height) {
+        *actual_width = requested_width;
+        *actual_height = requested_height;
+        return true;
+      } else if (!window_busy(*window)) {
+        uint32_t *surface = allocate_surface(requested_width, requested_height);
+        if (!surface) {
+          *actual_width = window->width;
+          *actual_height = window->height;
+          return true;
+        }
+        mark_window_dirty(*window);
+        free_window_pixels(*window);
+        window->pixels = surface;
+        window->width = requested_width;
+        window->height = requested_height;
+        window->has_frame = false;
+
+        window->x = (screen_w > requested_width)
+                        ? static_cast<int>((screen_w - requested_width) / 2)
+                        : 0;
+        window->y = (screen_h > requested_height + TITLE_H + 30)
+                        ? (30 + static_cast<int>((screen_h - 30 - TITLE_H -
+                                                  requested_height) /
+                                                 2))
+                        : 30;
+        mark_window_dirty(*window);
+        *actual_width = requested_width;
+        *actual_height = requested_height;
+        return true;
+      }
+    }
+    Kernel::Scheduler::thread_sleep_ms(1); // compositor is reading the surface
+  }
+
   SpinlockGuard guard(compositor_lock);
-  auto *window = find_window(thread_id);
-  if (!window) {
-    if (register_window_locked(thread_id, "App", false, requested_width,
-                               requested_height) < 0)
-      return false;
-    window = find_window(thread_id);
-    if (!window)
-      return false;
+  if (auto *window = find_window(thread_id)) {
     *actual_width = window->width;
     *actual_height = window->height;
     return true;
   }
-
-  const uint32_t width = requested_width;
-  const uint32_t height = requested_height;
-  if (window->width == width && window->height == height) {
-    *actual_width = width;
-    *actual_height = height;
-    return true;
-  }
-
-  std::array<uint32_t *, FRAME_BUFFER_COUNT> frames{};
-  if (!allocate_frames(width, height, frames)) {
-    *actual_width = window->width;
-    *actual_height = window->height;
-    return true;
-  }
-
-  mark_window_dirty(*window);
-  free_window_pixels(*window);
-  window->pixels = frames;
-  window->width = width;
-  window->height = height;
-  window->front_index = 0;
-  window->render_index = INVALID_BUFFER;
-  window->write_index = INVALID_BUFFER;
-  window->has_frame = false;
-
-  window->x = (screen_w > width) ? static_cast<int>((screen_w - width) / 2) : 0;
-  window->y =
-      (screen_h > height + TITLE_H + 30)
-          ? (30 + static_cast<int>((screen_h - 30 - TITLE_H - height) / 2))
-          : 30;
-
-  mark_window_dirty(*window);
-  *actual_width = width;
-  *actual_height = height;
-  return true;
+  return false;
 }
 
 void unregister_window(uint64_t thread_id) {
@@ -591,36 +632,31 @@ bool present(uint64_t thread_id, const uint32_t *pixels, uint32_t width,
   if (!pixels || !width || !height)
     return false;
 
+  Window *target = nullptr;
   uint32_t *destination = nullptr;
   uint32_t destination_width = 0;
-  int write_index = -1;
-  Window *target_window = nullptr;
 
-  {
-    SpinlockGuard guard(compositor_lock);
-    for (auto &w : windows) {
-      if (!w.alive || w.thread_id != thread_id)
-        continue;
-      if (width != w.width || height != w.height ||
+  for (int attempt = 0; attempt < MAX_WAIT_TRIES && !target; ++attempt) {
+    {
+      SpinlockGuard guard(compositor_lock);
+      auto *w = find_window(thread_id);
+      if (!w)
+        return false;
+      if (width != w->width || height != w->height ||
           pitch < width * sizeof(uint32_t))
         return true;
-      for (size_t b = 0; b < FRAME_BUFFER_COUNT; ++b) {
-        if (b != w.front_index && b != w.render_index && b != w.write_index) {
-          write_index = static_cast<int>(b);
-          break;
-        }
+      if (!window_busy(*w)) {
+        w->copying = true;
+        target = w;
+        destination = w->pixels;
+        destination_width = w->width;
       }
-      if (write_index < 0)
-        return true;
-      destination = w.pixels[write_index];
-      destination_width = w.width;
-      w.write_index = static_cast<uint8_t>(write_index);
-      target_window = &w;
-      break;
     }
+    if (!target)
+      Kernel::Scheduler::thread_sleep_ms(1); // compositor is reading
   }
-  if (write_index < 0 || (destination == nullptr) || (target_window == nullptr))
-    return false;
+  if (!target)
+    return true; // compositor starved us; drop this frame like before
 
   const uint8_t *src_row = reinterpret_cast<const uint8_t *>(pixels);
   const uint32_t row_bytes = destination_width * sizeof(uint32_t);
@@ -636,22 +672,18 @@ bool present(uint64_t thread_id, const uint32_t *pixels, uint32_t width,
   }
 
   SpinlockGuard guard(compositor_lock);
-  if (std::cmp_equal(target_window->write_index, write_index)) {
-    target_window->write_index = INVALID_BUFFER;
-    if (target_window->alive) {
-      target_window->front_index = static_cast<uint8_t>(write_index);
-      if (!target_window->has_frame) {
-        target_window->has_frame = true;
-        mark_window_dirty(*target_window);
-      } else {
-        mark_dirty(target_window->x, target_window->y + TITLE_H,
-                   target_window->x + static_cast<int>(target_window->width),
-                   target_window->y + TITLE_H +
-                       static_cast<int>(target_window->height));
-      }
-    } else if (target_window->render_index == INVALID_BUFFER) {
-      free_window_pixels(*target_window);
+  target->copying = false;
+  if (target->alive) {
+    if (!target->has_frame) {
+      target->has_frame = true;
+      mark_window_dirty(*target);
+    } else {
+      mark_dirty(target->x, target->y + TITLE_H,
+                 target->x + static_cast<int>(target->width),
+                 target->y + TITLE_H + static_cast<int>(target->height));
     }
+  } else if (!target->rendering) {
+    free_window_pixels(*target);
   }
   return true;
 }

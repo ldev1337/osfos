@@ -3,6 +3,7 @@
 #include <kernel/drivers/keyboard.h>
 #include <kernel/drivers/mouse.h>
 #include <kernel/drivers/pit.h>
+#include <kernel/init.h>
 #include <kernel/scheduler.h>
 
 struct GDTEntry {
@@ -19,7 +20,7 @@ struct GDTPtr {
   uint64_t base;
 } __attribute__((packed));
 
-static struct GDTEntry gdt_entries[7];
+static struct GDTEntry gdt_entries[7] __initdata;
 static struct GDTPtr gdt_ptr;
 
 struct IDTEntry {
@@ -37,7 +38,7 @@ struct IDTPtr {
   uint64_t base;
 } __attribute__((packed));
 
-static struct IDTEntry idt_entries[256];
+static struct IDTEntry idt_entries[256] __initdata;
 static struct IDTPtr idt_ptr;
 static uint8_t pic_master_mask = 0xFF;
 static uint8_t pic_slave_mask = 0xFF;
@@ -135,7 +136,7 @@ __attribute__((always_inline)) static void idt_flush(uint64_t idt_ptr_addr) {
   __asm__ volatile("lidt (%0)" : : "r"(idt_ptr_addr) : "memory");
 }
 
-static void init_gdt(void) {
+static void __init init_gdt(void) {
   gdt_ptr.limit = sizeof(gdt_entries) - 1;
   gdt_ptr.base = (uint64_t)(&gdt_entries);
 
@@ -150,7 +151,7 @@ static void init_gdt(void) {
   gdt_flush((uint64_t)(&gdt_ptr));
 }
 
-static void init_idt(void) {
+static void __init init_idt(void) {
   idt_ptr.limit = sizeof(idt_entries) - 1;
   idt_ptr.base = (uint64_t)(&idt_entries);
 
@@ -163,7 +164,7 @@ static void init_idt(void) {
 
 __attribute__((always_inline)) static void io_wait(void) { outb(0x80, 0); }
 
-static void init_pic(void) {
+static void __init init_pic(void) {
   outb(0x21, 0xFF);
   outb(0xA1, 0xFF);
 
@@ -246,7 +247,7 @@ static bool verify_avx2_support(void) {
   return (ebx & CPUID_AVX2) != 0;
 }
 
-void cpu_init(void) {
+__init void cpu_init(void) {
   init_gdt();
   init_idt();
   init_pic();

@@ -5,13 +5,25 @@
 #include <kernel/drivers/keyboard.h>
 #include <kernel/drivers/mouse.h>
 #include <kernel/drivers/pit.h>
-#include <kernel/graphics/window_manager.h>
+#include <kernel/graphics/lwm.h>
 #include <kernel/lib/random.h>
 #include <kernel/memory/heap.h>
+#include <kernel/memory/init.h>
 #include <kernel/memory/pmm.h>
 #include <kernel/net/smoltcp_bridge.h>
 #include <kernel/scheduler.h>
 #include <kernel/shell/shell.h>
+
+namespace Kernel::Debug {
+struct KernelDebugInfo {
+  size_t reclaimed_init_bytes;
+  size_t reclaimed_init_pages;
+  bool init_reclaimed;
+};
+
+extern KernelDebugInfo g_kernel_debug_info;
+KernelDebugInfo g_kernel_debug_info{};
+} // namespace Kernel::Debug
 
 extern "C" void main(unsigned long multiboot_info_addr) {
   cpu_init();
@@ -75,6 +87,27 @@ extern "C" void main(unsigned long multiboot_info_addr) {
     Kernel::Scheduler::thread_create(Kernel::Graphics::WindowManager::run);
   }
   Kernel::Scheduler::thread_create(Kernel::Shell::run);
+
+  {
+    uintptr_t init_start_phys = reinterpret_cast<uintptr_t>(_os_init_start);
+    uintptr_t init_end_phys = reinterpret_cast<uintptr_t>(_os_init_end);
+
+    if (init_end_phys > init_start_phys) {
+      size_t total_bytes = init_end_phys - init_start_phys;
+      size_t page_count = (total_bytes + Kernel::Memory::PMM::PAGE_SIZE - 1) /
+                          Kernel::Memory::PMM::PAGE_SIZE;
+
+      Kernel::Memory::g_pmm.free_page_block(
+          reinterpret_cast<void *>(init_start_phys), page_count);
+
+      // Store in the debug info struct
+      Kernel::Debug::g_kernel_debug_info = {
+          .reclaimed_init_bytes = total_bytes,
+          .reclaimed_init_pages = page_count,
+          .init_reclaimed = true,
+      };
+    }
+  }
 
   __asm__ volatile("sti");
   while (true) {

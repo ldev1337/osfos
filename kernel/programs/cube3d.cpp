@@ -140,8 +140,8 @@ void run() {
         } else {
           int dx = mx - last_drag_x;
           int dy = my - last_drag_y;
-          int cur_x_val = slider_rotx.get_value() + dy;
-          int cur_y_val = slider_roty.get_value() + dx;
+          int cur_x_val = slider_rotx.get_value() - dy;
+          int cur_y_val = slider_roty.get_value() - dx;
           slider_rotx.set_value((cur_x_val % 360 + 360) % 360);
           slider_roty.set_value((cur_y_val % 360 + 360) % 360);
           last_drag_x = mx;

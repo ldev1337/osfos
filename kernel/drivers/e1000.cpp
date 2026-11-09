@@ -1,5 +1,6 @@
 #include <kernel/cpu.h>
 #include <kernel/drivers/e1000.h>
+#include <kernel/init.h>
 #include <kernel/scheduler.h>
 
 namespace Kernel::Drivers {
@@ -56,15 +57,14 @@ static_assert((RX_QUEUE_SIZE & (RX_QUEUE_SIZE - 1)) == 0);
 
 static bool fits_dma32(const void *ptr, size_t len) {
   const uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
-  return len != 0 && address <= UINT32_MAX &&
-         len - 1 <= UINT32_MAX - address;
+  return len != 0 && address <= UINT32_MAX && len - 1 <= UINT32_MAX - address;
 }
 
 void E1000::write_reg(uint32_t offset, uint32_t value) {
   *reinterpret_cast<volatile uint32_t *>(s_mmio_base + offset) = value;
 }
 
-uint32_t E1000::read_reg(uint32_t offset) {
+uint32_t __init E1000::read_reg(uint32_t offset) {
   return *reinterpret_cast<volatile uint32_t *>(s_mmio_base + offset);
 }
 
@@ -85,7 +85,7 @@ void E1000::get_mac_address(uint8_t mac[6]) {
 
 uint8_t E1000::get_irq() { return s_irq; }
 
-bool E1000::detect_and_init() {
+bool __init E1000::detect_and_init() {
   for (uint8_t bus = 0; bus < 4; bus++) {
     for (uint8_t slot = 0; slot < 32; slot++) {
       uint32_t address = (1U << 31) | (bus << 16) | (slot << 11);
@@ -124,7 +124,7 @@ bool E1000::detect_and_init() {
   return false;
 }
 
-bool E1000::init(uintptr_t mmio_base) {
+bool __init E1000::init(uintptr_t mmio_base) {
   if (mmio_base == 0 || mmio_base > UINT32_MAX - REG_RAH ||
       !fits_dma32(s_rx_descs, sizeof(s_rx_descs)) ||
       !fits_dma32(s_tx_descs, sizeof(s_tx_descs)) ||
@@ -187,7 +187,7 @@ bool E1000::start() {
   return true;
 }
 
-void E1000::init_rx() {
+void __init E1000::init_rx() {
   write_reg(REG_RDBAL, reinterpret_cast<uintptr_t>(s_rx_descs));
   write_reg(REG_RDBAH, 0);
   write_reg(REG_RDLEN, RX_DESC_COUNT * sizeof(RxDesc));
@@ -208,7 +208,7 @@ void E1000::init_rx() {
   write_reg(REG_RCTL, rctl);
 }
 
-void E1000::init_tx() {
+void __init E1000::init_tx() {
   write_reg(REG_TDBAL, reinterpret_cast<uintptr_t>(s_tx_descs));
   write_reg(REG_TDBAH, 0);
   write_reg(REG_TDLEN, TX_DESC_COUNT * sizeof(TxDesc));
@@ -284,8 +284,8 @@ bool E1000::rx_work_should_block() {
 }
 
 bool E1000::rx_descriptor_ready() {
-  return (__atomic_load_n(&s_rx_descs[s_rx_cur].status, __ATOMIC_ACQUIRE) & 1) !=
-         0;
+  return (__atomic_load_n(&s_rx_descs[s_rx_cur].status, __ATOMIC_ACQUIRE) &
+          1) != 0;
 }
 
 size_t E1000::drain_rx(size_t budget) {
@@ -295,10 +295,8 @@ size_t E1000::drain_rx(size_t budget) {
     const uint16_t length = s_rx_descs[index].length;
 
     if (s_rx_descs[index].errors == 0 && length != 0 && length <= 1518) {
-      const uint32_t tail =
-          __atomic_load_n(&s_rx_queue_tail, __ATOMIC_RELAXED);
-      const uint32_t head =
-          __atomic_load_n(&s_rx_queue_head, __ATOMIC_ACQUIRE);
+      const uint32_t tail = __atomic_load_n(&s_rx_queue_tail, __ATOMIC_RELAXED);
+      const uint32_t head = __atomic_load_n(&s_rx_queue_head, __ATOMIC_ACQUIRE);
       if (tail - head < RX_QUEUE_SIZE) {
         auto &packet = s_rx_queue[tail & (RX_QUEUE_SIZE - 1)];
         for (size_t i = 0; i < length; ++i)

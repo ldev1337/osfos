@@ -1,8 +1,9 @@
+#include <arch/x86_64/spinlock.h>
 #include <kernel/cpu.h>
 #include <kernel/drivers/ata.h>
 #include <kernel/drivers/pci.h>
+#include <kernel/init.h>
 #include <kernel/shell/shell.h>
-#include <arch/x86_64/spinlock.h>
 
 #include <algorithm>
 #include <atomic>
@@ -100,7 +101,7 @@ static inline bool ata_wait_drq(int timeout = 100000) {
   return false;
 }
 
-static bool find_bus_master_ide(uint16_t *base) {
+static __init bool find_bus_master_ide(uint16_t *base) {
   for (uint16_t bus = 0; bus < PCI_MAX_BUSES; ++bus) {
     for (uint8_t slot = 0; slot < PCI_MAX_SLOTS; ++slot) {
       for (uint8_t function = 0; function < PCI_MAX_FUNCTIONS; ++function) {
@@ -114,8 +115,7 @@ static bool find_bus_master_ide(uint16_t *base) {
 
         const uint8_t programming_interface =
             pci_read_config8(bus, slot, function, 0x09);
-        if (!(programming_interface & 0x80) ||
-            (programming_interface & 0x01))
+        if (!(programming_interface & 0x80) || (programming_interface & 0x01))
           continue;
 
         const uint32_t bar4 = pci_read_config(bus, slot, function, 0x20);
@@ -138,7 +138,7 @@ static bool find_bus_master_ide(uint16_t *base) {
   return false;
 }
 
-static bool drive_supports_enabled_dma() {
+static bool __init drive_supports_enabled_dma() {
   uint16_t identify[256];
 
   outb(ATA_CONTROL, 1 << 2);
@@ -159,8 +159,8 @@ static bool drive_supports_enabled_dma() {
   outb(ATA_CONTROL, 0);
 
   const bool dma_supported = (identify[49] & (1 << 8)) != 0;
-  const bool dma_mode_enabled = (identify[63] & 0x0700) != 0 ||
-                                (identify[88] & 0x7F00) != 0;
+  const bool dma_mode_enabled =
+      (identify[63] & 0x0700) != 0 || (identify[88] & 0x7F00) != 0;
   return dma_supported && dma_mode_enabled;
 }
 
@@ -170,12 +170,13 @@ static bool fits_dma32(const void *ptr, size_t length) {
          length - 1 <= UINT32_MAX - address;
 }
 
-static size_t prepare_prdt(size_t length) {
+static size_t __init prepare_prdt(size_t length) {
   const uintptr_t buffer_address = reinterpret_cast<uintptr_t>(dma_buffer);
   size_t entries = 0;
   size_t offset = 0;
 
-  while (offset < length && entries < (sizeof(dma_prdt) / sizeof(dma_prdt[0]))) {
+  while (offset < length &&
+         entries < (sizeof(dma_prdt) / sizeof(dma_prdt[0]))) {
     const uintptr_t address = buffer_address + offset;
     size_t chunk = 0x10000 - (address & 0xFFFF);
     chunk = std::min(chunk, length - offset);
@@ -221,11 +222,9 @@ static bool wait_for_dma_irq() {
 static bool transfer_dma(uint32_t lba, uint8_t sector_count, void *buffer,
                          bool read) {
   const size_t byte_count = static_cast<size_t>(sector_count) * ATA_SECTOR_SIZE;
-  if (!dma_enabled || lba > 0x0FFFFFFF ||
-      byte_count > sizeof(dma_buffer) ||
+  if (!dma_enabled || lba > 0x0FFFFFFF || byte_count > sizeof(dma_buffer) ||
       !fits_dma32(dma_buffer, byte_count) ||
-      !fits_dma32(dma_prdt, sizeof(dma_prdt)) ||
-      prepare_prdt(byte_count) == 0)
+      !fits_dma32(dma_prdt, sizeof(dma_prdt)) || prepare_prdt(byte_count) == 0)
     return false;
 
   if (!read) {
@@ -257,8 +256,8 @@ static bool transfer_dma(uint32_t lba, uint8_t sector_count, void *buffer,
   dma_completion_ata_status.store(0, std::memory_order_relaxed);
   dma_active.store(true, std::memory_order_release);
 
-  const uint8_t bm_command = ATA_BM_INTERRUPT_ENABLE |
-                             (read ? ATA_BM_READ_FROM_DEVICE : 0);
+  const uint8_t bm_command =
+      ATA_BM_INTERRUPT_ENABLE | (read ? ATA_BM_READ_FROM_DEVICE : 0);
   outb(bus_master_base + ATA_BM_COMMAND, bm_command);
   outb(ATA_COMMAND, read ? ATA_CMD_READ_DMA : ATA_CMD_WRITE_DMA);
   outb(bus_master_base + ATA_BM_COMMAND, bm_command | ATA_BM_START);
@@ -294,7 +293,7 @@ static bool transfer_dma(uint32_t lba, uint8_t sector_count, void *buffer,
   return true;
 }
 
-void ATADriver::init() {
+void __init ATADriver::init() {
   outb(ATA_DEVICE, 0xA0);
   dma_enabled = find_bus_master_ide(&bus_master_base) &&
                 drive_supports_enabled_dma() &&
@@ -303,8 +302,7 @@ void ATADriver::init() {
 
   if (dma_enabled) {
     outb(bus_master_base + ATA_BM_COMMAND, ATA_BM_INTERRUPT_ENABLE);
-    outb(ATA_BM_STATUS + bus_master_base,
-         ATA_BM_ERROR | ATA_BM_INTERRUPT);
+    outb(ATA_BM_STATUS + bus_master_base, ATA_BM_ERROR | ATA_BM_INTERRUPT);
     outb(ATA_CONTROL, 0);
     const uint8_t slave_mask = inb(0xA1);
     outb(0xA1, slave_mask & ~(1 << 6));
@@ -394,8 +392,8 @@ bool ATADriver::write_sectors(uint32_t lba, uint8_t sector_count,
 
   ATALockGuard guard(ata_lock);
   if (dma_enabled) {
-    const bool success = transfer_dma(lba, sector_count,
-                                      const_cast<void *>(buffer), false);
+    const bool success =
+        transfer_dma(lba, sector_count, const_cast<void *>(buffer), false);
     return success;
   }
 

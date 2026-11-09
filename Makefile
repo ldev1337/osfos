@@ -17,22 +17,22 @@ COMMON_FLAGS = -march=x86-64-v3 -ffast-math \
 
 LESS_EXTR_FLAGS = -mllvm -enable-gvn-hoist=true \
   -mllvm -enable-gvn-sink=true \
-  -mllvm -enable-loop-flatten=true \
   -mllvm -enable-interleaved-mem-accesses=true
 
-CFLAGS_C        = $(COMMON_FLAGS) -O2 $(LESS_EXTR_FLAGS) $(C_STD)
+CFLAGS_C        = $(COMMON_FLAGS) -O1 $(LESS_EXTR_FLAGS) $(C_STD)
 CFLAGS_CPP      = $(COMMON_FLAGS) -O2 $(LESS_EXTR_FLAGS) $(CPP_STD)
-CFLAGS_C_PERF   = $(COMMON_FLAGS) -O3 $(LESS_EXTR_FLAGS) $(C_STD)
-CFLAGS_CPP_PERF = $(COMMON_FLAGS) -O3 $(LESS_EXTR_FLAGS) $(CPP_STD)
-CFLAGS_C_SIZE   = $(COMMON_FLAGS) -Os $(LESS_EXTR_FLAGS) $(C_STD)
-CFLAGS_CPP_SIZE = $(COMMON_FLAGS) -Os $(LESS_EXTR_FLAGS) $(CPP_STD)
-CFLAGS_BEARSSL  = $(COMMON_FLAGS) -O3 $(LESS_EXTR_FLAGS) $(C_STD) \
+CFLAGS_C_PERF   = $(COMMON_FLAGS) -O2 $(LESS_EXTR_FLAGS) $(C_STD)
+CFLAGS_CPP_PERF = $(COMMON_FLAGS) -O2 $(LESS_EXTR_FLAGS) $(CPP_STD)
+CFLAGS_C_SIZE   = $(COMMON_FLAGS) -Oz $(LESS_EXTR_FLAGS) $(C_STD)
+CFLAGS_CPP_SIZE = $(COMMON_FLAGS) -Oz $(LESS_EXTR_FLAGS) $(CPP_STD)
+CFLAGS_BEARSSL  = $(COMMON_FLAGS) -O2 $(LESS_EXTR_FLAGS) $(C_STD) \
   -DBR_USE_URANDOM=0 -DBR_USE_UNIX_TIME=0 -DBR_USE_WIN32_RAND=0 -DBR_RDRAND=0
 
 LDFLAGS = -static -ffreestanding -nostdlib -flto=full -fuse-ld=lld \
   -Wl,-O3 -Wl,-n -Wl \
   -Wl,--gc-sections -Wl,--icf=all \
   -Wl,--strip-all -Wl,--build-id=none \
+	-Wl,-z,max-page-size=0x1000 \
   -Wl,-T,arch/linker.ld
 
 ASM_SRCS = $(shell find arch kernel -name '*.asm' $(EXCLUDE))

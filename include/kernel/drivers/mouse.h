@@ -1,7 +1,7 @@
 #ifndef KERNEL_DRIVERS_MOUSE_H
 #define KERNEL_DRIVERS_MOUSE_H
 
-#include <kernel/graphics/window_manager.h>
+#include <kernel/graphics/lwm.h>
 #include <kernel/scheduler.h>
 
 namespace Kernel::Drivers {

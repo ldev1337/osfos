@@ -111,7 +111,8 @@ FileStream g_streams[VFS_MAX_OPEN_FILES]{};
 // Dynamic block bitmap representation in RAM
 constexpr uint32_t MAX_BLOCKS = VFS_MAX_SECTORS;
 constexpr uint32_t BLOCK_BITMAP_SECTORS_MAX = (MAX_BLOCKS + 4095) / 4096;
-constexpr uint32_t BLOCK_BITMAP_BYTES = BLOCK_BITMAP_SECTORS_MAX * VFS_SECTOR_SIZE;
+constexpr uint32_t BLOCK_BITMAP_BYTES =
+    BLOCK_BITMAP_SECTORS_MAX * VFS_SECTOR_SIZE;
 uint8_t g_block_bitmap[BLOCK_BITMAP_BYTES]{};
 bool g_block_bitmap_dirty = false;
 
@@ -215,8 +216,7 @@ void cache_insert(CacheSlot &slot) {
 
 CacheSlot *cache_find(uint32_t abs_lba) {
   uint32_t bucket = cache_bucket(abs_lba);
-  for (int32_t i = g_cache_buckets[bucket]; i >= 0;
-       i = g_cache[i].hash_next) {
+  for (int32_t i = g_cache_buckets[bucket]; i >= 0; i = g_cache[i].hash_next) {
     if (g_cache[i].abs_lba == abs_lba) {
       g_cache[i].age = ++g_cache_tick;
       return &g_cache[i];
@@ -461,12 +461,11 @@ bool build_inode_path(uint32_t inode_index, char out_path[VFS_MAX_PATH]) {
            extent_index < parent.extents_count && !found_parent;
            ++extent_index) {
         for (uint32_t block_offset = 0;
-             block_offset < parent.extents[extent_index].count &&
-             !found_parent;
+             block_offset < parent.extents[extent_index].count && !found_parent;
              ++block_offset) {
           uint8_t sector[VFS_SECTOR_SIZE];
-          uint32_t block = parent.extents[extent_index].start_block +
-                           block_offset;
+          uint32_t block =
+              parent.extents[extent_index].start_block + block_offset;
           if (!cached_read_sector(block, sector))
             continue;
 
@@ -578,8 +577,10 @@ bool mount_internal() {
       g_sb.block_bitmap_sectors != expected_block_bitmap_sectors ||
       g_sb.inode_table_sectors != expected_inode_table_sectors ||
       g_sb.inode_bitmap_start != 1 ||
-      g_sb.block_bitmap_start != g_sb.inode_bitmap_start + g_sb.inode_bitmap_sectors ||
-      g_sb.inode_table_start != g_sb.block_bitmap_start + g_sb.block_bitmap_sectors ||
+      g_sb.block_bitmap_start !=
+          g_sb.inode_bitmap_start + g_sb.inode_bitmap_sectors ||
+      g_sb.inode_table_start !=
+          g_sb.block_bitmap_start + g_sb.block_bitmap_sectors ||
       g_sb.data_start != g_sb.inode_table_start + g_sb.inode_table_sectors ||
       g_sb.data_start >= g_sb.total_sectors ||
       hash_fnv1a(reinterpret_cast<const uint8_t *>(&g_sb), 48) != g_sb.checksum)
@@ -601,7 +602,8 @@ bool mount_internal() {
   uint8_t sec_buf[VFS_SECTOR_SIZE];
   for (uint32_t i = 0; i < VFS_MAX_INODES; ++i) {
     uint32_t inode_offset = i * sizeof(Inode);
-    uint32_t table_sec = g_sb.inode_table_start + inode_offset / VFS_SECTOR_SIZE;
+    uint32_t table_sec =
+        g_sb.inode_table_start + inode_offset / VFS_SECTOR_SIZE;
     if (inode_offset % VFS_SECTOR_SIZE == 0 &&
         !Kernel::Drivers::ATADriver::read_sectors(VFS_START_LBA + table_sec, 1,
                                                   sec_buf))
@@ -751,12 +753,10 @@ bool VFS::format(uint32_t total_sectors) {
   for (uint32_t sec_idx = 0; sec_idx < g_sb.inode_table_sectors; ++sec_idx) {
     bytes_zero(sec, sizeof(sec));
     size_t byte_offset = static_cast<size_t>(sec_idx) * VFS_SECTOR_SIZE;
-    size_t inode_bytes_left = sizeof(g_inodes) > byte_offset
-                                  ? sizeof(g_inodes) - byte_offset
-                                  : 0;
-    size_t copy_len = inode_bytes_left < VFS_SECTOR_SIZE
-                          ? inode_bytes_left
-                          : VFS_SECTOR_SIZE;
+    size_t inode_bytes_left =
+        sizeof(g_inodes) > byte_offset ? sizeof(g_inodes) - byte_offset : 0;
+    size_t copy_len =
+        inode_bytes_left < VFS_SECTOR_SIZE ? inode_bytes_left : VFS_SECTOR_SIZE;
     if (copy_len)
       bytes_copy(sec, inode_bytes + byte_offset, copy_len);
     if (!Kernel::Drivers::ATADriver::write_sectors(

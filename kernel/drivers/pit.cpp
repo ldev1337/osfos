@@ -1,5 +1,6 @@
 #include <kernel/cpu.h>
 #include <kernel/drivers/pit.h>
+#include <kernel/init.h>
 
 namespace Kernel::Drivers::PIT {
 namespace {
@@ -7,7 +8,7 @@ volatile uint32_t system_ticks = 0;
 uint32_t tick_period_ms = 10;
 } // namespace
 
-void init(uint32_t frequency) {
+void __init init(uint32_t frequency) {
   if (frequency == 0)
     frequency = 100;
   uint32_t divisor = 1193180 / frequency;
