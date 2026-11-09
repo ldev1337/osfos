@@ -52,7 +52,6 @@ void thread_yield();
 bool thread_unblock(uint64_t id);
 [[noreturn]] void thread_exit();
 void thread_block();
-// The short predicate runs with interrupts disabled to avoid lost wakeups.
 bool thread_block_if(bool (*should_block)());
 void thread_sleep_ms(uint32_t milliseconds);
 void unblock_io_threads();

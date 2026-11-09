@@ -43,6 +43,7 @@ static ThreadControlBlock *idle_thread = nullptr;
 static ThreadControlBlock *thread_list_head = nullptr;
 static ThreadControlBlock *reap_pending = nullptr;
 static ThreadControlBlock *sleep_queue = nullptr;
+static ThreadControlBlock *blocked_list_head = nullptr;
 static uint64_t next_pid = 1;
 static bool scheduler_initialized = false;
 
@@ -128,6 +129,22 @@ static void wake_sleepers(uint32_t now) {
   }
 }
 
+static void insert_blocked(ThreadControlBlock *thread) {
+  thread->sleep_next = blocked_list_head;
+  blocked_list_head = thread;
+}
+
+static void remove_blocked(ThreadControlBlock *thread) {
+  ThreadControlBlock **link = &blocked_list_head;
+  while (*link && *link != thread)
+    link = &(*link)->sleep_next;
+
+  if (*link == thread) {
+    *link = thread->sleep_next;
+    thread->sleep_next = nullptr;
+  }
+}
+
 static ThreadControlBlock *dequeue_priority(unsigned index) {
   if (index >= PRIORITY_COUNT || !(ready_priorities & (1u << index)))
     return nullptr;
@@ -158,6 +175,24 @@ static ThreadControlBlock *dequeue_fair() {
   const bool high_ready = (ready_priorities & (1u << HIGH)) != 0;
   const bool normal_ready = (ready_priorities & (1u << NORMAL)) != 0;
   const bool idle_ready = (ready_priorities & (1u << IDLE)) != 0;
+
+  // FAST PATH: If exactly one priority level is active, skip all fairness
+  // checks and branch overhead.
+  if (high_ready && !normal_ready && !idle_ready) {
+    consecutive_high_dispatches = 0;
+    dispatches_since_idle = 0;
+    return dequeue_priority(HIGH);
+  }
+  if (normal_ready && !high_ready && !idle_ready) {
+    consecutive_high_dispatches = 0;
+    dispatches_since_idle = 0;
+    return dequeue_priority(NORMAL);
+  }
+  if (idle_ready && !high_ready && !normal_ready) {
+    consecutive_high_dispatches = 0;
+    dispatches_since_idle = 0;
+    return dequeue_priority(IDLE);
+  }
 
   // Background-priority work gets one dispatch after a bounded interval.
   if (idle_ready && (high_ready || normal_ready) &&
@@ -459,11 +494,11 @@ void terminate_thread(uint64_t id) {
       continue;
 
     thread->stop_requested = true;
-    // A cooperative termination request must also release a blocked thread,
-    // otherwise it may never get CPU time to observe should_stop().
     if (thread->state == ThreadState::BLOCKED) {
       if (thread->timed_wait)
         remove_sleeper(thread);
+      else
+        remove_blocked(thread);
       thread->timed_wait = false;
       enqueue(thread);
     }
@@ -500,6 +535,7 @@ void thread_block() {
 
   current_thread->state = ThreadState::BLOCKED;
   current_thread->timed_wait = false;
+  insert_blocked(current_thread);
   yield_with_irqs_disabled();
   irq_restore(flags);
 }
@@ -516,6 +552,7 @@ auto thread_block_if(bool (*should_block)()) -> bool {
 
   current_thread->state = ThreadState::BLOCKED;
   current_thread->timed_wait = false;
+  insert_blocked(current_thread);
   yield_with_irqs_disabled();
   irq_restore(flags);
   return true;
@@ -538,17 +575,20 @@ void thread_sleep_ms(uint32_t milliseconds) {
   insert_sleeper(current_thread);
   current_thread->state = ThreadState::BLOCKED;
 
-  // Keep interrupts disabled until int 0x30 has saved this blocked context.
   yield_with_irqs_disabled();
   irq_restore(flags);
 }
 
 void unblock_io_threads() {
   const uint64_t flags = irq_save();
-  for (ThreadControlBlock *thread = thread_list_head; thread;
-       thread = thread->registry_next) {
-    if (thread->state == ThreadState::BLOCKED && !thread->timed_wait)
-      enqueue(thread);
+  ThreadControlBlock *list = blocked_list_head;
+  blocked_list_head = nullptr;
+
+  while (list) {
+    ThreadControlBlock *thread = list;
+    list = thread->sleep_next;
+    thread->sleep_next = nullptr;
+    enqueue(thread);
   }
   irq_restore(flags);
 }
@@ -558,10 +598,10 @@ bool thread_unblock(uint64_t id) {
     return false;
 
   const uint64_t flags = irq_save();
-  for (ThreadControlBlock *thread = thread_list_head; thread;
-       thread = thread->registry_next) {
-    if (thread->id == id && thread->state == ThreadState::BLOCKED &&
-        !thread->timed_wait) {
+  for (ThreadControlBlock *thread = blocked_list_head; thread;
+       thread = thread->sleep_next) {
+    if (thread->id == id) {
+      remove_blocked(thread);
       enqueue(thread);
       irq_restore(flags);
       return true;
@@ -584,16 +624,22 @@ auto schedule(uint64_t current_rsp) -> uint64_t {
   const bool previous_is_idle = previous == idle_thread;
   if (!previous_is_idle) {
     if (previous->state == ThreadState::RUNNING) {
-      // No other runnable work: avoid touching queues or switching contexts.
       if (ready_priorities == 0)
         return previous->rsp;
+
+      const unsigned p_idx = priority_index(previous->priority);
+      RunQueue &queue = run_queues[p_idx];
+      if (ready_priorities == (1u << p_idx) && queue.head == previous &&
+          queue.tail == previous) {
+        return previous->rsp;
+      }
+
       enqueue(previous);
     } else if (previous->state == ThreadState::TERMINATED) {
       previous->reap_next = reap_pending;
       reap_pending = previous;
     }
   } else if (ready_priorities == 0) {
-    // The real idle task simply resumes its sti; hlt loop.
     previous->state = ThreadState::RUNNING;
     return previous->rsp;
   }
@@ -603,8 +649,6 @@ auto schedule(uint64_t current_rsp) -> uint64_t {
     next = idle_thread;
 
   if (!next) {
-    // scheduler_init() normally guarantees an idle context. Retain a safe
-    // fallback for partially initialized boot paths.
     if (previous->state == ThreadState::RUNNING)
       return previous->rsp;
     return current_rsp;
