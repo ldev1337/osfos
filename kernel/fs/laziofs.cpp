@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <arch/x86_64/spinlock.h>
 #include <kernel/drivers/ata.h>
 #include <kernel/fs/laziofs.h>
 #include <utility>
@@ -82,6 +83,9 @@ struct FileStream {
 constexpr uint32_t CACHE_SLOTS = VFS_CACHE_SLOTS;
 constexpr uint32_t CACHE_BUCKETS = CACHE_SLOTS * 2;
 constexpr uint32_t CACHE_INVALID_LBA = 0xFFFFFFFFU;
+constexpr uint32_t CACHE_PREFETCH_SECTORS =
+    CACHE_SLOTS < 8 ? CACHE_SLOTS : 8;
+constexpr uint32_t CACHE_FLUSH_BATCH_SECTORS = 16;
 
 struct CacheSlot {
   uint32_t abs_lba;
@@ -89,6 +93,7 @@ struct CacheSlot {
   int32_t hash_prev;
   int32_t hash_next;
   bool dirty;
+  bool reserved;
   uint8_t data[VFS_SECTOR_SIZE];
 };
 
@@ -107,6 +112,11 @@ bool g_mounted = false;
 uint32_t g_next_free_inode = 0;
 uint32_t g_next_free_block = 0;
 FileStream g_streams[VFS_MAX_OPEN_FILES]{};
+Spinlock g_vfs_lock;
+struct VfsLockGuard {
+  VfsLockGuard() { g_vfs_lock.lock(); }
+  ~VfsLockGuard() { g_vfs_lock.unlock(); }
+};
 
 // Dynamic block bitmap representation in RAM
 constexpr uint32_t MAX_BLOCKS = VFS_MAX_SECTORS;
@@ -161,6 +171,7 @@ void cache_init() {
     g_cache[i].hash_prev = -1;
     g_cache[i].hash_next = -1;
     g_cache[i].dirty = false;
+    g_cache[i].reserved = false;
   }
   for (uint32_t i = 0; i < CACHE_BUCKETS; ++i)
     g_cache_buckets[i] = -1;
@@ -176,13 +187,33 @@ bool cache_flush_slot(CacheSlot &slot) {
   return true;
 }
 
+CacheSlot *cache_find(uint32_t abs_lba);
+
 bool cache_flush_all() {
-  bool ok = true;
-  for (uint32_t i = 0; i < CACHE_SLOTS; ++i) {
-    if (!cache_flush_slot(g_cache[i]))
-      ok = false;
+  uint8_t batch[CACHE_FLUSH_BATCH_SECTORS * VFS_SECTOR_SIZE];
+  for (;;) {
+    CacheSlot *first = nullptr;
+    for (uint32_t i = 0; i < CACHE_SLOTS; ++i)
+      if (g_cache[i].dirty && (!first || g_cache[i].abs_lba < first->abs_lba))
+        first = &g_cache[i];
+    if (!first)
+      return true;
+
+    CacheSlot *slots[CACHE_FLUSH_BATCH_SECTORS];
+    uint32_t count = 0;
+    for (; count < CACHE_FLUSH_BATCH_SECTORS; ++count) {
+      CacheSlot *slot = cache_find(first->abs_lba + count);
+      if (!slot || !slot->dirty)
+        break;
+      slots[count] = slot;
+      bytes_copy(batch + count * VFS_SECTOR_SIZE, slot->data, VFS_SECTOR_SIZE);
+    }
+    if (!count || !Kernel::Drivers::ATADriver::write_sectors(
+                      first->abs_lba, static_cast<uint8_t>(count), batch))
+      return false;
+    for (uint32_t i = 0; i < count; ++i)
+      slots[i]->dirty = false;
   }
-  return ok;
 }
 
 uint32_t cache_bucket(uint32_t abs_lba) {
@@ -226,35 +257,44 @@ CacheSlot *cache_find(uint32_t abs_lba) {
 }
 
 CacheSlot *cache_evict() {
-  uint32_t best = 0;
-  for (uint32_t i = 1; i < CACHE_SLOTS; ++i) {
-    if (g_cache[i].age < g_cache[best].age)
-      best = i;
+  CacheSlot *best_clean = nullptr;
+  for (uint32_t i = 0; i < CACHE_SLOTS; ++i) {
+    CacheSlot &slot = g_cache[i];
+    if (slot.abs_lba == CACHE_INVALID_LBA && !slot.reserved)
+      return &slot;
+    if (!slot.reserved && !slot.dirty && (!best_clean || slot.age < best_clean->age))
+      best_clean = &slot;
   }
-  if (!cache_flush_slot(g_cache[best]))
+  if (best_clean) {
+    cache_remove(*best_clean);
+    best_clean->abs_lba = CACHE_INVALID_LBA;
+    return best_clean;
+  }
+
+  CacheSlot *best_dirty = nullptr;
+  for (uint32_t i = 0; i < CACHE_SLOTS; ++i) {
+    if (!g_cache[i].reserved &&
+        (!best_dirty || g_cache[i].age < best_dirty->age))
+      best_dirty = &g_cache[i];
+  }
+  if (!best_dirty)
     return nullptr;
-  cache_remove(g_cache[best]);
-  g_cache[best].abs_lba = CACHE_INVALID_LBA;
-  return &g_cache[best];
+  if (!cache_flush_slot(*best_dirty))
+    return nullptr;
+  cache_remove(*best_dirty);
+  best_dirty->abs_lba = CACHE_INVALID_LBA;
+  return best_dirty;
 }
+
+uint8_t *cached_read_sector_ptr(uint32_t rel_lba);
 
 bool cached_read_sector(uint32_t rel_lba, uint8_t *out) {
   if (!out || rel_lba >= g_sb.total_sectors)
     return false;
-  uint32_t abs = VFS_START_LBA + rel_lba;
-  CacheSlot *slot = cache_find(abs);
-  if (slot) {
-    bytes_copy(out, slot->data, VFS_SECTOR_SIZE);
-    return true;
-  }
-  slot = cache_evict();
-  if (!slot || !Kernel::Drivers::ATADriver::read_sectors(abs, 1, slot->data))
+  uint8_t *data = cached_read_sector_ptr(rel_lba);
+  if (!data)
     return false;
-  slot->abs_lba = abs;
-  slot->age = ++g_cache_tick;
-  slot->dirty = false;
-  cache_insert(*slot);
-  bytes_copy(out, slot->data, VFS_SECTOR_SIZE);
+  bytes_copy(out, data, VFS_SECTOR_SIZE);
   return true;
 }
 
@@ -283,14 +323,64 @@ uint8_t *cached_read_sector_ptr(uint32_t rel_lba) {
   CacheSlot *slot = cache_find(abs);
   if (slot)
     return slot->data;
-  slot = cache_evict();
-  if (!slot || !Kernel::Drivers::ATADriver::read_sectors(abs, 1, slot->data))
+
+  CacheSlot *reserved[CACHE_PREFETCH_SECTORS];
+  uint8_t batch[CACHE_PREFETCH_SECTORS * VFS_SECTOR_SIZE];
+  uint32_t count = 0;
+  const uint32_t limit = std::min(CACHE_PREFETCH_SECTORS,
+                                  g_sb.total_sectors - rel_lba);
+  while (count < limit) {
+    if (cache_find(abs + count))
+      break;
+    slot = cache_evict();
+    if (!slot) {
+      for (uint32_t i = 0; i < count; ++i) {
+        reserved[i]->reserved = false;
+        reserved[i]->abs_lba = CACHE_INVALID_LBA;
+      }
+      return nullptr;
+    }
+    slot->age = ++g_cache_tick; // Keep this reserved slot out of LRU eviction.
+    slot->reserved = true;
+    reserved[count++] = slot;
+  }
+  if (!count || !Kernel::Drivers::ATADriver::read_sectors(
+                    abs, static_cast<uint8_t>(count), batch)) {
+    for (uint32_t i = 0; i < count; ++i) {
+      reserved[i]->reserved = false;
+      reserved[i]->abs_lba = CACHE_INVALID_LBA;
+    }
     return nullptr;
-  slot->abs_lba = abs;
+  }
+
+  for (uint32_t i = 0; i < count; ++i) {
+    slot = reserved[i];
+    bytes_copy(slot->data, batch + i * VFS_SECTOR_SIZE, VFS_SECTOR_SIZE);
+    slot->abs_lba = abs + i;
+    slot->age = ++g_cache_tick;
+    slot->dirty = false;
+    slot->reserved = false;
+    cache_insert(*slot);
+  }
+  return reserved[0]->data;
+}
+
+bool cached_write_full_sector(uint32_t rel_lba, const uint8_t *data) {
+  if (!data || rel_lba >= g_sb.total_sectors)
+    return false;
+  const uint32_t abs = VFS_START_LBA + rel_lba;
+  CacheSlot *slot = cache_find(abs);
+  if (!slot) {
+    slot = cache_evict();
+    if (!slot)
+      return false;
+    slot->abs_lba = abs;
+    cache_insert(*slot);
+  }
+  bytes_copy(slot->data, data, VFS_SECTOR_SIZE);
   slot->age = ++g_cache_tick;
-  slot->dirty = false;
-  cache_insert(*slot);
-  return slot->data;
+  slot->dirty = true;
+  return true;
 }
 
 void cached_mark_dirty(uint32_t rel_lba) {
@@ -599,17 +689,19 @@ bool mount_internal() {
       return false;
   }
 
-  uint8_t sec_buf[VFS_SECTOR_SIZE];
-  for (uint32_t i = 0; i < VFS_MAX_INODES; ++i) {
-    uint32_t inode_offset = i * sizeof(Inode);
-    uint32_t table_sec =
-        g_sb.inode_table_start + inode_offset / VFS_SECTOR_SIZE;
-    if (inode_offset % VFS_SECTOR_SIZE == 0 &&
-        !Kernel::Drivers::ATADriver::read_sectors(VFS_START_LBA + table_sec, 1,
-                                                  sec_buf))
+  constexpr uint32_t MOUNT_BATCH_SECTORS = 16;
+  uint8_t table_batch[MOUNT_BATCH_SECTORS * VFS_SECTOR_SIZE];
+  uint8_t *inode_bytes = reinterpret_cast<uint8_t *>(g_inodes);
+  for (uint32_t sector = 0; sector < g_sb.inode_table_sectors;) {
+    uint32_t count = std::min(MOUNT_BATCH_SECTORS,
+                              g_sb.inode_table_sectors - sector);
+    if (!Kernel::Drivers::ATADriver::read_sectors(
+            VFS_START_LBA + g_sb.inode_table_start + sector,
+            static_cast<uint8_t>(count), table_batch))
       return false;
-    bytes_copy(&g_inodes[i], sec_buf + inode_offset % VFS_SECTOR_SIZE,
-               sizeof(Inode));
+    bytes_copy(inode_bytes + sector * VFS_SECTOR_SIZE, table_batch,
+               count * VFS_SECTOR_SIZE);
+    sector += count;
   }
 
   if ((g_inode_bitmap[0] & 1U) == 0 || g_inodes[0].flags != INODE_DIR ||
@@ -628,6 +720,15 @@ bool mount_internal() {
     g_streams[i].used = false;
   g_mounted = true;
   return true;
+}
+
+bool sync_internal() {
+  if (!g_mounted)
+    return false;
+  bool ok = flush_bitmaps_and_inodes();
+  if (!cache_flush_all())
+    ok = false;
+  return ok;
 }
 
 // ── Stream & File Operations ────────────────────────────────────────────────
@@ -680,21 +781,27 @@ bool parse_mode(const char *mode, bool &r, bool &w, bool &a, bool &t) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 void VFS::init() {
+  VfsLockGuard guard;
   Kernel::Drivers::ATADriver::init();
   g_mounted = mount_internal();
 }
 
 bool VFS::mount() {
+  VfsLockGuard guard;
   g_mounted = mount_internal();
   return g_mounted;
 }
 
-bool VFS::is_mounted() { return g_mounted; }
+bool VFS::is_mounted() {
+  VfsLockGuard guard;
+  return g_mounted;
+}
 
 bool VFS::format(uint32_t total_sectors) {
+  VfsLockGuard guard;
   if (total_sectors < 4096 || total_sectors > VFS_MAX_SECTORS)
     return false;
-  if (g_mounted && !vfs_sync())
+  if (g_mounted && !sync_internal())
     return false;
 
   g_mounted = false;
@@ -784,6 +891,7 @@ bool VFS::format(uint32_t total_sectors) {
 }
 
 bool VFS::find_file(const char *filename, VFSFile *out_file) {
+  VfsLockGuard guard;
   if (!out_file || !g_mounted)
     return false;
   bytes_zero(out_file, sizeof(*out_file));
@@ -804,9 +912,11 @@ bool VFS::find_file(const char *filename, VFSFile *out_file) {
   return true;
 }
 
-int VFS::read_file(const VFSFile *file, void *buffer, uint32_t length,
-                   uint32_t offset) {
+static int read_file_internal(const VFSFile *file, void *buffer,
+                              uint32_t length, uint32_t offset) {
   if (!g_mounted || !file || !file->exists || file->is_directory)
+    return 0;
+  if (!buffer || file->entry_index >= VFS_MAX_INODES)
     return 0;
   Inode &inode = g_inodes[file->entry_index];
   if (offset >= inode.size)
@@ -844,6 +954,12 @@ int VFS::read_file(const VFSFile *file, void *buffer, uint32_t length,
     }
   }
   return static_cast<int>(done);
+}
+
+int VFS::read_file(const VFSFile *file, void *buffer, uint32_t length,
+                   uint32_t offset) {
+  VfsLockGuard guard;
+  return read_file_internal(file, buffer, length, offset);
 }
 
 // ── Directory Linking Helpers ───────────────────────────────────────────────
@@ -990,6 +1106,7 @@ bool add_inode_to_dir(uint32_t parent_ino, uint32_t new_ino,
 }
 
 void *VFS::vfs_open(const char *path, const char *mode) {
+  VfsLockGuard guard;
   if (!g_mounted)
     return nullptr;
   bool r, w, a, t;
@@ -1058,8 +1175,11 @@ void *VFS::vfs_open(const char *path, const char *mode) {
 void *VFS::vfs_open(const char *path) { return vfs_open(path, "r+"); }
 
 size_t VFS::vfs_read(void *buffer, size_t size, size_t count, void *stream) {
+  VfsLockGuard guard;
   FileStream *s = validate_stream(stream);
   if (!s || !s->readable || !buffer || size == 0 || count == 0)
+    return 0;
+  if (count > UINT32_MAX / size)
     return 0;
   uint32_t bytes = static_cast<uint32_t>(size * count);
   // Read implementation via read_file helper
@@ -1067,7 +1187,7 @@ size_t VFS::vfs_read(void *buffer, size_t size, size_t count, void *stream) {
   vf.exists = true;
   vf.is_directory = false;
   vf.entry_index = s->inode_index;
-  int got = read_file(&vf, buffer, bytes, s->offset);
+  int got = read_file_internal(&vf, buffer, bytes, s->offset);
   if (got <= 0)
     return 0;
   s->offset += static_cast<uint32_t>(got);
@@ -1076,6 +1196,7 @@ size_t VFS::vfs_read(void *buffer, size_t size, size_t count, void *stream) {
 
 size_t VFS::vfs_write(const void *buffer, size_t size, size_t count,
                       void *stream) {
+  VfsLockGuard guard;
   FileStream *s = validate_stream(stream);
   if (!s || !s->writable || !buffer || size == 0 || count == 0)
     return 0;
@@ -1133,12 +1254,16 @@ size_t VFS::vfs_write(const void *buffer, size_t size, size_t count,
       target_block = static_cast<uint32_t>(new_blk);
     }
 
-    uint8_t *sptr = cached_read_sector_ptr(target_block);
-    if (!sptr)
-      break;
-
-    bytes_copy(sptr + byte_in_sec, src + written, chunk);
-    cached_mark_dirty(target_block);
+    if (byte_in_sec == 0 && chunk == VFS_SECTOR_SIZE) {
+      if (!cached_write_full_sector(target_block, src + written))
+        break;
+    } else {
+      uint8_t *sptr = cached_read_sector_ptr(target_block);
+      if (!sptr)
+        break;
+      bytes_copy(sptr + byte_in_sec, src + written, chunk);
+      cached_mark_dirty(target_block);
+    }
 
     written += chunk;
     s->offset += chunk;
@@ -1151,20 +1276,23 @@ size_t VFS::vfs_write(const void *buffer, size_t size, size_t count,
 }
 
 int VFS::vfs_close(void *stream) {
+  VfsLockGuard guard;
   FileStream *s = validate_stream(stream);
   if (!s)
     return -1;
-  bool synced = vfs_sync();
+  bool synced = sync_internal();
   s->used = false;
   return synced ? 0 : -1;
 }
 
 long VFS::vfs_tell(void *stream) {
+  VfsLockGuard guard;
   FileStream *s = validate_stream(stream);
   return s ? static_cast<long>(s->offset) : -1;
 }
 
 int VFS::vfs_seek(void *stream, long offset, int whence) {
+  VfsLockGuard guard;
   FileStream *s = validate_stream(stream);
   if (!s)
     return -1;
@@ -1179,11 +1307,13 @@ int VFS::vfs_seek(void *stream, long offset, int whence) {
 }
 
 size_t VFS::vfs_size(void *stream) {
+  VfsLockGuard guard;
   FileStream *s = validate_stream(stream);
   return s ? g_inodes[s->inode_index].size : 0;
 }
 
 int VFS::vfs_mkdir(const char *pathname, int mode) {
+  VfsLockGuard guard;
   (void)mode;
   if (!g_mounted)
     return -1;
@@ -1199,6 +1329,7 @@ int VFS::vfs_mkdir(const char *pathname, int mode) {
 }
 
 int VFS::vfs_remove(const char *pathname) {
+  VfsLockGuard guard;
   if (!g_mounted)
     return -1;
   char normalized[VFS_MAX_PATH];
@@ -1215,12 +1346,14 @@ int VFS::vfs_remove(const char *pathname) {
 }
 
 int VFS::vfs_rename(const char *oldpath, const char *newpath) {
+  VfsLockGuard guard;
   (void)oldpath;
   (void)newpath;
   return -1;
 }
 
 bool VFS::vfs_exists(const char *path) {
+  VfsLockGuard guard;
   if (!g_mounted)
     return false;
   char normalized[VFS_MAX_PATH];
@@ -1229,6 +1362,7 @@ bool VFS::vfs_exists(const char *path) {
 }
 
 bool VFS::get_file_at(uint32_t index, VFSFile *out_file) {
+  VfsLockGuard guard;
   if (!out_file || index >= VFS_MAX_INODES || !g_mounted ||
       g_inodes[index].flags == INODE_FREE)
     return false;
@@ -1244,12 +1378,8 @@ bool VFS::get_file_at(uint32_t index, VFSFile *out_file) {
 }
 
 bool VFS::vfs_sync() {
-  if (!g_mounted)
-    return false;
-  bool ok = flush_bitmaps_and_inodes();
-  if (!cache_flush_all())
-    ok = false;
-  return ok;
+  VfsLockGuard guard;
+  return sync_internal();
 }
 
 } // namespace Kernel::FS

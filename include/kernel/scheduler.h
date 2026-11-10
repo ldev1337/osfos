@@ -12,6 +12,8 @@ struct ThreadControlBlock {
   uint64_t id;
   ThreadState state;
   ThreadPriority priority;
+  // Soft preference; UINT32_MAX means any CPU. Other CPUs may steal when idle.
+  uint32_t preferred_cpu;
   uint64_t *stack_mem;
   uint64_t rsp;
   // Run-queue and registry links are kept separate.
@@ -34,10 +36,19 @@ struct ApplicationTaskInfo {
   uint32_t start_ticks;
 };
 
+struct KernelIoSchedulingHint {
+  ThreadPriority priority;
+  uint32_t preferred_cpu;
+};
+
 constexpr size_t MAX_APPLICATION_TASKS = 32;
 using ThreadEntry = void (*)(void *);
 
 void scheduler_init();
+void scheduler_ap_init();
+bool prefer_bootstrap_cpu(uint64_t id);
+KernelIoSchedulingHint prioritize_current_for_kernel_io();
+void restore_current_scheduling(KernelIoSchedulingHint hint);
 int thread_create(void (*entry)(),
                   ThreadPriority priority = ThreadPriority::NORMAL);
 int thread_create(ThreadEntry entry, void *argument,

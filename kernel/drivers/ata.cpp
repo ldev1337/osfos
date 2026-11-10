@@ -3,6 +3,7 @@
 #include <kernel/drivers/ata.h>
 #include <kernel/drivers/pci.h>
 #include <kernel/init.h>
+#include <kernel/scheduler.h>
 #include <kernel/shell/shell.h>
 
 #include <algorithm>
@@ -74,6 +75,18 @@ private:
 public:
   explicit ATALockGuard(Spinlock &spinlock) : lock(spinlock) { lock.lock(); }
   ~ATALockGuard() { lock.unlock(); }
+};
+
+class KernelIoSchedulingGuard {
+private:
+  Kernel::Scheduler::KernelIoSchedulingHint previous;
+
+public:
+  KernelIoSchedulingGuard()
+      : previous(Kernel::Scheduler::prioritize_current_for_kernel_io()) {}
+  ~KernelIoSchedulingGuard() {
+    Kernel::Scheduler::restore_current_scheduling(previous);
+  }
 };
 
 static inline void ata_delay() {
@@ -333,6 +346,7 @@ bool ATADriver::read_sectors(uint32_t lba, uint8_t sector_count, void *buf) {
   if (sector_count == 0)
     return true;
 
+  KernelIoSchedulingGuard service_hint;
   ATALockGuard guard(ata_lock);
   if (dma_enabled) {
     const bool success = transfer_dma(lba, sector_count, buf, true);
@@ -390,6 +404,7 @@ bool ATADriver::write_sectors(uint32_t lba, uint8_t sector_count,
   if (sector_count == 0)
     return true;
 
+  KernelIoSchedulingGuard service_hint;
   ATALockGuard guard(ata_lock);
   if (dma_enabled) {
     const bool success =

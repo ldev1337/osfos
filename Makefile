@@ -1,7 +1,6 @@
 NASM = nasm
 CC   = clang
 CC++ = clang++
-OPT = opt
 
 C_STD    = -std=c11
 CPP_STD = -std=c++20
@@ -161,12 +160,13 @@ else
 	@$(call PRINT_TUI, [GAS   ], $<)
 endif
 
+# The installed opt loads a Polly plugin that crashes on several project
+# sources; Clang compiles its optimized LLVM bitcode directly instead.
 $(BUILD_DIR)/%.o: %.c Makefile
 	@mkdir -p $(@D)
 	@$(CC) $(CFLAGS_C) -emit-llvm -c $< -o $(@:.o=.bc)
-	@$(OPT) $(@:.o=.bc) -o $(@:.o=.polly.bc)
-	@$(CC) $(CFLAGS_C) -c $(@:.o=.polly.bc) -o $@
-	@rm -f $(@:.o=.bc) $(@:.o=.polly.bc)
+	@$(CC) $(CFLAGS_C) -c $(@:.o=.bc) -o $@
+	@rm -f $(@:.o=.bc)
 ifeq ($(V),1)
 else
 	@$(call PRINT_TUI, $(TAG_C), $<)
@@ -175,9 +175,8 @@ endif
 $(BUILD_DIR)/%.o: %.cpp Makefile
 	@mkdir -p $(@D)
 	@$(CC++) $(CFLAGS_CPP) -emit-llvm -c $< -o $(@:.o=.bc)
-	@$(OPT) $(@:.o=.bc) -o $(@:.o=.polly.bc)
-	@$(CC++) $(CFLAGS_CPP) -c $(@:.o=.polly.bc) -o $@
-	@rm -f $(@:.o=.bc) $(@:.o=.polly.bc)
+	@$(CC++) $(CFLAGS_CPP) -c $(@:.o=.bc) -o $@
+	@rm -f $(@:.o=.bc)
 ifeq ($(V),1)
 else
 	@$(call PRINT_TUI, $(TAG_CPP), $<)

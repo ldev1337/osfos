@@ -171,11 +171,13 @@ bool E1000::start() {
   if (s_mmio_base == 0 || s_irq >= 16 || s_rx_started)
     return false;
 
-  const int worker_id = Kernel::Scheduler::thread_create(rx_worker);
+  const int worker_id = Kernel::Scheduler::thread_create(
+      rx_worker, Kernel::Scheduler::ThreadPriority::HIGH);
   if (worker_id < 0)
     return false;
 
   s_rx_worker_id = static_cast<uint64_t>(worker_id);
+  (void)Kernel::Scheduler::prefer_bootstrap_cpu(s_rx_worker_id);
   s_rx_started = true;
   __atomic_store_n(&s_rx_work_pending, false, __ATOMIC_RELEASE);
   write_reg(REG_IMS, 0x1F6DC);

@@ -1,4 +1,5 @@
 #include <arch/x86_64/string.h>
+#include <arch/x86_64/spinlock.h>
 #include <kernel/drivers/ata.h>
 #include <kernel/drivers/framebuffer.h>
 #include <kernel/drivers/keyboard.h>
@@ -12,6 +13,7 @@
 #include <kernel/memory/pmm.h>
 #include <kernel/net/smoltcp_bridge.h>
 #include <kernel/scheduler.h>
+#include <kernel/smp.h>
 #include <kernel/shell/shell.h>
 
 #include <cstdarg>
@@ -83,6 +85,7 @@ constexpr size_t INPUT_SIZE = 256;
 
 namespace {
 Kernel::Graphics::VirtualFramebuffer term_vfb;
+Spinlock shell_output_lock;
 char screen[MAX_ROWS][MAX_COLS];
 uint32_t screen_fg[MAX_ROWS][MAX_COLS];
 size_t cols = 0, rows = 0, col = 0, row = 0;
@@ -232,7 +235,7 @@ bool parse_size(const char *s, size_t &value) {
 } // namespace
 
 // --- Output Functions ---
-void put_char(char ch, uint32_t color) {
+static void put_char_unlocked(char ch, uint32_t color) {
   if (!cols || !rows)
     return;
   if (ch == '\n') {
@@ -244,8 +247,13 @@ void put_char(char ch, uint32_t color) {
     return;
   }
   if (ch == '\t') {
-    for (int i = 0; i < 4; ++i)
-      put_char(' ', color);
+    for (int i = 0; i < 4; ++i) {
+      screen[row][col] = ' ';
+      screen_fg[row][col] = color;
+      draw_glyph(col * CELL_W, TOP_H + row * LINE_H, ' ', color);
+      if (++col >= cols)
+        next_line();
+    }
     return;
   }
   if (ch == '\b') {
@@ -271,9 +279,15 @@ void put_char(char ch, uint32_t color) {
     next_line();
 }
 
+void put_char(char ch, uint32_t color) {
+  SpinlockGuard guard(shell_output_lock);
+  put_char_unlocked(ch, color);
+}
+
 void print(const char *s, uint32_t color) {
+  SpinlockGuard guard(shell_output_lock);
   while (*s)
-    put_char(*s++, color);
+    put_char_unlocked(*s++, color);
   term_vfb.flush();
 }
 
@@ -342,6 +356,7 @@ void help() {
   kernel_printf(
       "  tcp-echo <host> <port> <text>  Send text to a TCP echo service\n");
   kernel_printf("  about                 Kernel shell information\n");
+  kernel_printf("  smpinfo               Show detected and online CPUs\n");
   kernel_printf("  mem                   Memory-manager test commands\n");
   kernel_printf("  taskman               List running apps and task stats\n");
   kernel_printf(
@@ -693,6 +708,7 @@ void execute(char *line) {
   if (equals(line, "help"))
     help();
   else if (equals(line, "clear")) {
+    SpinlockGuard guard(shell_output_lock);
     term_vfb.clear(BG);
     draw_header();
     for (size_t r = 0; r < rows; ++r)
@@ -714,6 +730,9 @@ void execute(char *line) {
   else if (equals(line, "about"))
     kernel_printf("OSFOS kernel shell\nFramebuffer text UI with Virtual "
                   "Framebuffer abstraction.\n");
+  else if (equals(line, "smpinfo"))
+    kernel_printf("Online processors: %u\n",
+                  static_cast<unsigned>(Kernel::SMP::online_cpu_count()));
   else if (equals(line, "mem"))
     kernel_printf(
         "Memory APIs available in this build:\n  KernelHeap::kmalloc/kfree\n  "

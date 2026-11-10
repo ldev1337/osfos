@@ -3,19 +3,11 @@
 #include <kernel/graphics/lwm.h>
 #include <kernel/init.h>
 #include <kernel/scheduler.h>
+#include <arch/x86_64/spinlock.h>
 
 namespace Kernel::Drivers {
 
-static inline uint64_t keyboard_irq_save() {
-  uint64_t flags;
-  __asm__ volatile("pushfq; popq %0; cli" : "=r"(flags) : : "memory");
-  return flags;
-}
-
-static inline void keyboard_irq_restore(uint64_t flags) {
-  if (flags & (1ull << 9))
-    __asm__ volatile("sti" : : : "memory");
-}
+static Spinlock keyboard_lock;
 
 static bool keyboard_focus_allows_input() {
   const uint64_t tid = Kernel::Scheduler::current_thread_id();
@@ -23,7 +15,10 @@ static bool keyboard_focus_allows_input() {
          Kernel::Graphics::WindowManager::has_keyboard_focus(tid);
 }
 
-bool Keyboard::rx_buffer_empty() { return rx_buffer.empty(); }
+bool Keyboard::rx_buffer_empty() {
+  SpinlockGuard guard(keyboard_lock);
+  return rx_buffer.empty();
+}
 
 Keyboard::RingBuffer Keyboard::rx_buffer = {{0}, 0, 0};
 
@@ -161,9 +156,8 @@ void __init Keyboard::init() {
 bool Keyboard::available() {
   if (!keyboard_focus_allows_input())
     return false;
-  uint64_t flags = keyboard_irq_save();
+  SpinlockGuard guard(keyboard_lock);
   bool result = !rx_buffer.empty();
-  keyboard_irq_restore(flags);
   return result;
 }
 
@@ -174,15 +168,17 @@ char Keyboard::getchar() {
       continue;
     }
     if (!Kernel::Scheduler::thread_block_if(rx_buffer_empty)) {
-      uint64_t flags = keyboard_irq_save();
+      SpinlockGuard guard(keyboard_lock);
       char c = rx_buffer.pop();
-      keyboard_irq_restore(flags);
       return c;
     }
   }
 }
 
 void Keyboard::handle_interrupt() {
+  bool wake_waiters = false;
+  {
+  SpinlockGuard guard(keyboard_lock);
   uint8_t status = inb(0x64);
   if (!(status & 0x01) || (status & 0x20)) {
     return;
@@ -316,11 +312,14 @@ void Keyboard::handle_interrupt() {
 
     if (ascii != 0) {
       rx_buffer.push(ascii);
-      Kernel::Scheduler::unblock_io_threads();
+      wake_waiters = true;
     }
   }
 
   extended_code = false;
+  }
+  if (wake_waiters)
+    Kernel::Scheduler::unblock_io_threads();
 }
 
 bool Keyboard::is_pressed(uint8_t scancode) {
@@ -328,6 +327,7 @@ bool Keyboard::is_pressed(uint8_t scancode) {
     return false;
   if (!keyboard_focus_allows_input())
     return false;
+  SpinlockGuard guard(keyboard_lock);
   return key_states[scancode];
 }
 
@@ -336,22 +336,39 @@ bool Keyboard::is_extended_pressed(uint8_t scancode) {
     return false;
   if (!keyboard_focus_allows_input())
     return false;
+  SpinlockGuard guard(keyboard_lock);
   return extended_key_states[scancode];
 }
 
 bool Keyboard::is_shift_pressed() {
+  SpinlockGuard guard(keyboard_lock);
   return shift_pressed || right_shift_pressed;
 }
 
-bool Keyboard::is_ctrl_pressed() { return ctrl_pressed || right_ctrl_pressed; }
+bool Keyboard::is_ctrl_pressed() {
+  SpinlockGuard guard(keyboard_lock);
+  return ctrl_pressed || right_ctrl_pressed;
+}
 
-bool Keyboard::is_alt_pressed() { return alt_pressed || right_alt_pressed; }
+bool Keyboard::is_alt_pressed() {
+  SpinlockGuard guard(keyboard_lock);
+  return alt_pressed || right_alt_pressed;
+}
 
-bool Keyboard::is_caps_lock_active() { return caps_lock_active; }
+bool Keyboard::is_caps_lock_active() {
+  SpinlockGuard guard(keyboard_lock);
+  return caps_lock_active;
+}
 
-bool Keyboard::is_num_lock_active() { return num_lock_active; }
+bool Keyboard::is_num_lock_active() {
+  SpinlockGuard guard(keyboard_lock);
+  return num_lock_active;
+}
 
-bool Keyboard::is_scroll_lock_active() { return scroll_lock_active; }
+bool Keyboard::is_scroll_lock_active() {
+  SpinlockGuard guard(keyboard_lock);
+  return scroll_lock_active;
+}
 
 void Keyboard::update_leds() {
   uint8_t leds = 0;

@@ -5,6 +5,7 @@
 #include <kernel/drivers/pit.h>
 #include <kernel/init.h>
 #include <kernel/scheduler.h>
+#include <kernel/smp.h>
 
 struct GDTEntry {
   uint16_t limit_low;
@@ -20,7 +21,7 @@ struct GDTPtr {
   uint64_t base;
 } __attribute__((packed));
 
-static struct GDTEntry gdt_entries[7] __initdata;
+static struct GDTEntry gdt_entries[7];
 static struct GDTPtr gdt_ptr;
 
 struct IDTEntry {
@@ -38,7 +39,7 @@ struct IDTPtr {
   uint64_t base;
 } __attribute__((packed));
 
-static struct IDTEntry idt_entries[256] __initdata;
+static struct IDTEntry idt_entries[256];
 static struct IDTPtr idt_ptr;
 static uint8_t pic_master_mask = 0xFF;
 static uint8_t pic_slave_mask = 0xFF;
@@ -64,6 +65,9 @@ extern "C" uint64_t c_interrupt_handler(struct InterruptFrame *frame) {
     if (Kernel::Scheduler::should_preempt())
       next_rsp = Kernel::Scheduler::schedule((uint64_t)frame);
   } else if (vector == 0x30) {
+    next_rsp = Kernel::Scheduler::schedule((uint64_t)frame);
+  } else if (vector == 0x31) {
+    Kernel::SMP::local_apic_eoi();
     next_rsp = Kernel::Scheduler::schedule((uint64_t)frame);
   }
 
@@ -258,4 +262,19 @@ __init void cpu_init(void) {
       __asm__ volatile("hlt");
     }
   }
+}
+
+extern "C" void cpu_ap_init(void) {
+  gdt_flush(reinterpret_cast<uint64_t>(&gdt_ptr));
+  idt_flush(reinterpret_cast<uint64_t>(&idt_ptr));
+
+  uint64_t cr4;
+  __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
+  cr4 |= (1ull << 9) | (1ull << 10) | (1ull << 18);
+  __asm__ volatile("mov %0, %%cr4" : : "r"(cr4) : "memory");
+
+  uint32_t eax, edx;
+  __asm__ volatile("xgetbv" : "=a"(eax), "=d"(edx) : "c"(0));
+  eax |= 7;
+  __asm__ volatile("xsetbv" : : "a"(eax), "d"(edx), "c"(0) : "memory");
 }
