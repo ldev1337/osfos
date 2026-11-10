@@ -27,4 +27,5 @@ void __init init(uint32_t frequency) {
 void tick() { ++system_ticks; }
 
 uint32_t get_ticks() { return system_ticks * tick_period_ms; }
+uint32_t get_interrupt_count() { return system_ticks; }
 } // namespace Kernel::Drivers::PIT

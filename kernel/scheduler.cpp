@@ -5,6 +5,7 @@
 #include <kernel/drivers/pit.h>
 #include <kernel/memory/heap.h>
 #include <kernel/scheduler.h>
+#include <kernel/debug/debug.h>
 #include <atomic>
 
 namespace Kernel::Scheduler {
@@ -425,15 +426,19 @@ extern "C" void thread_start_arg_wrapper(ThreadEntry entry, void *argument) {
 }
 
 void scheduler_init() {
-  if (scheduler_initialized)
+  if (scheduler_initialized) {
+    Kernel::Debug::log("scheduler init skipped: already initialized");
     return;
+  }
 
   // Heap allocation happens before disabling interrupts; the critical section
   // below only publishes fully initialized scheduler state.
   auto *main_tcb =
       static_cast<ThreadControlBlock *>(kmalloc(sizeof(ThreadControlBlock)));
-  if (!main_tcb)
+  if (!main_tcb) {
+    Kernel::Debug::log("ERROR: scheduler init failed: main task allocation");
     return;
+  }
 
   memset(main_tcb, 0, sizeof(ThreadControlBlock));
   const size_t index = cpu_index();
@@ -442,6 +447,7 @@ void scheduler_init() {
                           reinterpret_cast<uint64_t *>(idle_stack_mem[index]),
                           IDLE_STACK_SIZE, idle_loop, nullptr, nullptr)) {
     kfree(main_tcb);
+    Kernel::Debug::log("ERROR: scheduler init failed: idle context setup");
     return;
   }
   idle_thread_storage[index].id = 0;
@@ -468,6 +474,8 @@ void scheduler_init() {
   cpu_states[index].current = main_tcb;
   scheduler_initialized = true;
   irq_restore(flags);
+  Kernel::Debug::log("scheduler initialized; bootstrap task registered");
+  Kernel::Debug::log_dec("bootstrap_task_id", main_tcb->id);
 }
 
 bool prefer_bootstrap_cpu(uint64_t id) {
@@ -574,6 +582,9 @@ static auto create_thread(void (*entry)(), ThreadEntry arg_entry,
   enqueue(thread);
   const int id = static_cast<int>(thread->id);
   irq_restore(flags);
+  Kernel::Debug::log("task added to scheduler");
+  Kernel::Debug::log_dec("task_id", static_cast<uint64_t>(id));
+  Kernel::Debug::log_dec("task_priority", priority_index(priority));
   return id;
 }
 
@@ -641,6 +652,7 @@ size_t get_application_tasks(ApplicationTaskInfo *tasks, size_t capacity) {
 }
 
 void terminate_thread(uint64_t id) {
+  bool found = false;
   const uint64_t flags = irq_save();
   for (ThreadControlBlock *thread = thread_list_head; thread;
        thread = thread->registry_next) {
@@ -648,6 +660,7 @@ void terminate_thread(uint64_t id) {
       continue;
 
     thread->stop_requested = true;
+    found = true;
     if (thread->state == ThreadState::BLOCKED) {
       if (thread->timed_wait)
         remove_sleeper(thread);
@@ -659,6 +672,13 @@ void terminate_thread(uint64_t id) {
     break;
   }
   irq_restore(flags);
+  if (found) {
+    Kernel::Debug::log("task termination requested");
+    Kernel::Debug::log_dec("task_id", id);
+  } else {
+    Kernel::Debug::log("task termination request ignored: task not found");
+    Kernel::Debug::log_dec("task_id", id);
+  }
 }
 
 auto should_stop() -> bool {
@@ -673,12 +693,17 @@ void thread_yield() { __asm__ volatile("int $0x30" ::: "memory"); }
   ThreadControlBlock *current_thread = cpu_state().current;
   ThreadControlBlock *idle_thread = cpu_state().idle;
   if (current_thread && current_thread != idle_thread) {
+    const uint64_t exited_id = current_thread->id;
     current_thread->state = ThreadState::TERMINATED;
     current_thread->timed_wait = false;
+    scheduler_lock.clear(std::memory_order_release);
+    Kernel::Debug::log("task exited; scheduler will reclaim its resources");
+    Kernel::Debug::log_dec("task_id", exited_id);
+  } else {
+    scheduler_lock.clear(std::memory_order_release);
   }
 
   // The current stack is reclaimed later by reap_deferred(), never here.
-  scheduler_lock.clear(std::memory_order_release);
   yield_with_irqs_disabled();
   for (;;)
     __asm__ volatile("hlt" ::: "memory");

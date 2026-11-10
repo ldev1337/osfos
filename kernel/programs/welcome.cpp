@@ -1,34 +1,21 @@
 #include <atomic>
+#include <cstdint>
 #include <cstddef>
-#include <kernel/debug.h>
 #include <kernel/drivers/framebuffer.h>
+#include <kernel/drivers/keyboard.h>
 #include <kernel/drivers/pit.h>
 #include <kernel/graphics/simplefonts.h>
-
-namespace Kernel::Debug {
+#include <kernel/programs/welcome.h>
+namespace Kernel::Programs {
 namespace {
-
-constexpr uint16_t COM1 = 0x3F8;
-constexpr size_t VGA_WIDTH = 80;
-constexpr size_t VGA_HEIGHT = 25;
-constexpr uint8_t VGA_BACKGROUND = 1; // blue
-constexpr uint8_t VGA_TEXT = 15;      // bright white
-constexpr uint8_t VGA_INFO = 11;      // bright cyan
-std::atomic_flag output_lock = ATOMIC_FLAG_INIT;
-bool uart_present = false;
+constexpr size_t VGA_WIDTH = 80, VGA_HEIGHT = 25;
+constexpr uint8_t VGA_BACKGROUND = 1, VGA_TEXT = 15, VGA_INFO = 11;
+std::atomic_flag screen_lock = ATOMIC_FLAG_INIT;
 volatile uint16_t *const vga = reinterpret_cast<volatile uint16_t *>(0xB8000);
 size_t vga_x = 0, vga_y = 0;
-
 static inline void outb(uint16_t port, uint8_t value) {
   __asm__ volatile("outb %0, %1" : : "a"(value), "Nd"(port));
 }
-
-static inline uint8_t inb(uint16_t port) {
-  uint8_t value;
-  __asm__ volatile("inb %1, %0" : "=a"(value) : "Nd"(port));
-  return value;
-}
-
 uint8_t vga_attr(uint8_t foreground) {
   return static_cast<uint8_t>((VGA_BACKGROUND << 4) | foreground);
 }
@@ -70,72 +57,6 @@ void vga_write(const char *text, uint8_t color) {
     vga_put(*text++, color);
 }
 
-void put(char c) {
-  // Bound the wait so a missing UART cannot stall boot forever.
-  for (uint32_t tries = 0; tries < 100000; ++tries) {
-    if (inb(COM1 + 5) & 0x20) {
-      outb(COM1, static_cast<uint8_t>(c));
-      return;
-    }
-    __asm__ volatile("pause");
-  }
-}
-
-void write_unlocked(const char *text) {
-  if (!text)
-    return;
-  while (*text) {
-    if (*text == '\n')
-      put('\r');
-    put(*text++);
-  }
-}
-
-void log_prefix() {
-  vga_write("[I] ", VGA_INFO);
-  if (uart_present)
-    write_unlocked("[I] ");
-}
-
-void log_line(const char *label, uint64_t value, unsigned base,
-              bool hexadecimal) {
-  if (!uart_present && !label)
-    return;
-  while (output_lock.test_and_set(std::memory_order_acquire))
-    __asm__ volatile("pause");
-  log_prefix();
-  vga_write(label, VGA_TEXT);
-  if (uart_present)
-    write_unlocked(label);
-  if (hexadecimal) {
-    vga_write("=0x", VGA_TEXT);
-    if (uart_present)
-      write_unlocked("=0x");
-  } else {
-    vga_write("=", VGA_TEXT);
-    if (uart_present)
-      write_unlocked("=");
-  }
-  char digits[20];
-  unsigned length = 0;
-  do {
-    const unsigned digit = static_cast<unsigned>(value % base);
-    digits[length++] =
-        static_cast<char>(digit < 10 ? '0' + digit : 'a' + digit - 10);
-    value /= base;
-  } while (value && length < sizeof(digits));
-  while (length) {
-    const char c = digits[--length];
-    vga_put(c, VGA_TEXT);
-    if (uart_present)
-      put(c);
-  }
-  vga_put('\n', VGA_TEXT);
-  if (uart_present)
-    write_unlocked("\n");
-  output_lock.clear(std::memory_order_release);
-}
-
 void draw_glyph(uint32_t x, uint32_t y, char ch, uint32_t color,
                 uint32_t scale) {
   const auto c = static_cast<unsigned char>(ch);
@@ -163,6 +84,30 @@ void draw_centered(const char *text, uint32_t y, uint32_t scale,
     draw_glyph(x, y, text[i], color, scale);
 }
 
+void draw_entry_box(const char *text) {
+  if (!Kernel::Drivers::Framebuffer::valid())
+    return;
+  const uint32_t width = Kernel::Drivers::Framebuffer::width();
+  const uint32_t height = Kernel::Drivers::Framebuffer::height();
+  if (width < 64 || height < 64)
+    return;
+  const uint32_t panel_w = width < 720 ? width - 32 : 688;
+  const uint32_t panel_h = height < 280 ? height - 32 : 248;
+  const uint32_t panel_x = (width - panel_w) / 2;
+  const uint32_t panel_y = (height - panel_h) / 2;
+  const uint32_t box_w = panel_w > 48 ? panel_w - 48 : panel_w;
+  const uint32_t box_x = panel_x + (panel_w - box_w) / 2;
+  const uint32_t box_y = panel_y + panel_h / 2 + 82;
+  Kernel::Drivers::Framebuffer::fill_rect(box_x, box_y, box_w, 28, 0x07111F);
+  Kernel::Drivers::Framebuffer::fill_rect(box_x, box_y, box_w, 1, 0x31C7D5);
+  Kernel::Drivers::Framebuffer::fill_rect(box_x, box_y + 27, box_w, 1,
+                                          0x31C7D5);
+  uint32_t x = box_x + 12;
+  for (size_t i = 0; text[i] && x + 8 <= box_x + box_w - 8; ++i, x += 8)
+    draw_glyph(x, box_y + 10, text[i], 0xF1F5F8, 1);
+  draw_glyph(x, box_y + 10, '_', 0x66D9E8, 1);
+}
+
 void vga_clear() {
   for (size_t i = 0; i < VGA_WIDTH * VGA_HEIGHT; ++i)
     vga[i] = static_cast<uint16_t>(vga_attr(VGA_TEXT) << 8) | ' ';
@@ -171,51 +116,12 @@ void vga_clear() {
   vga_x = vga_y = 0;
 }
 
-void acquire() {
-  while (output_lock.test_and_set(std::memory_order_acquire))
-    __asm__ volatile("pause");
-}
+void acquire() { while (screen_lock.test_and_set(std::memory_order_acquire)) __asm__ volatile("pause"); }
+void release() { screen_lock.clear(std::memory_order_release); }
 
-void release() { output_lock.clear(std::memory_order_release); }
 
 } // namespace
-
-void init() {
-  vga_clear();
-  outb(COM1 + 1, 0x00); // Disable UART interrupts.
-  outb(COM1 + 3, 0x80); // Divisor latch access.
-  outb(COM1 + 0, 0x01); // 115200 baud.
-  outb(COM1 + 1, 0x00);
-  outb(COM1 + 3, 0x03); // 8 data bits, no parity, one stop bit.
-  outb(COM1 + 2, 0xC7); // Enable and clear FIFO.
-  outb(COM1 + 4, 0x0B); // DTR, RTS, OUT2.
-  outb(COM1 + 7, 0xA5); // Scratch register detects an absent legacy UART.
-  uart_present = inb(COM1 + 7) == 0xA5;
-  log(uart_present ? "debug output ready (COM1 115200 8N1)"
-                   : "debug output ready (VGA; COM1 unavailable)");
-}
-
-void log(const char *message) {
-  acquire();
-  log_prefix();
-  vga_write(message, VGA_TEXT);
-  vga_put('\n', VGA_TEXT);
-  if (uart_present) {
-    write_unlocked(message);
-    write_unlocked("\n");
-  }
-  release();
-}
-
-void log_hex(const char *label, uint64_t value) {
-  log_line(label, value, 16, true);
-}
-
-void log_dec(const char *label, uint64_t value) {
-  log_line(label, value, 10, false);
-}
-
-void show_welcome() {
+void show() {
   acquire();
   vga_clear();
   const char *title = "Welcome to OSFOS!";
@@ -223,8 +129,8 @@ void show_welcome() {
   for (size_t i = 0; title[i]; ++i)
     vga[10 * VGA_WIDTH + title_x + i] =
         static_cast<uint16_t>(vga_attr(i < 7 ? 14 : 11) << 8) | title[i];
-  const char *caption = "Initializing graphical desktop...";
-  const size_t caption_x = (VGA_WIDTH - 34) / 2;
+  const char *caption = "Type hello osfos to continue";
+  const size_t caption_x = (VGA_WIDTH - 28) / 2;
   for (size_t i = 0; caption[i]; ++i)
     vga[13 * VGA_WIDTH + caption_x + i] =
         static_cast<uint16_t>(vga_attr(VGA_TEXT) << 8) | caption[i];
@@ -233,6 +139,7 @@ void show_welcome() {
         static_cast<uint16_t>(vga_attr(VGA_INFO) << 8) | 0xC4;
   vga_x = 0;
   vga_y = 15;
+  vga_write("Type hello osfos to enter: ", VGA_INFO);
 
   if (Kernel::Drivers::Framebuffer::valid()) {
     const uint32_t width = Kernel::Drivers::Framebuffer::width();
@@ -250,25 +157,70 @@ void show_welcome() {
       draw_centered(title, panel_y + panel_h / 2 - 44, 3, 0xF1F5F8);
       draw_centered("OSFOS KERNEL STARTUP", panel_y + panel_h / 2 + 28, 1,
                     0x66D9E8);
-      draw_centered("Initializing graphical desktop...",
-                    panel_y + panel_h / 2 + 60, 1, 0xAAB9C8);
+      draw_centered("Type hello osfos to continue", panel_y + panel_h / 2 + 60,
+                    1, 0xAAB9C8);
+      draw_entry_box("");
     }
   }
   release();
+
+  constexpr char required[] = "hello osfos";
+  char entered[sizeof(required)]{};
+  size_t length = 0;
+  for (;;) {
+    const char c = Kernel::Drivers::Keyboard::getchar();
+    if (c == '\b') {
+      if (length) {
+        --length;
+        entered[length] = '\0';
+        acquire();
+        if (vga_x)
+          --vga_x;
+        vga_put(' ', VGA_TEXT);
+        if (vga_x)
+          --vga_x;
+        draw_entry_box(entered);
+        release();
+      }
+      continue;
+    }
+    if (c != '\n' && c != '\r') {
+      if (c < 32 || c > 126 || length + 1 >= sizeof(entered))
+        continue;
+      entered[length++] = c;
+      entered[length] = '\0';
+      acquire();
+      vga_put(c, VGA_TEXT);
+      draw_entry_box(entered);
+      release();
+      continue;
+    }
+    if (length == sizeof(required) - 1) {
+      size_t i = 0;
+      while (i < sizeof(required) && entered[i] == required[i])
+        ++i;
+      if (i == sizeof(required))
+        break;
+    }
+    acquire();
+    vga_put('\n', VGA_TEXT);
+    vga_write("Please type hello osfos exactly: ", VGA_INFO);
+    draw_entry_box("");
+    release();
+    length = 0;
+    entered[0] = '\0';
+  }
 }
 
+
 void wait_seconds(uint32_t seconds) {
-  if (!seconds)
-    return;
+  if (!seconds) return;
   uint64_t flags;
   __asm__ volatile("pushfq; popq %0" : "=r"(flags));
   const uint32_t start = Kernel::Drivers::PIT::get_ticks();
   const uint32_t duration = seconds * 1000u;
-  while (static_cast<uint32_t>(Kernel::Drivers::PIT::get_ticks() - start) <
-         duration)
+  while (static_cast<uint32_t>(Kernel::Drivers::PIT::get_ticks() - start) < duration)
     __asm__ volatile("sti; hlt" ::: "memory");
-  if (!(flags & (1ull << 9)))
-    __asm__ volatile("cli" ::: "memory");
+  if (!(flags & (1ull << 9))) __asm__ volatile("cli" ::: "memory");
 }
-
-} // namespace Kernel::Debug
+} // namespace Kernel::Programs

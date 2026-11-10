@@ -26,6 +26,7 @@ private:
   uint8_t sl_bitmap[64];
   uint64_t fl_bitmap;
   void *slab_free[12];
+  void *slab_empty[12];
   void *slab_pages;
   size_t total_heap_size;
   size_t used_bytes_count;

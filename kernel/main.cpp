@@ -5,6 +5,7 @@
 #include <kernel/drivers/keyboard.h>
 #include <kernel/drivers/mouse.h>
 #include <kernel/drivers/pit.h>
+#include <kernel/fs/laziofs.h>
 #include <kernel/graphics/lwm.h>
 #include <kernel/lib/random.h>
 #include <kernel/memory/heap.h>
@@ -12,9 +13,14 @@
 #include <kernel/memory/pmm.h>
 #include <kernel/net/smoltcp_bridge.h>
 #include <kernel/scheduler.h>
-#include <kernel/debug.h>
-#include <kernel/smp.h>
 #include <kernel/shell/shell.h>
+#include <kernel/smp.h>
+#include <kernel/debug/debug.h>
+#include <kernel/programs/welcome.h>
+
+namespace Kernel::Apps {
+void benchmark_startup_run();
+}
 
 namespace Kernel::Debug {
 struct KernelDebugInfo {
@@ -38,9 +44,9 @@ extern "C" void main(unsigned long multiboot_info_addr) {
 
   Kernel::SMP::CpuInfo firmware_cpus[Kernel::SMP::MAX_CPUS]{};
   size_t firmware_cpu_count = 0;
-  const bool have_cpu_topology = Kernel::SMP::discover(
-      multiboot_info_addr, firmware_cpus, Kernel::SMP::MAX_CPUS,
-      &firmware_cpu_count);
+  const bool have_cpu_topology =
+      Kernel::SMP::discover(multiboot_info_addr, firmware_cpus,
+                            Kernel::SMP::MAX_CPUS, &firmware_cpu_count);
   Kernel::Debug::log(have_cpu_topology ? "ACPI CPU topology found"
                                        : "ACPI CPU topology unavailable");
   Kernel::Debug::log_dec("firmware_cpu_count", firmware_cpu_count);
@@ -99,6 +105,13 @@ extern "C" void main(unsigned long multiboot_info_addr) {
   Kernel::Drivers::Mouse::init();
   Kernel::Drivers::PIT::init(250);
   Kernel::Debug::log("keyboard, mouse, PIT initialized");
+  __asm__ volatile("sti");
+  Kernel::FS::VFS::init();
+  Kernel::Debug::log(Kernel::FS::VFS::is_mounted()
+                         ? "VFS disk mounted"
+                         : "VFS disk unavailable or unformatted");
+  Kernel::Debug::log("boot benchmark starting before welcome screen");
+  Kernel::Apps::benchmark_startup_run();
 
   if (Kernel::Drivers::E1000::detect_and_init()) {
     Kernel::Debug::log("E1000 detected and initialized");
@@ -131,11 +144,12 @@ extern "C" void main(unsigned long multiboot_info_addr) {
                   static_cast<unsigned>(firmware_cpu_count - 1));
     Kernel::Debug::log_dec("application_processors_online", ap_count);
   } else {
-    kernel_printf("SMP: no usable ACPI processor topology; continuing on BSP.\n");
+    kernel_printf(
+        "SMP: no usable ACPI processor topology; continuing on BSP.\n");
   }
   Kernel::Debug::log("boot initialization complete; showing welcome screen");
-  Kernel::Debug::show_welcome();
-  Kernel::Debug::wait_seconds(3);
+  Kernel::Programs::show();
+  Kernel::Programs::wait_seconds(1);
 
   if (window_manager_ready) {
     const int compositor_id = Kernel::Scheduler::thread_create(
@@ -170,8 +184,6 @@ extern "C" void main(unsigned long multiboot_info_addr) {
       };
     }
   }
-
-  __asm__ volatile("sti");
   while (true) {
     __asm__ volatile("hlt");
   }

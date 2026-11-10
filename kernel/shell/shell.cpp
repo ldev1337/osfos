@@ -5,6 +5,7 @@
 #include <kernel/drivers/keyboard.h>
 #include <kernel/drivers/pci.h>
 #include <kernel/drivers/usb/xhci.h>
+#include <kernel/debug/debug.h>
 #include <kernel/fs/laziofs.h>
 #include <kernel/graphics/lwm.h>
 #include <kernel/graphics/vfb.h>
@@ -337,6 +338,23 @@ void print_int(long long value, int base, bool uppercase, bool signed_val,
 
 namespace {
 // --- Command Implementations ---
+void show_debug_info() {
+  const auto memory = Kernel::Memory::g_kheap.get_system_memory_info();
+  kernel_printf("Debug status: heap %u/%u bytes used; PMM %u/%u bytes used\n",
+                static_cast<unsigned>(memory.heap_used_size),
+                static_cast<unsigned>(memory.heap_total_size),
+                static_cast<unsigned>(memory.pmm_used_memory),
+                static_cast<unsigned>(memory.pmm_total_memory));
+  kernel_printf("Heap integrity: %s; recent log entries:\n",
+                Kernel::Memory::g_kheap.validate() ? "OK" : "FAILED");
+  const size_t count = Kernel::Debug::log_count();
+  for (size_t i = 0; i < count; ++i) {
+    Kernel::Debug::LogEntry entry{};
+    if (Kernel::Debug::read_log(i, &entry))
+      kernel_printf("  [%u] %s\n", static_cast<unsigned>(i), entry.message);
+  }
+}
+
 void prompt() {
   print("root@osfos", GREEN);
   print(":~", BLUE);
@@ -356,6 +374,7 @@ void help() {
   kernel_printf(
       "  tcp-echo <host> <port> <text>  Send text to a TCP echo service\n");
   kernel_printf("  about                 Kernel shell information\n");
+  kernel_printf("  debug                 Show allocator health and recent kernel log\n");
   kernel_printf("  smpinfo               Show detected and online CPUs\n");
   kernel_printf("  mem                   Memory-manager test commands\n");
   kernel_printf("  taskman               List running apps and task stats\n");
@@ -733,6 +752,8 @@ void execute(char *line) {
   else if (equals(line, "smpinfo"))
     kernel_printf("Online processors: %u\n",
                   static_cast<unsigned>(Kernel::SMP::online_cpu_count()));
+  else if (equals(line, "debug"))
+    show_debug_info();
   else if (equals(line, "mem"))
     kernel_printf(
         "Memory APIs available in this build:\n  KernelHeap::kmalloc/kfree\n  "

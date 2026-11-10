@@ -95,6 +95,17 @@ struct HugeAllocHeader {
   size_t size;
 };
 
+static SlabPage *slab_page_for_pointer(void *ptr) {
+  SlabPage *page = reinterpret_cast<SlabPage *>(
+      (uintptr_t)ptr & ~(uintptr_t)SLAB_MASK);
+  if (page->magic != SLAB_MAGIC || page->class_index >= CLASS_COUNT)
+    return nullptr;
+  const AllocHeader *header = static_cast<AllocHeader *>(ptr) - 1;
+  if (header->tag != (TAG_SLAB | page->class_index))
+    return nullptr;
+  return page;
+}
+
 static_assert(sizeof(Block) == 32);
 static_assert(sizeof(AllocHeader) == 16);
 static_assert(sizeof(SlabPage) == 80);
@@ -366,6 +377,8 @@ void KernelHeap::unlink_slab_page(void *raw) {
 void KernelHeap::release_slab_page(void *raw) {
   SlabPage *page = static_cast<SlabPage *>(raw);
   void *backing = page->backing;
+  if (slab_empty[page->class_index] == page)
+    slab_empty[page->class_index] = nullptr;
   remove_slab_free_page(page);
   unlink_slab_page(page);
   page->magic = 0;
@@ -409,6 +422,8 @@ void *KernelHeap::allocate_slab_locked(unsigned class_index, size_t size,
     slab_pages = page;
     add_slab_free_page(page);
   }
+  if (!page->used_count && slab_empty[class_index] == page)
+    slab_empty[class_index] = nullptr;
   void *user = page->free_head;
   page->free_head = *reinterpret_cast<void **>(user);
   AllocHeader *header = reinterpret_cast<AllocHeader *>(user) - 1;
@@ -457,20 +472,25 @@ void KernelHeap::free_slab_locked(void *ptr, void *raw_header, void *raw_page) {
   --page->used_count;
   if (was_full)
     add_slab_free_page(page);
-  if (!page->used_count)
-    release_slab_page(page);
+  if (!page->used_count) {
+    if (slab_empty[page->class_index] &&
+        slab_empty[page->class_index] != page)
+      release_slab_page(page);
+    else
+      slab_empty[page->class_index] = page;
+  }
 }
 
 void KernelHeap::free_locked(void *ptr) {
   if (__builtin_expect(!ptr, 0))
     return;
-  Block *block = reinterpret_cast<Block *>(ptr) - 1;
-  if (block_slab(block)) {
-    SlabPage *page =
-        reinterpret_cast<SlabPage *>((uintptr_t)ptr & ~(uintptr_t)SLAB_MASK);
+  if (SlabPage *page = slab_page_for_pointer(ptr)) {
     AllocHeader *header = static_cast<AllocHeader *>(ptr) - 1;
     free_slab_locked(ptr, header, page);
-  } else if (block->alloc.tag == TAG_LARGE) {
+  } else {
+    Block *block = reinterpret_cast<Block *>(ptr) - 1;
+    if (block->alloc.tag != TAG_LARGE)
+      return;
     block->alloc.owner = 0;
     block->alloc.requested = 0;
     block->alloc.tag = TAG_FREE;
@@ -560,7 +580,7 @@ void KernelHeap::init(void *heap_start_addr, size_t initial_size) {
       free_bins[fl][sl] = nullptr;
   }
   for (unsigned i = 0; i < CLASS_COUNT; ++i)
-    slab_free[i] = nullptr;
+    slab_free[i] = slab_empty[i] = nullptr;
   const uintptr_t raw = (uintptr_t)heap_start_addr;
   if (heap_start_addr && initial_size &&
       raw <= (uintptr_t)-1 - (ALIGNMENT - 1) &&
@@ -682,8 +702,12 @@ void KernelHeap::free_thread_allocations(uint64_t thread_id) {
           add_slab_free_page(page);
       }
     }
-    if (!page->used_count)
-      release_slab_page(page);
+    if (!page->used_count) {
+      if (slab_empty[idx] && slab_empty[idx] != page)
+        release_slab_page(page);
+      else
+        slab_empty[idx] = page;
+    }
     page = next_page;
   }
   heap_lock.unlock_irqrestore(flags);
@@ -727,10 +751,9 @@ void *KernelHeap::krealloc(void *ptr, size_t size) {
     return nullptr;
   const uint64_t flags = heap_lock.lock_irqsave();
   Block *block = reinterpret_cast<Block *>(ptr) - 1;
+  SlabPage *page = slab_page_for_pointer(ptr);
   void *result = ptr;
-  if (block_slab(block)) {
-    SlabPage *page =
-        reinterpret_cast<SlabPage *>((uintptr_t)ptr & ~(uintptr_t)SLAB_MASK);
+  if (page) {
     AllocHeader *header = static_cast<AllocHeader *>(ptr) - 1;
     if (size <= CLASS_SIZE[page->class_index]) {
       header->requested = (uint32_t)size;
@@ -873,6 +896,7 @@ bool KernelHeap::validate() const {
     valid = false;
   size_t page_limit = total_heap_size / SLAB_SIZE + 1;
   size_t expected_free_pages[CLASS_COUNT] = {};
+  bool empty_page_found[CLASS_COUNT] = {};
   SlabPage *prev_page = nullptr;
   for (SlabPage *page = static_cast<SlabPage *>(slab_pages);
        valid && page && page_limit--; page = page->all_next) {
@@ -937,12 +961,20 @@ bool KernelHeap::validate() const {
       valid = false;
       break;
     }
+    if (slab_empty[page->class_index] == page) {
+      if (page->used_count != 0)
+        valid = false;
+      empty_page_found[page->class_index] = true;
+    }
     if (page->on_free_list)
       ++expected_free_pages[page->class_index];
     prev_page = page;
   }
   if (page_limit == 0)
     valid = false;
+  for (unsigned idx = 0; valid && idx < CLASS_COUNT; ++idx)
+    if (slab_empty[idx] && !empty_page_found[idx])
+      valid = false;
   for (unsigned idx = 0; valid && idx < CLASS_COUNT; ++idx) {
     SlabPage *prev = nullptr;
     size_t list_limit = total_heap_size / SLAB_SIZE + 1;
