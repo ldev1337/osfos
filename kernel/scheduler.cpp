@@ -23,6 +23,8 @@ struct ThreadContext {
   uint64_t ss;
 } __attribute__((packed));
 
+static_assert(sizeof(ThreadContext) == 184);
+
 struct RunQueue {
   ThreadControlBlock *head;
   ThreadControlBlock *tail;
@@ -395,6 +397,8 @@ static bool initialize_context(ThreadControlBlock *thread, uint64_t *stack_mem,
   *reinterpret_cast<uint32_t *>(xstate_addr + 24) = 0x1F80;
 
   context->xstate_ptr = xstate_addr;
+  // Synthetic first-run contexts have no red-zone snapshot to restore.
+  context->interrupt_number = UINT64_MAX;
   if (arg_entry) {
     context->rdi = reinterpret_cast<uint64_t>(arg_entry);
     context->rsi = reinterpret_cast<uint64_t>(argument);

@@ -7,7 +7,7 @@ extern "C" {
 #endif
 
 void cpu_init(void);
-void cpu_ap_init(void);
+void cpu_ap_init(uint32_t cpu_index);
 bool cpu_pic_unmask_irq(uint8_t irq);
 #ifdef __cplusplus
 }

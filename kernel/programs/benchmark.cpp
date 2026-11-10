@@ -12,6 +12,7 @@
 #include <kernel/lib/appcommon.h>
 #include <kernel/lib/math.h>
 #include <kernel/memory/heap.h>
+#include <kernel/net/smoltcp_bridge.h>
 #include <kernel/scheduler.h>
 
 namespace Kernel::Apps {
@@ -28,7 +29,7 @@ constexpr uint32_t GREEN = 0x9fd6a2;
 constexpr uint32_t AMBER = 0xe8bd75;
 constexpr uint32_t RED = 0xe27d72;
 constexpr uint32_t RUN_MS = 1000;
-constexpr size_t TEST_COUNT = 29;
+constexpr size_t TEST_COUNT = 31;
 
 struct Result {
   uint64_t rate = 0;
@@ -411,6 +412,36 @@ Result measure_timer_interrupts() {
   return result;
 }
 
+Result measure_smoltcp_poll() {
+  Result result{};
+  const uint32_t start = Kernel::Drivers::PIT::get_ticks();
+  uint64_t polls = 0;
+  while (Kernel::Drivers::PIT::get_ticks() - start < RUN_MS &&
+         !Kernel::Scheduler::should_stop()) {
+    if (Kernel::Net::poll() < 0)
+      break;
+    ++polls;
+  }
+  result.elapsed_ms = elapsed_since(start);
+  result.rate = polls * 1000 / result.elapsed_ms;
+  result.complete = polls != 0;
+  return result;
+}
+
+// fetch() uses BearSSL for HTTPS and the smoltcp TCP transport. It is a
+// single end-to-end operation, so report its measured duration as one fetch.
+Result measure_bearssl_https() {
+  Result result{};
+  char response[256];
+  const uint32_t start = Kernel::Drivers::PIT::get_ticks();
+  const int fetched = Kernel::Net::fetch("https://example.com/", response,
+                                        sizeof(response));
+  result.elapsed_ms = elapsed_since(start);
+  result.rate = fetched >= 0 ? 1000 / result.elapsed_ms : 0;
+  result.complete = fetched >= 0;
+  return result;
+}
+
 // Extended microbenchmarks use bounded working sets and avoid persistent I/O.
 // Each case runs for the same wall-clock interval as the original suite.
 Result measure_extended(VirtualFramebuffer &vfb, size_t test_id) {
@@ -530,7 +561,7 @@ void render(VirtualFramebuffer &vfb, size_t app_count) {
   text(vfb, 18, 12, "SYSTEM BENCHMARK", FG);
   text(vfb, 18, 28, "OSFOS / LIVE KERNEL MEASUREMENTS", MUTED);
   vfb.fill_rect(18, 44, width - 36, 1, PANEL);
-  text(vfb, 18, 54, running ? "RUNNING  |  29 TESTS" : "29 TESTS  |  CLICK ROW OR SPACE FOR ALL", running ? AMBER : CYAN);
+  text(vfb, 18, 54, running ? "RUNNING  |  31 TESTS" : "31 TESTS  |  CLICK ROW OR SPACE FOR ALL", running ? AMBER : CYAN);
   const char *names[TEST_COUNT] = {
       "01 KEYBOARD DRIVER", "02 MOUSE DRIVER", "03 PCI CONFIG READ",
       "04 FRAMEBUFFER DRAW + FLUSH", "05 SCHEDULER HANDOFFS",
@@ -542,11 +573,12 @@ void render(VirtualFramebuffer &vfb, size_t app_count) {
       "19 OPAQUE BLIT", "20 TRANSPARENT BLIT", "21 ALPHA BLIT",
       "22 TRIANGLE FILL", "23 ROUNDED RECTANGLES", "24 ARC / SECTOR RASTER",
       "25 PASSWORD HASH", "26 FIXED-POINT MATH", "27 VFS READ / LOOKUP",
-      "28 SOFTWARE INTERRUPT / SCHEDULER TRAP", "29 PIT TIMER IRQ RATE"};
+      "28 SOFTWARE INTERRUPT / SCHEDULER TRAP", "29 PIT TIMER IRQ RATE",
+      "30 SMOLTCP POLL", "31 BEARSSL HTTPS FETCH"};
   const uint32_t colors[TEST_COUNT] = {
       CYAN, GREEN, AMBER, GREEN, AMBER, RED, AMBER, CYAN, GREEN, GREEN, AMBER,
       AMBER, GREEN, CYAN, CYAN, GREEN, RED, FG, CYAN, CYAN, RED, AMBER, AMBER,
-      GREEN, RED, CYAN, AMBER, RED, AMBER};
+      GREEN, RED, CYAN, AMBER, RED, AMBER, CYAN, GREEN};
   uint64_t max_rate = 1;
   for (size_t i = 0; i < TEST_COUNT; ++i) {
     max_rate = std::max(results[i].rate, max_rate);
@@ -604,6 +636,10 @@ void run_selected(VirtualFramebuffer &vfb, size_t test_id, size_t app_count) {
     results[test_id] = measure_software_interrupt();
   else if (test_id == 28)
     results[test_id] = measure_timer_interrupts();
+  else if (test_id == 29)
+    results[test_id] = measure_smoltcp_poll();
+  else if (test_id == 30)
+    results[test_id] = measure_bearssl_https();
   else
     results[test_id] = measure_extended(vfb, test_id);
   const char *names[TEST_COUNT] = {
@@ -612,7 +648,7 @@ void run_selected(VirtualFramebuffer &vfb, size_t test_id, size_t app_count) {
       "fb_fill", "fb_rect", "fb_line", "fb_circle", "fb_alpha", "fb_glyph",
       "fb_blit", "fb_blit_key", "fb_blit_alpha", "fb_triangle", "fb_round",
       "fb_sector", "password_hash", "math_fixed", "vfs", "soft_interrupt",
-      "pit_timer_irq"};
+      "pit_timer_irq", "smoltcp_poll", "bearssl_https"};
   log_result(names[test_id], results[test_id]);
   running = false;
 }

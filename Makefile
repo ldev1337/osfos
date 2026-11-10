@@ -9,7 +9,7 @@ INCLUDES = -Iinclude -Ikernel/programs/doomgeneric -Ithird_party/bearssl/inc \
   -Ithird_party/bearssl/src
 
 COMMON_FLAGS = -march=x86-64-v3 -ffast-math \
-  -ffreestanding -Wall -Wextra -w -mno-red-zone -m64 \
+  -ffreestanding -Wall -Wextra -w -mred-zone -m64 \
   -fno-exceptions -fno-stack-protector -fno-rtti \
   -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fvisibility=hidden\
   -flto=thin -ffunction-sections -fdata-sections -fmerge-all-constants $(INCLUDES)

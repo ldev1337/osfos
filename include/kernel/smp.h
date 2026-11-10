@@ -19,6 +19,6 @@ bool discover(uintptr_t multiboot_info, CpuInfo *cpus, size_t capacity,
 size_t launch_application_processors(const CpuInfo *cpus, size_t count);
 size_t online_cpu_count(void);
 void local_apic_eoi(void);
-[[noreturn]] void application_processor_main(void);
+[[noreturn]] void application_processor_main(uint32_t cpu_index);
 
 } // namespace Kernel::SMP

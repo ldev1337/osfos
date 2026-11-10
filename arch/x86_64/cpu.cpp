@@ -21,8 +21,36 @@ struct GDTPtr {
   uint64_t base;
 } __attribute__((packed));
 
-static struct GDTEntry gdt_entries[7];
-static struct GDTPtr gdt_ptr;
+namespace {
+
+constexpr size_t INTERRUPT_STACK_SIZE = 16 * 1024;
+constexpr unsigned INTERRUPT_STACK_COUNT = 4;
+constexpr uint16_t TSS_SELECTOR = 0x38;
+
+struct Tss64 {
+  uint32_t reserved0;
+  uint64_t rsp[3];
+  uint64_t reserved1;
+  uint64_t ist[7];
+  uint64_t reserved2;
+  uint16_t reserved3;
+  uint16_t io_map_base;
+} __attribute__((packed));
+
+static_assert(sizeof(Tss64) == 104);
+
+struct CpuTables {
+  GDTEntry gdt[7];
+  uint64_t tss_descriptor[2];
+  Tss64 tss;
+  alignas(16) uint8_t interrupt_stacks[INTERRUPT_STACK_COUNT]
+                                       [INTERRUPT_STACK_SIZE];
+  GDTPtr gdtr;
+};
+
+alignas(64) static CpuTables cpu_tables[Kernel::SMP::MAX_CPUS];
+
+} // namespace
 
 struct IDTEntry {
   uint16_t offset_low;
@@ -52,6 +80,8 @@ struct InterruptFrame {
   uint64_t error_code;
   uint64_t rip, cs, rflags, rsp, ss;
 } __attribute__((packed));
+
+static_assert(sizeof(InterruptFrame) == 184);
 
 extern uint64_t isr_stub_table[];
 extern "C" void ata_irq_handler();
@@ -97,14 +127,15 @@ extern "C" uint64_t c_interrupt_handler(struct InterruptFrame *frame) {
   return next_rsp;
 }
 
-static void set_gdt_entry(int index, uint32_t base, uint32_t limit,
+static void set_gdt_entry(GDTEntry *entries, int index, uint32_t base,
+                          uint32_t limit,
                           uint8_t access, uint8_t gran) {
-  gdt_entries[index].limit_low = (limit & 0xFFFF);
-  gdt_entries[index].base_low = (base & 0xFFFF);
-  gdt_entries[index].base_middle = (base >> 16) & 0xFF;
-  gdt_entries[index].access = access;
-  gdt_entries[index].granularity = ((limit >> 16) & 0x0F) | (gran & 0xF0);
-  gdt_entries[index].base_high = (base >> 24) & 0xFF;
+  entries[index].limit_low = (limit & 0xFFFF);
+  entries[index].base_low = (base & 0xFFFF);
+  entries[index].base_middle = (base >> 16) & 0xFF;
+  entries[index].access = access;
+  entries[index].granularity = ((limit >> 16) & 0x0F) | (gran & 0xF0);
+  entries[index].base_high = (base >> 24) & 0xFF;
 }
 
 static void set_idt_entry(int vector, uint64_t handler, uint16_t selector,
@@ -134,25 +165,45 @@ static void gdt_flush(uint64_t gdt_ptr_addr) {
                    :
                    : "r"(gdt_ptr_addr)
                    : "rax", "memory");
+  const uint16_t selector = TSS_SELECTOR;
+  __asm__ volatile("ltr %0" : : "rm"(selector) : "memory");
 }
 
 __attribute__((always_inline)) static void idt_flush(uint64_t idt_ptr_addr) {
   __asm__ volatile("lidt (%0)" : : "r"(idt_ptr_addr) : "memory");
 }
 
-static void __init init_gdt(void) {
-  gdt_ptr.limit = sizeof(gdt_entries) - 1;
-  gdt_ptr.base = (uint64_t)(&gdt_entries);
+static bool init_gdt(unsigned cpu_index) {
+  if (cpu_index >= Kernel::SMP::MAX_CPUS)
+    return false;
 
-  set_gdt_entry(0, 0, 0, 0, 0);             // Null descriptor (0x00)
-  set_gdt_entry(1, 0, 0xFFFFF, 0x9A, 0x20); // Ring 0 code (0x08)
-  set_gdt_entry(2, 0, 0xFFFFF, 0x92, 0x00); // Ring 0 data (0x10)
-  set_gdt_entry(3, 0, 0xFFFFF, 0xF2, 0x00); // Ring 3 data (0x1B)
-  set_gdt_entry(4, 0, 0xFFFFF, 0xFA, 0x20); // Ring 3 code (0x23)
-  set_gdt_entry(5, 0, 0xFFFFF, 0xBA, 0x20); // Ring 1 code (0x29)
-  set_gdt_entry(6, 0, 0xFFFFF, 0xB2, 0x00); // Ring 1 data (0x31)
+  CpuTables &tables = cpu_tables[cpu_index];
+  tables.gdtr.limit = sizeof(tables.gdt) + sizeof(tables.tss_descriptor) - 1;
+  tables.gdtr.base = reinterpret_cast<uint64_t>(tables.gdt);
 
-  gdt_flush((uint64_t)(&gdt_ptr));
+  set_gdt_entry(tables.gdt, 0, 0, 0, 0, 0);
+  set_gdt_entry(tables.gdt, 1, 0, 0xFFFFF, 0x9A, 0x20);
+  set_gdt_entry(tables.gdt, 2, 0, 0xFFFFF, 0x92, 0x00);
+  set_gdt_entry(tables.gdt, 3, 0, 0xFFFFF, 0xF2, 0x00);
+  set_gdt_entry(tables.gdt, 4, 0, 0xFFFFF, 0xFA, 0x20);
+  set_gdt_entry(tables.gdt, 5, 0, 0xFFFFF, 0xBA, 0x20);
+  set_gdt_entry(tables.gdt, 6, 0, 0xFFFFF, 0xB2, 0x00);
+
+  tables.tss = {};
+  for (unsigned i = 0; i < INTERRUPT_STACK_COUNT; ++i) {
+    tables.tss.ist[i] = reinterpret_cast<uint64_t>(
+        tables.interrupt_stacks[i] + INTERRUPT_STACK_SIZE);
+  }
+  tables.tss.io_map_base = sizeof(Tss64);
+  const uint64_t base = reinterpret_cast<uint64_t>(&tables.tss);
+  const uint64_t limit = sizeof(Tss64) - 1;
+  tables.tss_descriptor[0] = (limit & 0xFFFF) | ((base & 0xFFFFFF) << 16) |
+                             (uint64_t(0x89) << 40) |
+                             ((limit & 0xF0000) << 32) |
+                             ((base & 0xFF000000) << 32);
+  tables.tss_descriptor[1] = base >> 32;
+  gdt_flush(reinterpret_cast<uint64_t>(&tables.gdtr));
+  return true;
 }
 
 static void __init init_idt(void) {
@@ -161,6 +212,10 @@ static void __init init_idt(void) {
 
   for (int i = 0; i < 256; ++i) {
     set_idt_entry(i, isr_stub_table[i], 0x08, 0x8E);
+    const uint8_t ist = (i == 8) ? 3 : (i == 2) ? 4 : (i == 18) ? 3
+                              : (i < 32)        ? 2
+                                                : 1;
+    idt_entries[i].ist = ist;
   }
 
   idt_flush((uint64_t)(&idt_ptr));
@@ -252,7 +307,11 @@ static bool verify_avx2_support(void) {
 }
 
 __init void cpu_init(void) {
-  init_gdt();
+  if (!init_gdt(0)) {
+    __asm__ volatile("cli");
+    while (1)
+      __asm__ volatile("hlt");
+  }
   init_idt();
   init_pic();
 
@@ -264,17 +323,11 @@ __init void cpu_init(void) {
   }
 }
 
-extern "C" void cpu_ap_init(void) {
-  gdt_flush(reinterpret_cast<uint64_t>(&gdt_ptr));
+extern "C" void cpu_ap_init(uint32_t cpu_index) {
+  if (!init_gdt(cpu_index)) {
+    __asm__ volatile("cli");
+    for (;;)
+      __asm__ volatile("hlt");
+  }
   idt_flush(reinterpret_cast<uint64_t>(&idt_ptr));
-
-  uint64_t cr4;
-  __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
-  cr4 |= (1ull << 9) | (1ull << 10) | (1ull << 18);
-  __asm__ volatile("mov %0, %%cr4" : : "r"(cr4) : "memory");
-
-  uint32_t eax, edx;
-  __asm__ volatile("xgetbv" : "=a"(eax), "=d"(edx) : "c"(0));
-  eax |= 7;
-  __asm__ volatile("xsetbv" : : "a"(eax), "d"(edx), "c"(0) : "memory");
 }

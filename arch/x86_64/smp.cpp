@@ -20,6 +20,7 @@ extern "C" uint8_t ap_trampoline_end[];
 extern "C" uint8_t ap_trampoline_cr3[];
 extern "C" uint8_t ap_trampoline_stack[];
 extern "C" uint8_t ap_trampoline_entry[];
+extern "C" uint8_t ap_trampoline_cpu_index[];
 
 static uint64_t rdmsr(uint32_t msr) {
   uint32_t lo, hi;
@@ -85,7 +86,8 @@ static bool send_ipi(uint8_t apic_id, uint32_t command) {
   return wait_icr_idle();
 }
 
-static void patch_trampoline(uint64_t cr3, uintptr_t stack, uintptr_t entry) {
+static void patch_trampoline(uint64_t cr3, uintptr_t stack, uintptr_t entry,
+                             uint32_t cpu_index) {
   const size_t image_size = ap_trampoline_end - ap_trampoline_start;
   memcpy(reinterpret_cast<void *>(TRAMPOLINE_ADDRESS), ap_trampoline_start,
          image_size);
@@ -98,6 +100,8 @@ static void patch_trampoline(uint64_t cr3, uintptr_t stack, uintptr_t entry) {
       stack;
   *reinterpret_cast<volatile uint64_t *>(patch_address(ap_trampoline_entry)) =
       entry;
+  *reinterpret_cast<volatile uint32_t *>(
+      patch_address(ap_trampoline_cpu_index)) = cpu_index;
   __asm__ volatile("mfence; wbinvd" ::: "memory");
 }
 
@@ -276,7 +280,8 @@ size_t launch_application_processors(const CpuInfo *cpus, size_t count) {
     const uintptr_t stack_top =
         reinterpret_cast<uintptr_t>(ap_stacks[stack_index] + AP_STACK_SIZE);
     patch_trampoline(cr3, stack_top,
-                     reinterpret_cast<uintptr_t>(application_processor_main));
+                     reinterpret_cast<uintptr_t>(application_processor_main),
+                     static_cast<uint32_t>(stack_index + 1));
 
     // Snapshot before sending INIT/SIPI. An AP can reach its entry point
     // before the startup sequence returns, so sampling afterward can miss
@@ -326,8 +331,8 @@ size_t online_cpu_count(void) {
   return online_processors.load(std::memory_order_acquire);
 }
 
-[[noreturn]] void application_processor_main(void) {
-  cpu_ap_init();
+[[noreturn]] void application_processor_main(uint32_t cpu_index) {
+  cpu_ap_init(cpu_index);
   Kernel::Scheduler::scheduler_ap_init();
   if (!lapic_init(true)) {
     for (;;)
