@@ -54,15 +54,9 @@ isr_common_stub:
     # R12 points at the saved registers on the per-CPU IST stack.
     mov r12, rsp
 
-    # IST keeps the hardware entry frame off the interrupted stack. Preserve
-    # the interrupted function's 128-byte red zone, then put its scheduler
-    # frame and SIMD state below that area so the context survives a switch.
+    # Every vector uses IST, so the hardware frame and C handler stay off the
+    # interrupted thread's stack. Keep the persistent context below its red zone.
     mov r14, QWORD PTR [r12 + 160]
-    lea rdi, [r14 - 440]
-    lea rsi, [r14 - 128]
-    mov rcx, 16
-    rep movsq
-
     lea r13, [r14 - 1208]
     and r13, -64
     lea rdi, [r14 - 312]
@@ -127,16 +121,6 @@ isr_common_stub:
     RESTORE_YMM_UPPER 13, ymm13
     RESTORE_YMM_UPPER 14, ymm14
     RESTORE_YMM_UPPER 15, ymm15
-
-    # Restore the selected thread's red zone before returning to its RSP.
-    cmp QWORD PTR [rbx + 128], -1
-    je .Lskip_redzone_restore
-    mov rdx, QWORD PTR [rbx + 168]
-    lea rdi, [rdx - 128]
-    lea rsi, [rdx - 440]
-    mov rcx, 16
-    rep movsq
-.Lskip_redzone_restore:
 
     # IRET must execute from IST. Copy the selected context to this CPU's
     # entry stack, then restore its GPRs and let IRET switch back to its RSP.

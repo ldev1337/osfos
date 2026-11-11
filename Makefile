@@ -1,6 +1,13 @@
 NASM = nasm
-CC   = clang
-CC++ = clang++
+GCC = gcc
+GXX = g++
+ifeq ($(COMPILER),gcc)
+  CC   = gcc
+  CC++ = g++
+else
+  CC   = clang
+  CC++ = clang++
+endif
 
 C_STD    = -std=c11
 CPP_STD = -std=c++20
@@ -8,22 +15,34 @@ CPP_STD = -std=c++20
 INCLUDES = -Iinclude -Ikernel/programs/doomgeneric -Ithird_party/bearssl/inc \
   -Ithird_party/bearssl/src
 
+RED_ZONE_FLAG ?= -mred-zone
+
 COMMON_FLAGS = -march=x86-64-v3 -ffast-math \
-  -ffreestanding -Wall -Wextra -w -mred-zone -m64 \
+  -ffreestanding -Wall -Wextra -w $(RED_ZONE_FLAG) -m64 \
   -fno-exceptions -fno-stack-protector -fno-rtti \
   -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fvisibility=hidden\
-  -flto=thin -ffunction-sections -fdata-sections -fmerge-all-constants $(INCLUDES)
+  -flto=full -ffunction-sections -fdata-sections -fmerge-all-constants $(INCLUDES)
 
-LESS_EXTR_FLAGS = -mllvm -enable-gvn-hoist=true \
-  -mllvm -enable-gvn-sink=true \
-  -mllvm -enable-interleaved-mem-accesses=true
+ifeq ($(COMPILER),gcc)
+	LESS_EXTR_FLAGS = \
+		-ftree-loop-vectorize \
+		-ftree-vectorize \
+		-fallow-store-data-races \
+		-fno-semantic-interposition
+  LTO_LINK_FLAG    = -flto=auto
+else
+  LESS_EXTR_FLAGS = -mllvm -enable-gvn-hoist=true \
+    -mllvm -enable-gvn-sink=true \
+    -mllvm -enable-interleaved-mem-accesses=true
+  LTO_LINK_FLAG    = -flto=full -fuse-ld=lld
+endif
 
 CFLAGS_C        = $(COMMON_FLAGS) -O2 $(LESS_EXTR_FLAGS) $(C_STD)
 CFLAGS_CPP      = $(COMMON_FLAGS) -O2 $(LESS_EXTR_FLAGS) $(CPP_STD)
 CFLAGS_C_PERF   = $(COMMON_FLAGS) -O3 $(LESS_EXTR_FLAGS) $(C_STD)
 CFLAGS_CPP_PERF = $(COMMON_FLAGS) -O3 $(LESS_EXTR_FLAGS) $(CPP_STD)
 CFLAGS_C_SIZE   = $(COMMON_FLAGS) -O1 $(LESS_EXTR_FLAGS) $(C_STD)
-CFLAGS_CPP_SIZE = $(COMMON_FLAGS) -O1 $(LESS_EXTR_FLAGS) $(CPP_STD)n
+CFLAGS_CPP_SIZE = $(COMMON_FLAGS) -O1 $(LESS_EXTR_FLAGS) $(CPP_STD)
 CFLAGS_BEARSSL  = $(COMMON_FLAGS) -O2 $(LESS_EXTR_FLAGS) $(C_STD) \
   -DBR_USE_URANDOM=0 -DBR_USE_UNIX_TIME=0 -DBR_USE_WIN32_RAND=0 -DBR_RDRAND=0
 
@@ -34,12 +53,28 @@ LDFLAGS = -static -ffreestanding -nostdlib -flto=full -fuse-ld=lld \
 	-Wl,-z,max-page-size=0x1000 \
   -Wl,-T,arch/linker.ld
 
+# The comparison run favored GCC for the heap, mouse, PCI, and VFS paths.
+# Keep Clang as the whole-program/LTO compiler (it led keyboard, scheduler,
+# workflow, and especially math), while compiling those GCC-favored modules
+# as native objects. lld links these ELF objects alongside Clang ThinLTO.
+GCC_TUNED_SRCS = kernel/memory/heap.cpp kernel/drivers/mouse.cpp \
+  kernel/drivers/pci.cpp kernel/fs/laziofs.cpp
+GCC_TUNED_OBJS = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(GCC_TUNED_SRCS))
+GCC_TUNED_FLAGS = -march=x86-64-v3 -ffast-math -ffreestanding -Wall -Wextra -w \
+  $(RED_ZONE_FLAG) -m64 -fno-exceptions -fno-stack-protector -fno-rtti \
+  -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident \
+  -fvisibility=hidden -ffunction-sections -fdata-sections \
+  -fmerge-all-constants -funroll-loops -fno-lto $(INCLUDES) -Ofast \
+  -ftree-loop-vectorize -ftree-vectorize -fallow-store-data-races $(CPP_STD)
+
 ASM_SRCS = $(shell find arch kernel -name '*.asm' $(EXCLUDE))
 GAS_SRCS = $(shell find arch kernel -name '*.S' $(EXCLUDE))
 C_SRCS   = $(shell find arch kernel -name '*.c' $(EXCLUDE))
 C++_SRCS = $(shell find arch kernel -name '*.cpp' $(EXCLUDE))
 
 BUILD_DIR = build
+OS_ISO ?= os.iso
+DISK_IMAGE ?= disk.img
 RUST_TARGET = x86_64-unknown-none
 RUST_TARGET_DIR = $(BUILD_DIR)/rust
 RUST_NET_LIB = $(RUST_TARGET_DIR)/$(RUST_TARGET)/release/libosfos_net.a
@@ -129,18 +164,33 @@ define PRINT_TUI
   '
 endef
 
-.PHONY: all clean simd filesimd
+.PHONY: all clean simd filesimd compare-redzone compare-compiler
 
-all: os.iso disk.img
+all: $(OS_ISO) $(DISK_IMAGE)
+
+RUNS ?= 3
+JOBS ?= 6
+BOOT_TIMEOUT ?= 25
+QEMU ?= qemu-system-x86_64
+
+compare-redzone:
+	@python3 tools/compare-redzone.py --runs "$(RUNS)" --jobs "$(JOBS)" \
+	  --boot-timeout "$(BOOT_TIMEOUT)" --qemu "$(QEMU)"
+
+compare-compiler:
+	@python3 tools/compare-compiler.py --runs "$(RUNS)" --jobs "$(JOBS)" \
+	  --boot-timeout "$(BOOT_TIMEOUT)" --qemu "$(QEMU)"
 
 DOOM1_WAD = $(firstword $(wildcard doom1.wad doom.wad))
 DOOM2_WAD = $(wildcard doom2.wad)
 DOOM_WADS = $(DOOM1_WAD) $(DOOM2_WAD)
 ifneq ($(DOOM_WADS),)
-disk.img: $(DOOM_WADS) tools/mklaziofs.py
+$(DISK_IMAGE): $(DOOM_WADS) tools/mklaziofs.py
+	@mkdir -p $(@D)
 	@python3 tools/mklaziofs.py $@ $(if $(DOOM1_WAD),--add /bin/doom/doom1.wad=$(DOOM1_WAD)) $(if $(DOOM2_WAD),--add /bin/doom/doom2.wad=$(DOOM2_WAD))
 else
-disk.img: tools/mklaziofs.py
+$(DISK_IMAGE): tools/mklaziofs.py
+	@mkdir -p $(@D)
 	@python3 tools/mklaziofs.py $@
 endif
 
@@ -160,13 +210,15 @@ else
 	@$(call PRINT_TUI, [GAS   ], $<)
 endif
 
-# The installed opt loads a Polly plugin that crashes on several project
-# sources; Clang compiles its optimized LLVM bitcode directly instead.
 $(BUILD_DIR)/%.o: %.c Makefile
 	@mkdir -p $(@D)
+ifeq ($(COMPILER),gcc)
+	@$(CC) $(CFLAGS_C) -c $< -o $@
+else
 	@$(CC) $(CFLAGS_C) -emit-llvm -c $< -o $(@:.o=.bc)
 	@$(CC) $(CFLAGS_C) -c $(@:.o=.bc) -o $@
 	@rm -f $(@:.o=.bc)
+endif
 ifeq ($(V),1)
 else
 	@$(call PRINT_TUI, $(TAG_C), $<)
@@ -174,9 +226,17 @@ endif
 
 $(BUILD_DIR)/%.o: %.cpp Makefile
 	@mkdir -p $(@D)
-	@$(CC++) $(CFLAGS_CPP) -emit-llvm -c $< -o $(@:.o=.bc)
-	@$(CC++) $(CFLAGS_CPP) -c $(@:.o=.bc) -o $@
-	@rm -f $(@:.o=.bc)
+ifeq ($(COMPILER),gcc)
+	@$(CC++) $(CFLAGS_CPP) -c $< -o $@
+else
+	@if [ -n "$(filter $<,$(GCC_TUNED_SRCS))" ]; then \
+	  $(GXX) $(GCC_TUNED_FLAGS) -c $< -o $@; \
+	else \
+	  $(CC++) $(CFLAGS_CPP) -emit-llvm -c $< -o $(@:.o=.bc) && \
+	  $(CC++) $(CFLAGS_CPP) -c $(@:.o=.bc) -o $@ && \
+	  rm -f $(@:.o=.bc); \
+	fi
+endif
 ifeq ($(V),1)
 else
 	@$(call PRINT_TUI, $(TAG_CPP), $<)
@@ -202,7 +262,7 @@ else
 	$(Q)$(call PRINT_TUI, [RUST  ], rust/net/src/lib.rs)
 endif
 
-os.iso: $(BUILD_DIR)/os.bin grub.cfg
+$(OS_ISO): $(BUILD_DIR)/os.bin grub.cfg
 	$(Q)mkdir -p $(BUILD_DIR)/iso/boot/grub
 	$(Q)cp $(BUILD_DIR)/os.bin $(BUILD_DIR)/iso/boot/os.bin
 	$(Q)cp grub.cfg $(BUILD_DIR)/iso/boot/grub/grub.cfg
