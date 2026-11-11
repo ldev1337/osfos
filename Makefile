@@ -9,7 +9,7 @@ else
   CC++ = clang++
 endif
 
-C_STD    = -std=c11
+C_STD   = -std=c11
 CPP_STD = -std=c++20
 
 INCLUDES = -Iinclude -Ikernel/programs/doomgeneric -Ithird_party/bearssl/inc \
@@ -53,10 +53,6 @@ LDFLAGS = -static -ffreestanding -nostdlib -flto=full -fuse-ld=lld \
 	-Wl,-z,max-page-size=0x1000 \
   -Wl,-T,arch/linker.ld
 
-# The comparison run favored GCC for the heap, mouse, PCI, and VFS paths.
-# Keep Clang as the whole-program/LTO compiler (it led keyboard, scheduler,
-# workflow, and especially math), while compiling those GCC-favored modules
-# as native objects. lld links these ELF objects alongside Clang ThinLTO.
 GCC_TUNED_SRCS = kernel/memory/heap.cpp kernel/drivers/mouse.cpp \
   kernel/drivers/pci.cpp kernel/fs/laziofs.cpp
 GCC_TUNED_OBJS = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(GCC_TUNED_SRCS))
@@ -168,9 +164,9 @@ endef
 
 all: $(OS_ISO) $(DISK_IMAGE)
 
-RUNS ?= 3
+RUNS ?= 4
 JOBS ?= 6
-BOOT_TIMEOUT ?= 25
+BOOT_TIMEOUT ?= 15
 QEMU ?= qemu-system-x86_64
 
 compare-redzone:

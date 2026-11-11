@@ -1,12 +1,12 @@
 #include <algorithm>
 #include <arch/x86_64/string.h>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <kernel/debug/debug.h>
 #include <kernel/drivers/pit.h>
 #include <kernel/memory/heap.h>
 #include <kernel/scheduler.h>
-#include <kernel/debug/debug.h>
-#include <atomic>
 
 namespace Kernel::Scheduler {
 
@@ -25,9 +25,20 @@ struct ThreadContext {
 
 static_assert(sizeof(ThreadContext) == 184);
 
+#define SCHED_LIKELY(x) __builtin_expect(!!(x), 1)
+#define SCHED_UNLIKELY(x) __builtin_expect(!!(x), 0)
+
+// total  = threads queued at this priority.
+// pinned = queued threads with preferred_cpu != UINT32_MAX. The only pinning
+//          API (prefer_bootstrap_cpu / prioritize_current_for_kernel_io) pins
+//          to bootstrap_cpu_id, so "pinned" == "belongs to the service CPU".
+// These counters make every "is anything runnable for me?" question O(1)
+// instead of a list walk (the old code walked the queues up to 9x per switch).
 struct RunQueue {
   ThreadControlBlock *head;
   ThreadControlBlock *tail;
+  uint32_t total;
+  uint32_t pinned;
 };
 
 static constexpr unsigned PRIORITY_COUNT = 3;
@@ -37,20 +48,37 @@ static constexpr size_t XSTATE_SIZE = 832;
 static constexpr uint32_t MAX_SLEEP_MS = 0x7FFFFFFFU;
 static constexpr unsigned HIGH_PRIORITY_DISPATCH_LIMIT = 7;
 static constexpr unsigned IDLE_PRIORITY_DISPATCH_INTERVAL = 63;
+static constexpr uint64_t RFLAGS_IF = 1ull << 9;
 
 static RunQueue run_queues[PRIORITY_COUNT] = {};
 static uint32_t ready_priorities = 0;
 static unsigned consecutive_high_dispatches = 0;
 static unsigned dispatches_since_idle = 0;
-struct CpuSchedulerState {
+
+// One cache line per CPU: `current` is written on every context switch, so
+// packing four CPUs per line (the old 16-byte layout) caused false sharing.
+struct alignas(64) CpuSchedulerState {
   ThreadControlBlock *current;
   ThreadControlBlock *idle;
+  // Exited thread whose stack this CPU may still be standing on. It is handed
+  // to the reaper at this CPU's *next* schedule(), when it is provably off it.
+  ThreadControlBlock *zombie;
+  // Set by block/sleep/exit paths that keep the scheduler lock held across the
+  // software interrupt so schedule() can take over the lock (see below).
+  bool lock_held;
 };
 static constexpr size_t MAX_APIC_IDS = 256;
 static CpuSchedulerState cpu_states[MAX_APIC_IDS]{};
 static ThreadControlBlock idle_thread_storage[MAX_APIC_IDS]{};
 alignas(64) static uint8_t idle_stack_mem[MAX_APIC_IDS][IDLE_STACK_SIZE];
-static std::atomic_flag scheduler_lock = ATOMIC_FLAG_INIT;
+
+// Lock lives alone on its cache line so spinners don't bounce the queue data.
+struct alignas(64) SchedLock {
+  std::atomic<uint8_t> locked;
+  uint8_t pad[63];
+};
+static SchedLock scheduler_lock_storage{};
+
 static ThreadControlBlock *thread_list_head = nullptr;
 static ThreadControlBlock *reap_pending = nullptr;
 static ThreadControlBlock *sleep_queue = nullptr;
@@ -64,43 +92,78 @@ static uint32_t bootstrap_cpu_id = 0;
     __asm__ volatile("sti; hlt" ::: "memory");
 }
 
+// CPUID traps to the hypervisor under virtualization (microseconds, not
+// nanoseconds) and is serializing on bare metal. Every entry point below calls
+// this AT MOST ONCE and passes the result down. The next step is a GS-relative
+// per-CPU slot; that needs the arch layer, so it is left as the one-line swap.
 static inline size_t cpu_index() {
   uint32_t eax = 1, ebx, ecx, edx;
   __asm__ volatile("cpuid" : "+a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx));
   return (ebx >> 24) & 0xffu;
 }
 
-static inline CpuSchedulerState &cpu_state() {
-  return cpu_states[cpu_index()];
-}
+static inline CpuSchedulerState &cpu_state() { return cpu_states[cpu_index()]; }
 
 extern "C" void thread_start_wrapper(void (*)());
 extern "C" void thread_start_arg_wrapper(ThreadEntry, void *);
 
-static inline uint64_t irq_save() {
+// --- locking ---------------------------------------------------------------
+
+static inline void lock_acquire() {
+  // Test-and-test-and-set: spin on a shared (read-only) cache line and only
+  // attempt the atomic RMW when it looks free.
+  for (;;) {
+    if (SCHED_LIKELY(!scheduler_lock_storage.locked.exchange(
+            1, std::memory_order_acquire)))
+      return;
+    while (scheduler_lock_storage.locked.load(std::memory_order_relaxed))
+      __builtin_ia32_pause();
+  }
+}
+
+static inline void lock_release() {
+  scheduler_lock_storage.locked.store(0, std::memory_order_release);
+}
+
+static inline uint64_t local_irq_save() {
   uint64_t flags;
   __asm__ volatile("pushfq; popq %0; cli" : "=r"(flags) : : "memory");
-  while (scheduler_lock.test_and_set(std::memory_order_acquire))
-    __asm__ volatile("pause");
+  return flags;
+}
+
+static inline void local_irq_restore(uint64_t flags) {
+  if (flags & RFLAGS_IF)
+    __asm__ volatile("sti" : : : "memory");
+}
+
+static inline uint64_t irq_save() {
+  const uint64_t flags = local_irq_save();
+  lock_acquire();
   return flags;
 }
 
 static inline void irq_restore(uint64_t flags) {
-  scheduler_lock.clear(std::memory_order_release);
-  if (flags & (1ull << 9))
-    __asm__ volatile("sti" : : : "memory");
+  lock_release();
+  local_irq_restore(flags);
 }
 
 static inline void irq_restore_flags(uint64_t flags) {
-  if (flags & (1ull << 9))
-    __asm__ volatile("sti" : : : "memory");
+  local_irq_restore(flags);
 }
 
-// Used while the caller already has interrupts disabled. The saved interrupt
-// frame therefore resumes with IF=0, and irq_restore() runs after the thread
-// has actually been scheduled again.
-static inline void yield_with_irqs_disabled() {
+// Blocking paths used to: enqueue self on a wait list, DROP the lock, then
+// `int 0x30`. In that window another CPU could wake the thread and dispatch it
+// from its stale saved RSP while this CPU was still running on its stack.
+// Now the lock stays held across the interrupt and schedule() adopts it, which
+// closes that race and also saves one lock release+reacquire per handoff.
+static inline void yield_holding_lock(CpuSchedulerState &state) {
+  state.lock_held = true;
   __asm__ volatile("int $0x30" ::: "memory");
+}
+
+static inline bool is_idle_thread(const ThreadControlBlock *thread) {
+  return thread >= idle_thread_storage &&
+         thread < idle_thread_storage + MAX_APIC_IDS;
 }
 
 static inline unsigned priority_index(ThreadPriority priority) {
@@ -109,8 +172,12 @@ static inline unsigned priority_index(ThreadPriority priority) {
                                 : static_cast<unsigned>(ThreadPriority::NORMAL);
 }
 
+static inline bool is_pinned(const ThreadControlBlock *thread) {
+  return thread->preferred_cpu != UINT32_MAX;
+}
+
 static void enqueue(ThreadControlBlock *thread) {
-  if (!thread || thread == cpu_state().idle ||
+  if (!thread || is_idle_thread(thread) ||
       thread->state == ThreadState::TERMINATED)
     return;
 
@@ -125,6 +192,9 @@ static void enqueue(ThreadControlBlock *thread) {
     queue.head = thread;
 
   queue.tail = thread;
+  ++queue.total;
+  if (is_pinned(thread))
+    ++queue.pinned;
   ready_priorities |= 1u << index;
 }
 
@@ -176,20 +246,10 @@ static void remove_blocked(ThreadControlBlock *thread) {
   }
 }
 
-static bool queue_has_match(unsigned index, uint32_t cpu_id,
-                            bool preferred_only, bool skip_preferred) {
-  if (index >= PRIORITY_COUNT)
-    return false;
-  for (ThreadControlBlock *thread = run_queues[index].head; thread;
-       thread = thread->next) {
-    const bool is_preferred = thread->preferred_cpu != UINT32_MAX;
-    if (preferred_only && thread->preferred_cpu != cpu_id)
-      continue;
-    if (skip_preferred && is_preferred && thread->preferred_cpu != cpu_id)
-      continue;
-    return true;
-  }
-  return false;
+// O(1) replacement for the old queue_has_match() list walks.
+static inline bool queue_available(unsigned index, bool skip_preferred) {
+  const RunQueue &queue = run_queues[index];
+  return (skip_preferred ? queue.total - queue.pinned : queue.total) != 0;
 }
 
 static ThreadControlBlock *dequeue_priority(unsigned index, uint32_t cpu_id,
@@ -201,10 +261,12 @@ static ThreadControlBlock *dequeue_priority(unsigned index, uint32_t cpu_id,
   RunQueue &queue = run_queues[index];
   ThreadControlBlock *previous = nullptr;
   ThreadControlBlock *thread = queue.head;
+  // Only service-pinned threads can be skipped, so this loop is O(#pinned
+  // threads ahead of the first match), normally 0-2 iterations.
   while (thread) {
-    const bool is_preferred = thread->preferred_cpu != UINT32_MAX;
+    const bool pinned = is_pinned(thread);
     if ((!preferred_only || thread->preferred_cpu == cpu_id) &&
-        (!skip_preferred || !is_preferred || thread->preferred_cpu == cpu_id))
+        (!skip_preferred || !pinned || thread->preferred_cpu == cpu_id))
       break;
     previous = thread;
     thread = thread->next;
@@ -225,28 +287,29 @@ static ThreadControlBlock *dequeue_priority(unsigned index, uint32_t cpu_id,
     queue.tail = previous;
   if (!queue.head)
     ready_priorities &= ~(1u << index);
+  --queue.total;
+  if (is_pinned(thread))
+    --queue.pinned;
   thread->next = nullptr;
   return thread;
 }
 
-static ThreadControlBlock *dequeue_fair() {
+static ThreadControlBlock *dequeue_fair(uint32_t cpu_id) {
   constexpr unsigned HIGH = static_cast<unsigned>(ThreadPriority::HIGH);
   constexpr unsigned NORMAL = static_cast<unsigned>(ThreadPriority::NORMAL);
   constexpr unsigned IDLE = static_cast<unsigned>(ThreadPriority::IDLE);
 
-  const uint32_t cpu_id = static_cast<uint32_t>(cpu_index());
   const bool is_service_cpu = cpu_id == bootstrap_cpu_id;
   bool skip_preferred = !is_service_cpu;
-  bool high_ready = queue_has_match(HIGH, cpu_id, false, skip_preferred);
-  bool normal_ready = queue_has_match(NORMAL, cpu_id, false, skip_preferred);
-  bool idle_ready = queue_has_match(IDLE, cpu_id, false, skip_preferred);
+  bool high_ready = queue_available(HIGH, skip_preferred);
+  bool normal_ready = queue_available(NORMAL, skip_preferred);
+  bool idle_ready = queue_available(IDLE, skip_preferred);
 
   // Kernel service work gets first access to the BSP's dispatch budget. The
   // normal high-priority fairness limit still forces progress for other work.
-  if (is_service_cpu &&
-      queue_has_match(HIGH, cpu_id, true, false) &&
-      (!normal_ready || consecutive_high_dispatches <
-                            HIGH_PRIORITY_DISPATCH_LIMIT)) {
+  if (is_service_cpu && run_queues[HIGH].pinned != 0 &&
+      (!normal_ready ||
+       consecutive_high_dispatches < HIGH_PRIORITY_DISPATCH_LIMIT)) {
     ThreadControlBlock *service = dequeue_priority(HIGH, cpu_id, true, false);
     if (service) {
       if (consecutive_high_dispatches < HIGH_PRIORITY_DISPATCH_LIMIT)
@@ -264,13 +327,12 @@ static ThreadControlBlock *dequeue_fair() {
   // any idle core may steal it.
   if (!high_ready && !normal_ready && !idle_ready) {
     skip_preferred = false;
-    high_ready = queue_has_match(HIGH, cpu_id, false, false);
-    normal_ready = queue_has_match(NORMAL, cpu_id, false, false);
-    idle_ready = queue_has_match(IDLE, cpu_id, false, false);
+    high_ready = queue_available(HIGH, false);
+    normal_ready = queue_available(NORMAL, false);
+    idle_ready = queue_available(IDLE, false);
   }
 
-  // FAST PATH: If exactly one priority level is active, skip all fairness
-  // checks and branch overhead.
+  // FAST PATH: exactly one priority level is active.
   if (high_ready && !normal_ready && !idle_ready) {
     consecutive_high_dispatches = 0;
     dispatches_since_idle = 0;
@@ -358,8 +420,8 @@ static void reap_deferred() {
 
   irq_restore(flags);
 
-  // Never free a thread's stack from its own execution context. The scheduler
-  // puts exited threads here; a later creator reclaims them safely.
+  // Never free a thread's stack from its own execution context. schedule()
+  // only queues a thread here once its CPU has switched off that stack.
   while (pending) {
     ThreadControlBlock *thread = pending;
     pending = pending->reap_next;
@@ -487,6 +549,10 @@ bool prefer_bootstrap_cpu(uint64_t id) {
   for (ThreadControlBlock *thread = thread_list_head; thread;
        thread = thread->registry_next) {
     if (thread->id == id && thread->state != ThreadState::TERMINATED) {
+      // A queued (READY) thread is already counted in its run queue; keep the
+      // pinned counter in sync when its affinity changes underneath it.
+      if (thread->state == ThreadState::READY && !is_pinned(thread))
+        ++run_queues[priority_index(thread->priority)].pinned;
       thread->preferred_cpu = bootstrap_cpu_id;
       irq_restore(flags);
       return true;
@@ -498,14 +564,15 @@ bool prefer_bootstrap_cpu(uint64_t id) {
 
 KernelIoSchedulingHint prioritize_current_for_kernel_io() {
   const uint64_t flags = irq_save();
-  ThreadControlBlock *current = cpu_state().current;
+  CpuSchedulerState &state = cpu_state();
+  ThreadControlBlock *current = state.current;
   if (!current) {
     irq_restore(flags);
     return {ThreadPriority::NORMAL, UINT32_MAX};
   }
   const KernelIoSchedulingHint previous{current->priority,
                                         current->preferred_cpu};
-  if (current != cpu_state().idle) {
+  if (current != state.idle) {
     current->priority = ThreadPriority::HIGH;
     current->preferred_cpu = bootstrap_cpu_id;
   }
@@ -599,9 +666,15 @@ auto thread_create(ThreadEntry entry, void *argument, ThreadPriority priority)
   return create_thread(nullptr, entry, argument, priority);
 }
 
+// The per-CPU readers below only touch this CPU's state, so they need IRQs off
+// (to avoid migrating between cpu_index() and the load) but not the global
+// lock. This also fixes the old unprotected cpu_state() read.
 auto current_thread_id() -> uint64_t {
-  auto *current_thread = cpu_state().current;
-  return current_thread ? current_thread->id : 0;
+  const uint64_t flags = local_irq_save();
+  ThreadControlBlock *current_thread = cpu_state().current;
+  const uint64_t id = current_thread ? current_thread->id : 0;
+  local_irq_restore(flags);
+  return id;
 }
 
 void mark_current_thread_as_application(const char *name) {
@@ -624,8 +697,11 @@ void mark_current_thread_as_application(const char *name) {
 }
 
 bool is_current_thread_application() {
+  const uint64_t flags = local_irq_save();
   ThreadControlBlock *current_thread = cpu_state().current;
-  return current_thread && current_thread->application_thread;
+  const bool result = current_thread && current_thread->application_thread;
+  local_irq_restore(flags);
+  return result;
 }
 
 size_t get_application_tasks(ApplicationTaskInfo *tasks, size_t capacity) {
@@ -684,38 +760,43 @@ void terminate_thread(uint64_t id) {
 }
 
 auto should_stop() -> bool {
+  const uint64_t flags = local_irq_save();
   ThreadControlBlock *current_thread = cpu_state().current;
-  return current_thread && current_thread->stop_requested;
+  const bool stop = current_thread && current_thread->stop_requested;
+  local_irq_restore(flags);
+  return stop;
 }
 
 void thread_yield() { __asm__ volatile("int $0x30" ::: "memory"); }
 
 [[noreturn]] void thread_exit() {
-  (void)irq_save();
-  ThreadControlBlock *current_thread = cpu_state().current;
-  ThreadControlBlock *idle_thread = cpu_state().idle;
-  if (current_thread && current_thread != idle_thread) {
-    const uint64_t exited_id = current_thread->id;
-    current_thread->state = ThreadState::TERMINATED;
-    current_thread->timed_wait = false;
-    scheduler_lock.clear(std::memory_order_release);
+  // Log while still an ordinary running thread; never log under the lock.
+  const uint64_t exited_id = current_thread_id();
+  if (exited_id != 0) {
     Kernel::Debug::log("task exited; scheduler will reclaim its resources");
     Kernel::Debug::log_dec("task_id", exited_id);
-  } else {
-    scheduler_lock.clear(std::memory_order_release);
   }
 
-  // The current stack is reclaimed later by reap_deferred(), never here.
-  yield_with_irqs_disabled();
+  (void)irq_save();
+  CpuSchedulerState &state = cpu_state();
+  ThreadControlBlock *current_thread = state.current;
+  if (current_thread && current_thread != state.idle) {
+    current_thread->state = ThreadState::TERMINATED;
+    current_thread->timed_wait = false;
+  }
+
+  // The current stack is reclaimed later (state.zombie -> reap_pending ->
+  // reap_deferred), never here.
+  yield_holding_lock(state);
   for (;;)
     __asm__ volatile("hlt" ::: "memory");
 }
 
 void thread_block() {
   const uint64_t flags = irq_save();
-  ThreadControlBlock *current_thread = cpu_state().current;
-  ThreadControlBlock *idle_thread = cpu_state().idle;
-  if (!current_thread || current_thread == idle_thread) {
+  CpuSchedulerState &state = cpu_state();
+  ThreadControlBlock *current_thread = state.current;
+  if (!current_thread || current_thread == state.idle) {
     irq_restore(flags);
     return;
   }
@@ -723,8 +804,7 @@ void thread_block() {
   current_thread->state = ThreadState::BLOCKED;
   current_thread->timed_wait = false;
   insert_blocked(current_thread);
-  scheduler_lock.clear(std::memory_order_release);
-  yield_with_irqs_disabled();
+  yield_holding_lock(state);
   irq_restore_flags(flags);
 }
 
@@ -733,9 +813,9 @@ auto thread_block_if(bool (*should_block)()) -> bool {
     return false;
 
   const uint64_t flags = irq_save();
-  ThreadControlBlock *current_thread = cpu_state().current;
-  ThreadControlBlock *idle_thread = cpu_state().idle;
-  if (!current_thread || current_thread == idle_thread || !should_block()) {
+  CpuSchedulerState &state = cpu_state();
+  ThreadControlBlock *current_thread = state.current;
+  if (!current_thread || current_thread == state.idle || !should_block()) {
     irq_restore(flags);
     return false;
   }
@@ -743,8 +823,7 @@ auto thread_block_if(bool (*should_block)()) -> bool {
   current_thread->state = ThreadState::BLOCKED;
   current_thread->timed_wait = false;
   insert_blocked(current_thread);
-  scheduler_lock.clear(std::memory_order_release);
-  yield_with_irqs_disabled();
+  yield_holding_lock(state);
   irq_restore_flags(flags);
   return true;
 }
@@ -755,9 +834,9 @@ void thread_sleep_ms(uint32_t milliseconds) {
   milliseconds = std::min(milliseconds, MAX_SLEEP_MS);
 
   const uint64_t flags = irq_save();
-  ThreadControlBlock *current_thread = cpu_state().current;
-  ThreadControlBlock *idle_thread = cpu_state().idle;
-  if (!current_thread || current_thread == idle_thread) {
+  CpuSchedulerState &state = cpu_state();
+  ThreadControlBlock *current_thread = state.current;
+  if (!current_thread || current_thread == state.idle) {
     irq_restore(flags);
     return;
   }
@@ -768,8 +847,7 @@ void thread_sleep_ms(uint32_t milliseconds) {
   insert_sleeper(current_thread);
   current_thread->state = ThreadState::BLOCKED;
 
-  scheduler_lock.clear(std::memory_order_release);
-  yield_with_irqs_disabled();
+  yield_holding_lock(state);
   irq_restore_flags(flags);
 }
 
@@ -792,10 +870,14 @@ bool thread_unblock(uint64_t id) {
     return false;
 
   const uint64_t flags = irq_save();
-  for (ThreadControlBlock *thread = blocked_list_head; thread;
-       thread = thread->sleep_next) {
+  // Single pass: unlink while searching (old code searched, then searched
+  // again inside remove_blocked()).
+  for (ThreadControlBlock **link = &blocked_list_head; *link;
+       link = &(*link)->sleep_next) {
+    ThreadControlBlock *thread = *link;
     if (thread->id == id) {
-      remove_blocked(thread);
+      *link = thread->sleep_next;
+      thread->sleep_next = nullptr;
       enqueue(thread);
       irq_restore(flags);
       return true;
@@ -808,54 +890,63 @@ bool thread_unblock(uint64_t id) {
 auto should_preempt() -> bool { return true; }
 
 auto schedule(uint64_t current_rsp) -> uint64_t {
-  const uint64_t flags = irq_save();
-  CpuSchedulerState &state = cpu_state();
-  ThreadControlBlock *current_thread = state.current;
-  ThreadControlBlock *idle_thread = state.idle;
-  ThreadControlBlock *previous = current_thread;
-  if (!previous) {
+  const size_t cpu = cpu_index(); // the only CPUID on the whole switch path
+  CpuSchedulerState &state = cpu_states[cpu];
+
+  uint64_t flags = 0;
+  if (state.lock_held) {
+    // Handoff from thread_block()/sleep/exit: lock already held, IRQs already
+    // off, and the caller restores its own IF after it is rescheduled.
+    state.lock_held = false;
+  } else {
+    flags = irq_save();
+  }
+
+  ThreadControlBlock *previous = state.current;
+  if (SCHED_UNLIKELY(!previous)) {
     irq_restore(flags);
     return current_rsp;
   }
 
+  // Publish the saved context BEFORE the lock is released below; no other CPU
+  // can dequeue `previous` until then, so it can never run on a stale RSP.
   previous->rsp = current_rsp;
-  wake_sleepers(static_cast<uint32_t>(Kernel::Drivers::PIT::get_ticks()));
 
+  // A thread that exited on a previous switch is now definitely off its stack.
+  if (state.zombie) {
+    state.zombie->reap_next = reap_pending;
+    reap_pending = state.zombie;
+    state.zombie = nullptr;
+  }
+
+  if (sleep_queue)
+    wake_sleepers(static_cast<uint32_t>(Kernel::Drivers::PIT::get_ticks()));
+
+  ThreadControlBlock *idle_thread = state.idle;
   const bool previous_is_idle = previous == idle_thread;
   if (!previous_is_idle) {
     if (previous->state == ThreadState::RUNNING) {
+      // Nothing else is runnable: keep running, zero switch cost.
       if (ready_priorities == 0) {
         irq_restore(flags);
-        return previous->rsp;
+        return current_rsp;
       }
-
-      const unsigned p_idx = priority_index(previous->priority);
-      RunQueue &queue = run_queues[p_idx];
-      if (ready_priorities == (1u << p_idx) && queue.head == previous &&
-          queue.tail == previous) {
-        irq_restore(flags);
-        return previous->rsp;
-      }
-
       enqueue(previous);
     } else if (previous->state == ThreadState::TERMINATED) {
-      previous->reap_next = reap_pending;
-      reap_pending = previous;
+      state.zombie = previous;
     }
   } else if (ready_priorities == 0) {
     previous->state = ThreadState::RUNNING;
     irq_restore(flags);
-    return previous->rsp;
+    return current_rsp;
   }
 
-  ThreadControlBlock *next = dequeue_fair();
+  ThreadControlBlock *next = dequeue_fair(static_cast<uint32_t>(cpu));
   if (!next)
     next = idle_thread;
 
-  if (!next) {
+  if (SCHED_UNLIKELY(!next)) {
     irq_restore(flags);
-    if (previous->state == ThreadState::RUNNING)
-      return previous->rsp;
     return current_rsp;
   }
 
