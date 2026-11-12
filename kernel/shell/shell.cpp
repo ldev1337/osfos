@@ -3,6 +3,7 @@
 #include <kernel/drivers/ata.h>
 #include <kernel/drivers/framebuffer.h>
 #include <kernel/drivers/keyboard.h>
+#include <kernel/drivers/net/device.h>
 #include <kernel/drivers/pci.h>
 #include <kernel/drivers/usb/xhci.h>
 #include <kernel/debug/debug.h>
@@ -545,6 +546,15 @@ void run_netinfo(const char *) {
     kernel_printf("netinfo: network stack unavailable\n");
     return;
   }
+  const auto *device = Kernel::Drivers::Net::active_device();
+  const char *driver = "unknown";
+  if (device && device->name) {
+    if (equals(device->name, "rtl8168"))
+      driver = "realtek";
+    else
+      driver = device->name;
+  }
+  kernel_printf("Driver: %s\n", driver);
   kernel_printf("MAC %02X:%02X:%02X:%02X:%02X:%02X\n", info.mac[0], info.mac[1],
                 info.mac[2], info.mac[3], info.mac[4], info.mac[5]);
   if (!info.configured) {

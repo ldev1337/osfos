@@ -1,6 +1,6 @@
 #include <kernel/bootinfo.h>
 #include <kernel/cpu.h>
-#include <kernel/drivers/e1000.h>
+#include <kernel/drivers/net/device.h>
 #include <kernel/drivers/framebuffer.h>
 #include <kernel/drivers/keyboard.h>
 #include <kernel/drivers/mouse.h>
@@ -113,14 +113,15 @@ extern "C" void main(unsigned long multiboot_info_addr) {
   Kernel::Debug::log("boot benchmark starting before welcome screen");
   Kernel::Apps::benchmark_startup_run();
 
-  if (Kernel::Drivers::E1000::detect_and_init()) {
-    Kernel::Debug::log("E1000 detected and initialized");
-    if (!Kernel::Drivers::E1000::start()) {
-      Kernel::Debug::log("ERROR: E1000 RX worker failed");
-      kernel_printf("E1000 RX worker initialization failed.\n");
+  if (Kernel::Drivers::Net::detect_and_init()) {
+    const auto *net_device = Kernel::Drivers::Net::active_device();
+    Kernel::Debug::log(net_device ? net_device->name : "network device ready");
+    if (!Kernel::Drivers::Net::start()) {
+      Kernel::Debug::log("ERROR: network device start failed");
+      kernel_printf("Network device initialization failed.\n");
     }
     uint8_t mac[6];
-    Kernel::Drivers::E1000::get_mac_address(mac);
+    Kernel::Drivers::Net::get_mac_address(mac);
     uint64_t seed =
         Kernel::Lib::Random::rdtsc() ^ Kernel::Drivers::PIT::get_ticks();
     for (unsigned char iii : mac) {
@@ -133,7 +134,7 @@ extern "C" void main(unsigned long multiboot_info_addr) {
       Kernel::Debug::log("network stack ready");
     }
   } else {
-    Kernel::Debug::log("E1000 not detected; network disabled");
+    Kernel::Debug::log("no supported network device detected");
   }
 
   if (have_cpu_topology) {

@@ -7,7 +7,7 @@
 #include <cstdint>
 #include <cstring>
 
-extern "C" const br_x509_trust_anchor osfos_https_trust_anchors[2];
+extern "C" const br_x509_trust_anchor osfos_https_trust_anchors[4];
 
 namespace Kernel::Net {
 namespace {
@@ -482,7 +482,7 @@ int fetch(const char *url_text, char *output, size_t output_capacity) {
       return -5;
     }
     br_ssl_client_init_full(&tls_client, &tls_x509, osfos_https_trust_anchors,
-                            2);
+                            4);
     br_ssl_engine_set_versions(&tls_client.eng, BR_TLS12, BR_TLS12);
     br_ssl_engine_set_buffer(&tls_client.eng, tls_buffer, sizeof(tls_buffer),
                              1);

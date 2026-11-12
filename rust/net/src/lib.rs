@@ -24,50 +24,50 @@ const TCP_LOCAL_PORT: u16 = 49152;
 const TCP_STREAM_TIMEOUT_MS: u64 = 15000;
 
 unsafe extern "C" {
-    fn os_net_e1000_receive(buffer: *mut u8, capacity: usize) -> i32;
-    fn os_net_e1000_send(buffer: *const u8, length: usize) -> bool;
+    fn os_net_device_receive(buffer: *mut u8, capacity: usize) -> i32;
+    fn os_net_device_send(buffer: *const u8, length: usize) -> bool;
     fn os_net_clock_ms() -> u64;
     fn os_net_yield();
 }
 
-struct E1000Device {
+struct NetworkDevice {
     rx_buffer: [u8; MAX_FRAME_SIZE],
 }
 
-struct E1000RxToken<'a> {
+struct NetworkRxToken<'a> {
     buffer: &'a mut [u8],
 }
 
-struct E1000TxToken;
+struct NetworkTxToken;
 
-impl Device for E1000Device {
+impl Device for NetworkDevice {
     type RxToken<'a>
-        = E1000RxToken<'a>
+        = NetworkRxToken<'a>
     where
         Self: 'a;
     type TxToken<'a>
-        = E1000TxToken
+        = NetworkTxToken
     where
         Self: 'a;
 
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
         let length =
-            unsafe { os_net_e1000_receive(self.rx_buffer.as_mut_ptr(), self.rx_buffer.len()) };
+            unsafe { os_net_device_receive(self.rx_buffer.as_mut_ptr(), self.rx_buffer.len()) };
         if length <= 0 || length as usize > self.rx_buffer.len() {
             return None;
         }
 
         let length = length as usize;
         Some((
-            E1000RxToken {
+            NetworkRxToken {
                 buffer: &mut self.rx_buffer[..length],
             },
-            E1000TxToken,
+            NetworkTxToken,
         ))
     }
 
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
-        Some(E1000TxToken)
+        Some(NetworkTxToken)
     }
 
     fn capabilities(&self) -> DeviceCapabilities {
@@ -78,7 +78,7 @@ impl Device for E1000Device {
     }
 }
 
-impl RxToken for E1000RxToken<'_> {
+impl RxToken for NetworkRxToken<'_> {
     fn consume<R, F>(self, receive: F) -> R
     where
         F: FnOnce(&[u8]) -> R,
@@ -87,7 +87,7 @@ impl RxToken for E1000RxToken<'_> {
     }
 }
 
-impl TxToken for E1000TxToken {
+impl TxToken for NetworkTxToken {
     fn consume<R, F>(self, length: usize, transmit: F) -> R
     where
         F: FnOnce(&mut [u8]) -> R,
@@ -96,7 +96,7 @@ impl TxToken for E1000TxToken {
         let mut buffer = [0; MAX_FRAME_SIZE];
         let result = transmit(&mut buffer[..frame_length]);
         unsafe {
-            os_net_e1000_send(buffer.as_ptr(), frame_length);
+            os_net_device_send(buffer.as_ptr(), frame_length);
         }
         result
     }
@@ -121,7 +121,7 @@ pub struct PingStats {
 }
 
 struct NetState {
-    device: E1000Device,
+    device: NetworkDevice,
     interface: Interface,
     sockets: SocketSet<'static>,
     dhcp_handle: smoltcp::iface::SocketHandle,
@@ -407,7 +407,7 @@ pub extern "C" fn osfos_net_init(mac: *const u8, seed: u64) -> i32 {
 
     let mut mac_address = [0u8; 6];
     unsafe { core::ptr::copy_nonoverlapping(mac, mac_address.as_mut_ptr(), 6) };
-    let device = E1000Device {
+    let device = NetworkDevice {
         rx_buffer: [0; MAX_FRAME_SIZE],
     };
     let mut config = Config::new(HardwareAddress::Ethernet(EthernetAddress(mac_address)));

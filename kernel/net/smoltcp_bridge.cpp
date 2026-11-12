@@ -1,4 +1,4 @@
-#include <kernel/drivers/e1000.h>
+#include <kernel/drivers/net/device.h>
 #include <kernel/drivers/pit.h>
 #include <kernel/net/smoltcp_bridge.h>
 #include <kernel/scheduler.h>
@@ -20,12 +20,12 @@ int32_t osfos_net_tcp_echo(const char *host, uint16_t port,
                            uint8_t *output, size_t output_capacity,
                            uint32_t timeout_ms);
 
-int32_t os_net_e1000_receive(uint8_t *buffer, size_t capacity) {
-  return Kernel::Drivers::E1000::receive(buffer, capacity);
+int32_t os_net_device_receive(uint8_t *buffer, size_t capacity) {
+  return Kernel::Drivers::Net::receive(buffer, capacity);
 }
 
-bool os_net_e1000_send(const uint8_t *buffer, size_t length) {
-  return Kernel::Drivers::E1000::send(buffer, length);
+bool os_net_device_send(const uint8_t *buffer, size_t length) {
+  return Kernel::Drivers::Net::send(buffer, length);
 }
 
 uint64_t os_net_clock_ms() {
