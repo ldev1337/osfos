@@ -8,8 +8,6 @@
 #include <kernel/memory/heap.h>
 #include <kernel/scheduler.h>
 
-#include <utility>
-
 namespace Kernel::Apps::Cube3D {
 
 using namespace Kernel::Graphics::K3D;
@@ -79,6 +77,17 @@ void run() {
       "3D Software Renderer Active. Frustum & Backface Culling Enabled";
   Kernel::UICommon::StatusBar status_bar(10, canvas_h + 50, sw - 20, 28,
                                          status_msg);
+  Kernel::UICommon::WidgetGroup panel_widgets;
+  panel_widgets.add(btn_auto);
+  panel_widgets.add(btn_reset);
+  panel_widgets.add(btn_quit);
+  panel_widgets.add(lbl_rotx);
+  panel_widgets.add(slider_rotx);
+  panel_widgets.add(lbl_roty);
+  panel_widgets.add(slider_roty);
+  panel_widgets.add(lbl_zoom);
+  panel_widgets.add(slider_zoom);
+  panel_widgets.add(status_bar);
 
   bool auto_rotate = true;
   bool running = true;
@@ -91,10 +100,12 @@ void run() {
   float angle_y = 0.0f;
 
   while (running && !Kernel::Scheduler::should_stop()) {
-    int mx = Kernel::AppCommon::get_mouse_x();
-    int my = Kernel::AppCommon::get_mouse_y();
-    bool m_left = Kernel::AppCommon::is_left_pressed();
+    int mx = Kernel::UICommon::mouse_x();
+    int my = Kernel::UICommon::mouse_y();
+    bool m_left = Kernel::UICommon::primary_pressed();
     bool m_released = old_left && !m_left;
+    Kernel::UICommon::Widget *active_widget =
+      panel_widgets.handle_mouse(mx, my, m_left, m_released);
 
     if (mx != prev_mx || my != prev_my) {
       panel_redraw_needed = true;
@@ -104,14 +115,14 @@ void run() {
 
     if (my >= static_cast<int>(canvas_h)) {
       // --- UI Panel Interaction ---
-      if (btn_auto.handle_mouse(mx, my, m_left, m_released)) {
+      if (active_widget == &btn_auto) {
         auto_rotate = !auto_rotate;
         strcpy(status_msg, auto_rotate ? "Auto-rotation enabled."
                                        : "Auto-rotation paused.");
         status_bar.set_status(status_msg);
         panel_redraw_needed = true;
       }
-      if (btn_reset.handle_mouse(mx, my, m_left, m_released)) {
+      if (active_widget == &btn_reset) {
         slider_rotx.set_value(45);
         slider_roty.set_value(45);
         slider_zoom.set_value(45);
@@ -119,15 +130,11 @@ void run() {
         status_bar.set_status(status_msg);
         panel_redraw_needed = true;
       }
-      if (btn_quit.handle_mouse(mx, my, m_left, m_released)) {
+      if (active_widget == &btn_quit) {
         running = false;
       }
-
-      if (slider_rotx.handle_mouse(mx, my, m_left, m_released))
-        panel_redraw_needed = true;
-      if (slider_roty.handle_mouse(mx, my, m_left, m_released))
-        panel_redraw_needed = true;
-      if (slider_zoom.handle_mouse(mx, my, m_left, m_released))
+      if (active_widget == &slider_rotx || active_widget == &slider_roty ||
+          active_widget == &slider_zoom)
         panel_redraw_needed = true;
     } else {
       // --- 3D Viewport Mouse Interaction (Drag to Orbit) ---
@@ -187,22 +194,10 @@ void run() {
     vfb.fill_rect(0, canvas_h, sw, 120, 0xFF313244);
     vfb.draw_rect(0, canvas_h, sw, 120, 0xFF45475A);
 
-    btn_auto.draw(vfb);
-    btn_reset.draw(vfb);
-    btn_quit.draw(vfb);
-
-    lbl_rotx.draw(vfb);
-    slider_rotx.draw(vfb);
-
-    lbl_roty.draw(vfb);
-    slider_roty.draw(vfb);
-
-    lbl_zoom.draw(vfb);
-    slider_zoom.draw(vfb);
-
-    status_bar.draw(vfb);
+    panel_widgets.draw(vfb, false);
 
     vfb.flush();
+    panel_redraw_needed = false;
 
     if (!auto_rotate && !panel_redraw_needed) {
       Kernel::Scheduler::thread_sleep_ms(16); // Idle frame cap (~60 FPS)

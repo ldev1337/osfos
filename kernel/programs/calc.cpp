@@ -1,6 +1,7 @@
 #include <arch/x86_64/string.h>
 #include <kernel/drivers/keyboard.h>
 #include <kernel/graphics/vfb.h>
+#include <kernel/lib/uicommon.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/scheduler.h>
 #include <stddef.h>
@@ -504,7 +505,9 @@ draw_highlighted_expression(Kernel::Graphics::VirtualFramebuffer &vfb,
   const char *p = expr;
   while (*p != '\0') {
     if (*p == ' ' || *p == '\t') {
-      cx += 8;
+      char space[2] = {*p, '\0'};
+      Kernel::UICommon::text(vfb, cx, y, space, 0xFFCDD6F4);
+      cx += Kernel::UICommon::text_width(space);
       p++;
       continue;
     }
@@ -519,40 +522,45 @@ draw_highlighted_expression(Kernel::Graphics::VirtualFramebuffer &vfb,
         p++;
       }
       word[idx] = '\0';
-      for (int i = 0; i < idx; ++i) {
-        vfb.draw_glyph(cx, y, word[i],
-                       0xFFF9E2AF); // Yellow for functions and pi
-        cx += 8;
-      }
+      Kernel::UICommon::text(vfb, cx, y, word, 0xFFF9E2AF);
+      cx += Kernel::UICommon::text_width(word);
       continue;
     }
 
     if ((*p >= '0' && *p <= '9') || *p == '.') {
+      char number[32];
+      int idx = 0;
       while ((*p >= '0' && *p <= '9') || *p == '.') {
-        vfb.draw_glyph(cx, y, *p, 0xFFFAB387); // Peach for numbers
-        cx += 8;
+        if (idx + 1 < static_cast<int>(sizeof(number)))
+          number[idx++] = *p;
         p++;
       }
+      number[idx] = '\0';
+      Kernel::UICommon::text(vfb, cx, y, number, 0xFFFAB387);
+      cx += Kernel::UICommon::text_width(number);
       continue;
     }
 
     if (*p == '+' || *p == '-' || *p == '*' || *p == '/' || *p == '^' ||
         *p == ',') {
-      vfb.draw_glyph(cx, y, *p, 0xFF89B4FA); // Blue for operators
-      cx += 8;
+      char token[2] = {*p, '\0'};
+      Kernel::UICommon::text(vfb, cx, y, token, 0xFF89B4FA);
+      cx += Kernel::UICommon::text_width(token);
       p++;
       continue;
     }
 
     if (*p == '(' || *p == ')') {
-      vfb.draw_glyph(cx, y, *p, 0xFF94E2D5); // Teal for parentheses
-      cx += 8;
+      char token[2] = {*p, '\0'};
+      Kernel::UICommon::text(vfb, cx, y, token, 0xFF94E2D5);
+      cx += Kernel::UICommon::text_width(token);
       p++;
       continue;
     }
 
-    vfb.draw_glyph(cx, y, *p, 0xFFCDD6F4);
-    cx += 8;
+    char token[2] = {*p, '\0'};
+    Kernel::UICommon::text(vfb, cx, y, token, 0xFFCDD6F4);
+    cx += Kernel::UICommon::text_width(token);
     p++;
   }
 }
@@ -659,13 +667,13 @@ void run() {
     if (strlen(expression) > 0) {
       draw_highlighted_expression(vfb, 32, 42, expression);
     } else {
-      text(vfb, 32, 42, display, error ? 0xFFF38BA8 : 0xFFCDD6F4);
+      Kernel::UICommon::text(vfb, 32, 42, display, error ? 0xFFF38BA8 : 0xFFCDD6F4);
     }
 
     // Minimalist help guide
-    text(vfb, 20, 100, "Functions: sin, cos, tan, sqrt, root, log10, logn, pi",
+    Kernel::UICommon::text(vfb, 20, 100, "Functions: sin, cos, tan, sqrt, root, log10, logn, pi",
          0xFF6C7086);
-    text(vfb, 20, 118, "Exponents: ^-1, ^-2 | Enter: = | `: Clear | ESC: Quit",
+    Kernel::UICommon::text(vfb, 20, 118, "Exponents: ^-1, ^-2 | Enter: = | `: Clear | ESC: Quit",
          0xFF6C7086);
 
     vfb.flush();

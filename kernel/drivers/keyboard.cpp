@@ -17,10 +17,14 @@ static bool keyboard_focus_allows_input() {
 
 bool Keyboard::rx_buffer_empty() {
   SpinlockGuard guard(keyboard_lock);
+  const uint64_t thread_id = Kernel::Scheduler::current_thread_id();
+  if (rx_buffer_owner != 0 && rx_buffer_owner != thread_id)
+    rx_buffer.clear();
   return rx_buffer.empty();
 }
 
 Keyboard::RingBuffer Keyboard::rx_buffer = {{0}, 0, 0};
+uint64_t Keyboard::rx_buffer_owner = 0;
 
 bool Keyboard::shift_pressed = false;
 bool Keyboard::right_shift_pressed = false;
@@ -157,6 +161,9 @@ bool Keyboard::available() {
   if (!keyboard_focus_allows_input())
     return false;
   SpinlockGuard guard(keyboard_lock);
+  const uint64_t thread_id = Kernel::Scheduler::current_thread_id();
+  if (rx_buffer_owner != 0 && rx_buffer_owner != thread_id)
+    rx_buffer.clear();
   bool result = !rx_buffer.empty();
   return result;
 }
@@ -169,6 +176,11 @@ char Keyboard::getchar() {
     }
     if (!Kernel::Scheduler::thread_block_if(rx_buffer_empty)) {
       SpinlockGuard guard(keyboard_lock);
+      const uint64_t thread_id = Kernel::Scheduler::current_thread_id();
+      if (rx_buffer_owner != 0 && rx_buffer_owner != thread_id) {
+        rx_buffer.clear();
+        continue;
+      }
       char c = rx_buffer.pop();
       return c;
     }
@@ -176,6 +188,8 @@ char Keyboard::getchar() {
 }
 
 void Keyboard::handle_interrupt() {
+  const uint64_t input_owner =
+      Kernel::Graphics::WindowManager::keyboard_focus_thread_id();
   bool wake_waiters = false;
   {
   SpinlockGuard guard(keyboard_lock);
@@ -187,6 +201,11 @@ void Keyboard::handle_interrupt() {
   uint8_t scancode = inb(0x60);
   if (scancode == 0xFA || scancode == 0xFE) {
     return;
+  }
+
+  if (rx_buffer_owner != input_owner) {
+    rx_buffer.clear();
+    rx_buffer_owner = input_owner;
   }
 
   if (scancode == SCANCODE_PAUSE1) {

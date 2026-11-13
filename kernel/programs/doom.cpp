@@ -1,10 +1,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <kernel/drivers/keyboard.h>
-#include <kernel/drivers/pit.h>
+#include <kernel/drivers/tsc_deadline.h>
 #include <kernel/fs/laziofs.h>
 #include <kernel/graphics/lwm.h>
 #include <kernel/graphics/vfb.h>
+#include <kernel/lib/uicommon.h>
 #include <kernel/scheduler.h>
 
 #define fopen(path, mode) kernel_vfs_open(path, mode)
@@ -79,7 +80,7 @@ void DG_DrawFrame() {
 }
 void DG_SleepMs(uint32_t ms) { Kernel::Scheduler::thread_sleep_ms(ms); }
 
-uint32_t DG_GetTicksMs() { return Kernel::Drivers::PIT::get_ticks(); }
+uint32_t DG_GetTicksMs() { return Kernel::Drivers::TSCDeadline::get_ticks(); }
 
 int DG_GetKey(int *pressed, unsigned char *doomKey) {
   static const KeyMapping mappings[] = {
@@ -127,19 +128,12 @@ static void show_startup_error(bool disk_not_initialized) {
   const char *message = disk_not_initialized
                             ? "Disk is not initialized."
                             : "WAD file was not found.";
-  int32_t cursor_x = 44;
-  for (const char *character = title; *character != '\0';
-       ++character, cursor_x += 8) {
-    doom_window->draw_glyph_bg(cursor_x, 76, *character, 0xFFFFC857,
-                   0xFF17191D);
-  }
-
-  cursor_x = 44;
-  for (const char *character = message; *character != '\0';
-       ++character, cursor_x += 8) {
-    doom_window->draw_glyph_bg(cursor_x, 100, *character, 0xFFE8E8E8,
-                               0xFF17191D);
-  }
+    Kernel::UICommon::TextObject title_text(44, 76, title, 0xFFFFC857);
+    Kernel::UICommon::TextObject message_text(44, 100, message, 0xFFE8E8E8);
+    title_text.set_font_size_pixels(16.0f);
+    message_text.set_font_size_pixels(14.0f);
+    title_text.draw(*doom_window);
+    message_text.draw(*doom_window);
 
   doom_window->flush();
 }

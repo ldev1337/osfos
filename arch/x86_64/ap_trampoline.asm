@@ -8,6 +8,7 @@ global ap_trampoline_end
 global ap_trampoline_cr3
 global ap_trampoline_stack
 global ap_trampoline_entry
+global ap_trampoline_cpu_index
 
 ap_trampoline_start:
     cli
@@ -41,10 +42,21 @@ ap_long_mode:
     mov ss, ax
     mov fs, ax
     mov gs, ax
+
+    ; Enable x87/SSE/AVX state before compiler-generated C++ code may use it.
+    mov rax, cr4
+    or rax, (1 << 9) | (1 << 10) | (1 << 18)
+    mov cr4, rax
+    xor ecx, ecx
+    xgetbv
+    or eax, 7
+    xsetbv
+
     mov rsp, [abs 0x8000 + (ap_trampoline_stack - ap_trampoline_start)]
     and rsp, -16
     xor rbp, rbp
     mov rax, [abs 0x8000 + (ap_trampoline_entry - ap_trampoline_start)]
+    mov edi, [abs 0x8000 + (ap_trampoline_cpu_index - ap_trampoline_start)]
     call rax
 .halt:
     cli
@@ -68,4 +80,6 @@ ap_trampoline_stack:
     dq 0
 ap_trampoline_entry:
     dq 0
+ap_trampoline_cpu_index:
+    dd 0
 ap_trampoline_end:

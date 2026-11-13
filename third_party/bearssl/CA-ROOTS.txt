@@ -1,9 +1,13 @@
-The HTTPS client embeds these root trust anchors for a deliberately small
-initial trust store. The anchor data was generated with BearSSL v0.6's
+The HTTPS client embeds a small set of root trust anchors, including Google
+Trust Services RSA and ECDSA roots and the ISRG RSA root. The anchor data was generated with BearSSL v0.6's
 `brssl ta` command from the official self-signed root certificates:
 
 - Google Trust Services GTS Root R1
   https://pki.goog/repo/certs/gtsr1.pem
+- Google Trust Services GTS Root R3
+  https://pki.goog/repo/certs/gtsr3.pem
+- Google Trust Services GTS Root R4
+  https://pki.goog/repo/certs/gtsr4.pem
 - Internet Security Research Group ISRG Root X1
   https://letsencrypt.org/certs/isrgrootx1.pem
 

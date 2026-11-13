@@ -1,6 +1,7 @@
 #include <cstdint>
 #include <kernel/drivers/keyboard.h>
 #include <kernel/graphics/vfb.h>
+#include <kernel/lib/uicommon.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/memory/heap.h>
 #include <kernel/scheduler.h>
@@ -95,7 +96,7 @@ void draw_formatted_size(Kernel::Graphics::VirtualFramebuffer &vfb, int32_t x,
     buf[idx] = '\0';
   }
 
-  text(vfb, x, y, buf, color);
+  Kernel::UICommon::text(vfb, x, y, buf, color);
 }
 
 void draw_stat_card(Kernel::Graphics::VirtualFramebuffer &vfb, int32_t x,
@@ -105,10 +106,10 @@ void draw_stat_card(Kernel::Graphics::VirtualFramebuffer &vfb, int32_t x,
   vfb.fill_rounded_rect(x, y, w, h, 6, CARD_BG);
   vfb.draw_rounded_rect(x, y, w, h, 6, CARD_BORDER);
 
-  text(vfb, x + 12, y + 10, title, TEXT_MUTED);
+  Kernel::UICommon::text(vfb, x + 12, y + 10, title, TEXT_MUTED);
   draw_formatted_size(vfb, x + 12, y + 26, used_bytes, color);
 
-  text(vfb, x + 12, y + 42, "/", TEXT_MUTED);
+  Kernel::UICommon::text(vfb, x + 12, y + 42, "/", TEXT_MUTED);
   draw_formatted_size(vfb, x + 24, y + 42, total_bytes, TEXT_MUTED);
 
   // Dynamic Progress Bar
@@ -178,8 +179,8 @@ void run_memory_analyzer() {
     vfb.clear(BG_COLOR);
 
     // Header Title
-    text(vfb, 16, 12, "SYSTEM MEMORY ANALYTICS LIVE", TEXT_MAIN);
-    text(vfb, w - 100, 12, "[Q] QUIT", TEXT_MUTED);
+    Kernel::UICommon::text(vfb, 16, 12, "SYSTEM MEMORY ANALYTICS LIVE", TEXT_MAIN);
+    Kernel::UICommon::text(vfb, w - 100, 12, "[Q] QUIT", TEXT_MUTED);
 
     // Status Cards
     int32_t card_w = (w - 44) / 2;
@@ -193,17 +194,17 @@ void run_memory_analyzer() {
 
     // Heap Peak Memory Panel
     vfb.fill_rounded_rect(16, 116, w - 32, 40, 4, CARD_BG);
-    text(vfb, 24, 122, "HEAP PEAK:", TEXT_MUTED);
+    Kernel::UICommon::text(vfb, 24, 122, "HEAP PEAK:", TEXT_MUTED);
     draw_formatted_size(vfb, 112, 122, mem_info.heap_peak_size, COLOR_PEAK);
     if (has_verified_sample) {
-      text(vfb, 24, 140, "VERIFIED PMM:", TEXT_MUTED);
+      Kernel::UICommon::text(vfb, 24, 140, "VERIFIED PMM:", TEXT_MUTED);
       draw_formatted_size(vfb, 120, 140, verified_info.pmm_used_memory,
                           COLOR_CHECK);
-      text(vfb, 234, 140, "HEAP:", TEXT_MUTED);
+      Kernel::UICommon::text(vfb, 234, 140, "HEAP:", TEXT_MUTED);
       draw_formatted_size(vfb, 282, 140, verified_info.heap_used_size,
                           COLOR_CHECK);
     } else {
-      text(vfb, 24, 140, "PRESS [R] TO VERIFY TRUE RAM USAGE", COLOR_CHECK);
+      Kernel::UICommon::text(vfb, 24, 140, "PRESS [R] TO VERIFY TRUE RAM USAGE", COLOR_CHECK);
     }
 
     // Real-Time Analytics Graph Area
@@ -255,10 +256,10 @@ void run_memory_analyzer() {
 
     // Graph Legend
     vfb.fill_rect(gx + 12, gy + gh - 18, 10, 8, COLOR_PMM);
-    text(vfb, gx + 26, gy + gh - 18, "PMM", COLOR_PMM);
+    Kernel::UICommon::text(vfb, gx + 26, gy + gh - 18, "PMM", COLOR_PMM);
 
     vfb.fill_rect(gx + 70, gy + gh - 18, 10, 8, COLOR_HEAP);
-    text(vfb, gx + 84, gy + gh - 18, "HEAP", COLOR_HEAP);
+    Kernel::UICommon::text(vfb, gx + 84, gy + gh - 18, "HEAP", COLOR_HEAP);
 
     vfb.flush();
     sample_tick++;

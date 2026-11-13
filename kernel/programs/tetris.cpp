@@ -1,7 +1,8 @@
 #include <cstdint>
 #include <kernel/drivers/keyboard.h>
-#include <kernel/drivers/pit.h>
+#include <kernel/drivers/tsc_deadline.h>
 #include <kernel/graphics/vfb.h>
+#include <kernel/lib/uicommon.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/lib/random.h>
 #include <kernel/scheduler.h>
@@ -231,9 +232,9 @@ void render(int ox, int oy) {
   int sb_x = ox + board_w_px + 20;
   int sb_y = oy;
 
-  Kernel::AppCommon::text(vfb, sb_x, sb_y, "TETRIS", 0x00FFFF);
+  Kernel::UICommon::text(vfb, sb_x, sb_y, "TETRIS", 0x00FFFF);
   vfb.draw_line(sb_x, sb_y + 12, sb_x + 140, sb_y + 12, COLOR_BORDER);
-  Kernel::AppCommon::text(vfb, sb_x, sb_y + 22, "SCORE:", COLOR_DIM_TEXT);
+  Kernel::UICommon::text(vfb, sb_x, sb_y + 22, "SCORE:", COLOR_DIM_TEXT);
   char score_buf[32];
   int s = score;
   int idx = 0;
@@ -252,9 +253,9 @@ void render(int ox, int oy) {
     }
     score_buf[idx] = 0;
   }
-  Kernel::AppCommon::text(vfb, sb_x, sb_y + 34, score_buf, COLOR_TEXT);
+  Kernel::UICommon::text(vfb, sb_x, sb_y + 34, score_buf, COLOR_TEXT);
 
-  Kernel::AppCommon::text(vfb, sb_x, sb_y + 58, "NEXT:", COLOR_DIM_TEXT);
+  Kernel::UICommon::text(vfb, sb_x, sb_y + 58, "NEXT:", COLOR_DIM_TEXT);
   vfb.draw_rect(sb_x, sb_y + 72, 110, 80, COLOR_BORDER);
   vfb.fill_rect(sb_x + 1, sb_y + 73, 108, 78, COLOR_BOARD_BG);
 
@@ -272,12 +273,12 @@ void render(int ox, int oy) {
       }
     }
   }
-  Kernel::AppCommon::text(vfb, sb_x, sb_y + 162, "LEVEL:", COLOR_DIM_TEXT);
+  Kernel::UICommon::text(vfb, sb_x, sb_y + 162, "LEVEL:", COLOR_DIM_TEXT);
   char lvl_buf[16] = {static_cast<char>('0' + (level / 10)),
                       static_cast<char>('0' + (level % 10)), 0};
-  Kernel::AppCommon::text(vfb, sb_x, sb_y + 174, lvl_buf, COLOR_TEXT);
+  Kernel::UICommon::text(vfb, sb_x, sb_y + 174, lvl_buf, COLOR_TEXT);
 
-  Kernel::AppCommon::text(vfb, sb_x, sb_y + 200, "LINES:", COLOR_DIM_TEXT);
+  Kernel::UICommon::text(vfb, sb_x, sb_y + 200, "LINES:", COLOR_DIM_TEXT);
   char lns_buf[16];
   int l = lines;
   int li = 0;
@@ -296,21 +297,21 @@ void render(int ox, int oy) {
     }
     lns_buf[li] = 0;
   }
-  Kernel::AppCommon::text(vfb, sb_x, sb_y + 212, lns_buf, COLOR_TEXT);
+  Kernel::UICommon::text(vfb, sb_x, sb_y + 212, lns_buf, COLOR_TEXT);
 
   int ctrl_y = sb_y + 245;
-  Kernel::AppCommon::text(vfb, sb_x, ctrl_y, "CONTROLS:", 0x8888AA);
-  Kernel::AppCommon::text(vfb, sb_x, ctrl_y + 16, "LEFT/RIGHT: Move",
+  Kernel::UICommon::text(vfb, sb_x, ctrl_y, "CONTROLS:", 0x8888AA);
+  Kernel::UICommon::text(vfb, sb_x, ctrl_y + 16, "LEFT/RIGHT: Move",
                           COLOR_DIM_TEXT);
-  Kernel::AppCommon::text(vfb, sb_x, ctrl_y + 30, "UP/X: Rotate CW",
+  Kernel::UICommon::text(vfb, sb_x, ctrl_y + 30, "UP/X: Rotate CW",
                           COLOR_DIM_TEXT);
-  Kernel::AppCommon::text(vfb, sb_x, ctrl_y + 44, "Z: Rotate CCW",
+  Kernel::UICommon::text(vfb, sb_x, ctrl_y + 44, "Z: Rotate CCW",
                           COLOR_DIM_TEXT);
-  Kernel::AppCommon::text(vfb, sb_x, ctrl_y + 58, "DOWN: Soft Drop",
+  Kernel::UICommon::text(vfb, sb_x, ctrl_y + 58, "DOWN: Soft Drop",
                           COLOR_DIM_TEXT);
-  Kernel::AppCommon::text(vfb, sb_x, ctrl_y + 72, "SPACE: Hard Drop",
+  Kernel::UICommon::text(vfb, sb_x, ctrl_y + 72, "SPACE: Hard Drop",
                           COLOR_DIM_TEXT);
-  Kernel::AppCommon::text(vfb, sb_x, ctrl_y + 86, "ESC: Quit", COLOR_DIM_TEXT);
+  Kernel::UICommon::text(vfb, sb_x, ctrl_y + 86, "ESC: Quit", COLOR_DIM_TEXT);
 
   if (game_over) {
     int ov_w = 260;
@@ -319,10 +320,10 @@ void render(int ox, int oy) {
     int ov_y = oy + (board_h_px - ov_h) / 2;
     vfb.fill_rect(ov_x, ov_y, ov_w, ov_h, 0x1A1A26);
     vfb.draw_rect(ov_x, ov_y, ov_w, ov_h, 0xFF0000);
-    Kernel::AppCommon::text(vfb, ov_x + 75, ov_y + 20, "GAME OVER", 0xFF4444);
-    Kernel::AppCommon::text(vfb, ov_x + 35, ov_y + 50, "PRESS R TO RESTART",
+    Kernel::UICommon::text(vfb, ov_x + 75, ov_y + 20, "GAME OVER", 0xFF4444);
+    Kernel::UICommon::text(vfb, ov_x + 35, ov_y + 50, "PRESS R TO RESTART",
                             COLOR_TEXT);
-    Kernel::AppCommon::text(vfb, ov_x + 35, ov_y + 70, "PRESS ESC TO EXIT",
+    Kernel::UICommon::text(vfb, ov_x + 35, ov_y + 70, "PRESS ESC TO EXIT",
                             COLOR_DIM_TEXT);
   }
 
@@ -359,13 +360,13 @@ void run() {
   level = 1;
   game_over = false;
 
-  uint32_t last_drop_tick = Kernel::Drivers::PIT::get_ticks();
+  uint32_t last_drop_tick = Kernel::Drivers::TSCDeadline::get_ticks();
   uint32_t last_key_tick = 0;
 
   for (;;) {
     if (Kernel::Scheduler::should_stop())
       return;
-    uint32_t current_tick = Kernel::Drivers::PIT::get_ticks();
+    uint32_t current_tick = Kernel::Drivers::TSCDeadline::get_ticks();
 
     if (Kernel::Drivers::Keyboard::is_pressed(0x01)) {
       break;

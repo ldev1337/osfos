@@ -13,9 +13,9 @@ SECTIONS {
         *(.text .text.*)
     } :text
 
-    .rodata : ALIGN(64) {
-        *(.rodata .rodata.*)
-    } :text                      /* same R+X huge page, no 2M gap */
+    .rodata : {
+        *(.rodata*)
+    }
 
     /* Reclaimable boot code: lives in the RX page, freed after boot
        only if you split the huge page or just reuse the frames in your
@@ -28,7 +28,7 @@ SECTIONS {
         _os_init_end = .;
     } :text
 
-    .data : ALIGN(2M) {          /* the only 2M boundary: W^X split */
+    .data : ALIGN(4K) {
         *(.data .data.*)
     } :data
 

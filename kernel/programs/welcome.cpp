@@ -1,10 +1,12 @@
 #include <atomic>
 #include <cstdint>
 #include <cstddef>
+#include <arch/x86_64/string.h>
 #include <kernel/drivers/framebuffer.h>
+#include <kernel/graphics/vfb.h>
+#include <kernel/lib/uicommon.h>
 #include <kernel/drivers/keyboard.h>
-#include <kernel/drivers/pit.h>
-#include <kernel/graphics/simplefonts.h>
+#include <kernel/drivers/tsc_deadline.h>
 #include <kernel/programs/welcome.h>
 namespace Kernel::Programs {
 namespace {
@@ -13,6 +15,7 @@ constexpr uint8_t VGA_BACKGROUND = 1, VGA_TEXT = 15, VGA_INFO = 11;
 std::atomic_flag screen_lock = ATOMIC_FLAG_INIT;
 volatile uint16_t *const vga = reinterpret_cast<volatile uint16_t *>(0xB8000);
 size_t vga_x = 0, vga_y = 0;
+Kernel::Graphics::VirtualFramebuffer welcome_surface;
 static inline void outb(uint16_t port, uint8_t value) {
   __asm__ volatile("outb %0, %1" : : "a"(value), "Nd"(port));
 }
@@ -57,35 +60,32 @@ void vga_write(const char *text, uint8_t color) {
     vga_put(*text++, color);
 }
 
-void draw_glyph(uint32_t x, uint32_t y, char ch, uint32_t color,
-                uint32_t scale) {
-  const auto c = static_cast<unsigned char>(ch);
-  const auto *glyph =
-      Kernel::Graphics::Font::Basic8x8[(c >= 32 && c <= 127) ? c - 32
-                                                             : '?' - 32];
-  for (uint32_t gy = 0; gy < 8; ++gy)
-    for (uint32_t gx = 0; gx < 8; ++gx)
-      if (glyph[gy] & (1u << gx))
-        for (uint32_t sy = 0; sy < scale; ++sy)
-          for (uint32_t sx = 0; sx < scale; ++sx)
-            Kernel::Drivers::Framebuffer::put_pixel(x + gx * scale + sx,
-                                                    y + gy * scale + sy, color);
+void draw_string_fb(uint32_t x, uint32_t y, float size, const char *text,
+                   uint32_t color) {
+  if (welcome_surface.valid())
+    Kernel::UICommon::text(welcome_surface, static_cast<int32_t>(x),
+                           static_cast<int32_t>(y), text, color, size);
 }
 
-void draw_centered(const char *text, uint32_t y, uint32_t scale,
+void draw_centered(const char *text, uint32_t y, float font_size,
                    uint32_t color) {
   const uint32_t width = Kernel::Drivers::Framebuffer::width();
-  size_t length = 0;
-  while (text[length])
-    ++length;
-  const uint32_t text_width = static_cast<uint32_t>(length) * 8 * scale;
-  uint32_t x = text_width < width ? (width - text_width) / 2 : 0;
-  for (size_t i = 0; i < length; ++i, x += 8 * scale)
-    draw_glyph(x, y, text[i], color, scale);
+  const int32_t max_width = static_cast<int32_t>(width > 32 ? width - 32 : width);
+  int text_width = Kernel::UICommon::text_width(text, font_size);
+  while (font_size > 8.0f && text_width > max_width) {
+    font_size -= 1.0f;
+    text_width = Kernel::UICommon::text_width(text, font_size);
+  }
+  const auto centered = Kernel::UICommon::FlexLayout::center(
+      {0, static_cast<int32_t>(y), static_cast<int32_t>(width),
+       static_cast<int32_t>(font_size + 0.999f)},
+      text_width, static_cast<int32_t>(font_size + 0.999f));
+  draw_string_fb(static_cast<uint32_t>(centered.x > 0 ? centered.x : 0), y,
+                 font_size, text, color);
 }
 
-void draw_entry_box(const char *text) {
-  if (!Kernel::Drivers::Framebuffer::valid())
+void draw_entry_box(Kernel::UICommon::TextInput &input) {
+  if (!Kernel::Drivers::Framebuffer::valid() || !welcome_surface.valid())
     return;
   const uint32_t width = Kernel::Drivers::Framebuffer::width();
   const uint32_t height = Kernel::Drivers::Framebuffer::height();
@@ -93,19 +93,22 @@ void draw_entry_box(const char *text) {
     return;
   const uint32_t panel_w = width < 720 ? width - 32 : 688;
   const uint32_t panel_h = height < 280 ? height - 32 : 248;
-  const uint32_t panel_x = (width - panel_w) / 2;
-  const uint32_t panel_y = (height - panel_h) / 2;
+  const auto panel = Kernel::UICommon::FlexLayout::center(
+      {0, 0, static_cast<int32_t>(width), static_cast<int32_t>(height)},
+      static_cast<int32_t>(panel_w), static_cast<int32_t>(panel_h));
+  const uint32_t panel_x = static_cast<uint32_t>(panel.x);
+  const uint32_t panel_y = static_cast<uint32_t>(panel.y);
   const uint32_t box_w = panel_w > 48 ? panel_w - 48 : panel_w;
   const uint32_t box_x = panel_x + (panel_w - box_w) / 2;
   const uint32_t box_y = panel_y + panel_h / 2 + 82;
-  Kernel::Drivers::Framebuffer::fill_rect(box_x, box_y, box_w, 28, 0x07111F);
-  Kernel::Drivers::Framebuffer::fill_rect(box_x, box_y, box_w, 1, 0x31C7D5);
-  Kernel::Drivers::Framebuffer::fill_rect(box_x, box_y + 27, box_w, 1,
-                                          0x31C7D5);
-  uint32_t x = box_x + 12;
-  for (size_t i = 0; text[i] && x + 8 <= box_x + box_w - 8; ++i, x += 8)
-    draw_glyph(x, box_y + 10, text[i], 0xF1F5F8, 1);
-  draw_glyph(x, box_y + 10, '_', 0x66D9E8, 1);
+  welcome_surface.fill_rect(box_x, box_y, box_w, 28, 0x07111F);
+  welcome_surface.fill_rect(box_x, box_y, box_w, 1, 0x31C7D5);
+  welcome_surface.fill_rect(box_x, box_y + 27, box_w, 1, 0x31C7D5);
+  input.set_bounds({static_cast<int32_t>(box_x + 12),
+                    static_cast<int32_t>(box_y + 4),
+                    static_cast<int32_t>(box_w - 24), 20});
+  input.draw(welcome_surface);
+  welcome_surface.flush();
 }
 
 void vga_clear() {
@@ -122,6 +125,12 @@ void release() { screen_lock.clear(std::memory_order_release); }
 
 } // namespace
 void show() {
+  constexpr char required[] = "hello osfos";
+  char entered[sizeof(required)]{};
+  size_t length = 0;
+  Kernel::UICommon::TextInput input(0, 0, 1, 1, entered, sizeof(entered));
+  input.set_focused(true);
+  input.set_font_size_pixels(14.0f);
   acquire();
   vga_clear();
   const char *title = "Welcome to OSFOS!";
@@ -144,54 +153,52 @@ void show() {
   if (Kernel::Drivers::Framebuffer::valid()) {
     const uint32_t width = Kernel::Drivers::Framebuffer::width();
     const uint32_t height = Kernel::Drivers::Framebuffer::height();
-    Kernel::Drivers::Framebuffer::fill(0x07111F);
-    if (width >= 64 && height >= 64) {
+    if (width >= 64 && height >= 64 &&
+        welcome_surface.init(0, 0, width, height)) {
+      welcome_surface.clear(0x07111F);
       const uint32_t panel_w = width < 720 ? width - 32 : 688;
       const uint32_t panel_h = height < 280 ? height - 32 : 248;
-      const uint32_t panel_x = (width - panel_w) / 2;
-      const uint32_t panel_y = (height - panel_h) / 2;
-      Kernel::Drivers::Framebuffer::fill_rect(panel_x, panel_y, panel_w,
-                                              panel_h, 0x101F31);
-      Kernel::Drivers::Framebuffer::fill_rect(panel_x, panel_y, panel_w, 4,
-                                              0x31C7D5);
-      draw_centered(title, panel_y + panel_h / 2 - 44, 3, 0xF1F5F8);
-      draw_centered("OSFOS KERNEL STARTUP", panel_y + panel_h / 2 + 28, 1,
+      const auto panel = Kernel::UICommon::FlexLayout::center(
+          {0, 0, static_cast<int32_t>(width), static_cast<int32_t>(height)},
+          static_cast<int32_t>(panel_w), static_cast<int32_t>(panel_h));
+      const uint32_t panel_x = static_cast<uint32_t>(panel.x);
+      const uint32_t panel_y = static_cast<uint32_t>(panel.y);
+      welcome_surface.fill_rect(panel_x, panel_y, panel_w, panel_h, 0x101F31);
+      welcome_surface.fill_rect(panel_x, panel_y, panel_w, 4, 0x31C7D5);
+      draw_centered(title, panel_y + panel_h / 2 - 42, 26.0f, 0xF1F5F8);
+      draw_centered("OSFOS KERNEL STARTUP", panel_y + panel_h / 2 + 8, 14.0f,
                     0x66D9E8);
       draw_centered("Type hello osfos to continue", panel_y + panel_h / 2 + 60,
-                    1, 0xAAB9C8);
-      draw_entry_box("");
+            12.0f, 0xAAB9C8);
+      draw_entry_box(input);
+      welcome_surface.flush();
     }
   }
   release();
 
-  constexpr char required[] = "hello osfos";
-  char entered[sizeof(required)]{};
-  size_t length = 0;
   for (;;) {
     const char c = Kernel::Drivers::Keyboard::getchar();
     if (c == '\b') {
-      if (length) {
-        --length;
-        entered[length] = '\0';
+      if (input.handle_key(c)) {
+        length = strlen(entered);
         acquire();
         if (vga_x)
           --vga_x;
         vga_put(' ', VGA_TEXT);
         if (vga_x)
           --vga_x;
-        draw_entry_box(entered);
+        draw_entry_box(input);
         release();
       }
       continue;
     }
     if (c != '\n' && c != '\r') {
-      if (c < 32 || c > 126 || length + 1 >= sizeof(entered))
+      if (c < 32 || c > 126 || !input.handle_key(c))
         continue;
-      entered[length++] = c;
-      entered[length] = '\0';
+      length = strlen(entered);
       acquire();
       vga_put(c, VGA_TEXT);
-      draw_entry_box(entered);
+      draw_entry_box(input);
       release();
       continue;
     }
@@ -205,7 +212,8 @@ void show() {
     acquire();
     vga_put('\n', VGA_TEXT);
     vga_write("Please type hello osfos exactly: ", VGA_INFO);
-    draw_entry_box("");
+    input.set_text("");
+    draw_entry_box(input);
     release();
     length = 0;
     entered[0] = '\0';
@@ -217,9 +225,9 @@ void wait_seconds(uint32_t seconds) {
   if (!seconds) return;
   uint64_t flags;
   __asm__ volatile("pushfq; popq %0" : "=r"(flags));
-  const uint32_t start = Kernel::Drivers::PIT::get_ticks();
+  const uint32_t start = Kernel::Drivers::TSCDeadline::get_ticks();
   const uint32_t duration = seconds * 1000u;
-  while (static_cast<uint32_t>(Kernel::Drivers::PIT::get_ticks() - start) < duration)
+  while (static_cast<uint32_t>(Kernel::Drivers::TSCDeadline::get_ticks() - start) < duration)
     __asm__ volatile("sti; hlt" ::: "memory");
   if (!(flags & (1ull << 9))) __asm__ volatile("cli" ::: "memory");
 }

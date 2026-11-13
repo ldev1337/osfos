@@ -51,19 +51,16 @@ isr_common_stub:
     push r14
     push r15
 
-    # Preserve interrupted stack location.
+    # R12 points at the saved registers on the per-CPU IST stack.
     mov r12, rsp
 
-    # Allocate stack frame:
-    # - 512 bytes: fxsave64 storage
-    # - 256 bytes: YMM upper halves storage (16 * 16)
-    # Total = 768 bytes. No red-zone cushion needed: kernel is built with
-    # -mno-red-zone, so the compiler never uses the 128 bytes below RSP.
-    sub rsp, 768
-    and rsp, -64
-
-    # r13 points to the start of fxsave64 storage (base of our aligned block)
-    mov r13, rsp
+    # Every vector uses IST, so the hardware frame and C handler stay off the
+    # interrupted thread's stack. Keep the persistent context below its red zone.
+    mov r14, QWORD PTR [r12 + 160]
+    lea r13, [r14 - 1208]
+    and r13, -64
+    lea rdi, [r14 - 312]
+    mov QWORD PTR [rdi], r13
 
     # Save SIMD state
     fxsave64 [r13]
@@ -85,23 +82,27 @@ isr_common_stub:
     SAVE_YMM_UPPER 14, ymm14
     SAVE_YMM_UPPER 15, ymm15
 
-    # InterruptFrame begins with xstate pointer stored at [r12 - 8]
-    mov QWORD PTR [r12 - 8], r13
-    lea rdi, [r12 - 8]
+    # Copy the normalized interrupt frame from the IST stack to the
+    # interrupted thread's stack. There are 15 saved GPRs, vector/error, and
+    # the five-word hardware return frame.
+    lea rsi, [r12]
+    lea rdi, [r14 - 304]
+    mov rcx, 22
+    rep movsq
 
-    # Align stack to 16 bytes for the call (SysV ABI requirement).
-    # With -mno-red-zone the compiler will not spill into memory below RSP,
-    # so no cushion is needed here.
-    mov rsp, r13
+    # Run C handlers on the IST stack. This avoids using a second thread's
+    # stack while scheduling and keeps red-zone writes away from saved state.
+    lea rsp, [r12 - 1024]
     and rsp, -16
+    lea rdi, [r14 - 312]
 
     call c_interrupt_handler
 
-    # Scheduler returns the selected context's frame pointer in rax.
-    mov rsp, rax
+    # Scheduler returns the selected thread's persistent context frame.
+    mov rbx, rax
 
     # Load xstate pointer
-    mov rcx, QWORD PTR [rsp]
+    mov rcx, QWORD PTR [rbx]
     fxrstor64 [rcx]
 
     RESTORE_YMM_UPPER 0, ymm0
@@ -120,6 +121,16 @@ isr_common_stub:
     RESTORE_YMM_UPPER 13, ymm13
     RESTORE_YMM_UPPER 14, ymm14
     RESTORE_YMM_UPPER 15, ymm15
+
+    # IRET must execute from IST. Copy the selected context to this CPU's
+    # entry stack, then restore its GPRs and let IRET switch back to its RSP.
+    lea rdi, [r12 - 2048]
+    and rdi, -16
+    mov rbp, rdi
+    mov rsi, rbx
+    mov rcx, 23
+    rep movsq
+    mov rsp, rbp
 
     # Skip xstate pointer.
     add rsp, 8

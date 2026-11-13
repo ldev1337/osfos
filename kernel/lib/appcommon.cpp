@@ -1,11 +1,25 @@
 #include <arch/x86_64/string.h>
 #include <kernel/drivers/keyboard.h>
 #include <kernel/drivers/mouse.h>
-#include <kernel/drivers/pit.h>
 #include <kernel/graphics/lwm.h>
+#include <kernel/graphics/open_font.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/memory/heap.h>
 #include <kernel/scheduler.h>
+
+namespace {
+
+Kernel::Graphics::TrueTypeFont &app_text_font() {
+  static Kernel::Graphics::TrueTypeFont font;
+  static bool initialized = false;
+  if (!initialized) {
+    initialized = Kernel::Graphics::OpenFont::load_preferred(font, "GeistMono.ttf",
+                                                            "Geist.ttf");
+  }
+  return font;
+}
+
+} // namespace
 
 namespace Kernel::AppCommon {
 
@@ -18,17 +32,50 @@ namespace Kernel::AppCommon {
 }
 
 void text(Kernel::Graphics::VirtualFramebuffer &vfb, int32_t x, int32_t y,
-          const char *s, uint32_t color) {
-  while (*s) {
-    vfb.draw_glyph(x, y, *s++, color);
-    x += 8;
+          const char *s, uint32_t color, float font_size_pixels) {
+  if (!s || !*s || !vfb.valid())
+    return;
+  if (font_size_pixels <= 0.0f)
+    return;
+  auto &font = app_text_font();
+  if (font.is_valid()) {
+    vfb.draw_string(x, y, font_size_pixels, s, color);
+    return;
   }
+  vfb.draw_string(x, y, font_size_pixels, s, color);
+}
+
+int text_width(const char *s, float font_size_pixels) {
+  if (!s || font_size_pixels <= 0.0f)
+    return 0;
+  auto &font = app_text_font();
+  if (font.is_valid())
+    return font.get_text_width(font_size_pixels, s);
+
+  int width = 0;
+  const int glyph_size = static_cast<int>(font_size_pixels + 0.5f);
+  const int advance = glyph_size > 0 ? glyph_size : 1;
+  while (*s++)
+    width += advance;
+  return width;
 }
 
 void number(Kernel::Graphics::VirtualFramebuffer &vfb, int32_t x, int32_t y,
             int32_t n, uint32_t color) {
-  vfb.draw_glyph(x, y, static_cast<char>('0' + (n / 10) % 10), color);
-  vfb.draw_glyph(x + 8, y, static_cast<char>('0' + n % 10), color);
+  char digits[16];
+  const int value = (n < 0) ? -n : n;
+  int len = 0;
+  int v = value;
+  do {
+    digits[len++] = static_cast<char>('0' + (v % 10));
+    v /= 10;
+  } while (v > 0);
+  if (n < 0 && len < sizeof(digits))
+    digits[len++] = '-';
+  for (int i = 0; i < len; ++i) {
+    const char ch = digits[len - 1 - i];
+    vfb.draw_glyph(x + i * 8, y, ch, color);
+  }
 }
 
 void delay(uint32_t speed) {

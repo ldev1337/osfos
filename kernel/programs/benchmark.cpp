@@ -4,19 +4,21 @@
 #include <kernel/drivers/keyboard.h>
 #include <kernel/drivers/mouse.h>
 #include <kernel/drivers/pci.h>
-#include <kernel/drivers/pit.h>
+#include <kernel/drivers/tsc_deadline.h>
 #include <kernel/crypto/password.h>
 #include <kernel/debug/debug.h>
 #include <kernel/graphics/vfb.h>
+#include <kernel/lib/uicommon.h>
 #include <kernel/fs/laziofs.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/lib/math.h>
 #include <kernel/memory/heap.h>
+#include <kernel/net/smoltcp_bridge.h>
 #include <kernel/scheduler.h>
 
 namespace Kernel::Apps {
 namespace {
-using Kernel::AppCommon::text;
+using Kernel::UICommon::text;
 using Kernel::Graphics::VirtualFramebuffer;
 
 constexpr uint32_t BG = 0x171b22;
@@ -28,7 +30,7 @@ constexpr uint32_t GREEN = 0x9fd6a2;
 constexpr uint32_t AMBER = 0xe8bd75;
 constexpr uint32_t RED = 0xe27d72;
 constexpr uint32_t RUN_MS = 1000;
-constexpr size_t TEST_COUNT = 29;
+constexpr size_t TEST_COUNT = 31;
 
 struct Result {
   uint64_t rate = 0;
@@ -165,15 +167,15 @@ void workflow_worker(void *argument) {
 }
 
 uint32_t elapsed_since(uint32_t start) {
-  const uint32_t elapsed = Kernel::Drivers::PIT::get_ticks() - start;
+  const uint32_t elapsed = Kernel::Drivers::TSCDeadline::get_ticks() - start;
   return elapsed ? elapsed : 1;
 }
 
 Result measure_driver(void (*probe)()) {
   Result result{};
-  const uint32_t start = Kernel::Drivers::PIT::get_ticks();
+  const uint32_t start = Kernel::Drivers::TSCDeadline::get_ticks();
   uint64_t probes = 0;
-  while (Kernel::Drivers::PIT::get_ticks() - start < RUN_MS &&
+  while (Kernel::Drivers::TSCDeadline::get_ticks() - start < RUN_MS &&
          !Kernel::Scheduler::should_stop()) {
     probe();
     ++probes;
@@ -206,10 +208,10 @@ Result measure_vfs() {
   uint8_t buffer[64];
   const uint32_t bytes_to_read =
       read_file && file.size < sizeof(buffer) ? file.size : sizeof(buffer);
-  const uint32_t start = Kernel::Drivers::PIT::get_ticks();
+  const uint32_t start = Kernel::Drivers::TSCDeadline::get_ticks();
   uint64_t operations = 0;
   bool valid = true;
-  while (Kernel::Drivers::PIT::get_ticks() - start < RUN_MS &&
+  while (Kernel::Drivers::TSCDeadline::get_ticks() - start < RUN_MS &&
          !Kernel::Scheduler::should_stop()) {
     Kernel::FS::VFSFile current{};
     if (!Kernel::FS::VFS::find_file(file.name, &current)) {
@@ -236,9 +238,9 @@ Result measure_vfs() {
 
 Result measure_graphics(VirtualFramebuffer &vfb) {
   Result result{};
-  const uint32_t start = Kernel::Drivers::PIT::get_ticks();
+  const uint32_t start = Kernel::Drivers::TSCDeadline::get_ticks();
   uint64_t batches = 0;
-  while (Kernel::Drivers::PIT::get_ticks() - start < RUN_MS &&
+  while (Kernel::Drivers::TSCDeadline::get_ticks() - start < RUN_MS &&
          !Kernel::Scheduler::should_stop()) {
     draw_probe(vfb, static_cast<uint32_t>(batches));
     vfb.flush();
@@ -261,8 +263,8 @@ Result measure_context() {
     return result;
   }
 
-  const uint32_t start = Kernel::Drivers::PIT::get_ticks();
-  while (Kernel::Drivers::PIT::get_ticks() - start < RUN_MS &&
+  const uint32_t start = Kernel::Drivers::TSCDeadline::get_ticks();
+  while (Kernel::Drivers::TSCDeadline::get_ticks() - start < RUN_MS &&
          !Kernel::Scheduler::should_stop())
     Kernel::Scheduler::thread_yield();
   result.elapsed_ms = elapsed_since(start);
@@ -298,8 +300,8 @@ Result measure_workflow() {
     return result;
   }
 
-  const uint32_t start = Kernel::Drivers::PIT::get_ticks();
-  while (Kernel::Drivers::PIT::get_ticks() - start < RUN_MS &&
+  const uint32_t start = Kernel::Drivers::TSCDeadline::get_ticks();
+  while (Kernel::Drivers::TSCDeadline::get_ticks() - start < RUN_MS &&
          !Kernel::Scheduler::should_stop())
     Kernel::Scheduler::thread_yield();
   result.elapsed_ms = elapsed_since(start);
@@ -318,10 +320,10 @@ Result measure_workflow() {
 Result measure_heap() {
   Result result{};
   auto &heap = Kernel::Memory::g_kheap;
-  const uint32_t start = Kernel::Drivers::PIT::get_ticks();
+  const uint32_t start = Kernel::Drivers::TSCDeadline::get_ticks();
   uint64_t batches = 0;
   bool valid = true;
-  while (Kernel::Drivers::PIT::get_ticks() - start < RUN_MS &&
+  while (Kernel::Drivers::TSCDeadline::get_ticks() - start < RUN_MS &&
          !Kernel::Scheduler::should_stop()) {
     void *blocks[32]{};
     for (size_t i = 0; i < 32; ++i) {
@@ -358,10 +360,10 @@ Result measure_heap() {
 
 Result measure_math() {
   Result result{};
-  const uint32_t start = Kernel::Drivers::PIT::get_ticks();
+  const uint32_t start = Kernel::Drivers::TSCDeadline::get_ticks();
   uint64_t iterations = 0;
   volatile uint64_t checksum = 0;
-  while (Kernel::Drivers::PIT::get_ticks() - start < RUN_MS &&
+  while (Kernel::Drivers::TSCDeadline::get_ticks() - start < RUN_MS &&
          !Kernel::Scheduler::should_stop()) {
     const uint64_t value = 1000000 + (iterations & 0xffff);
     checksum += Kernel::Lib::Math::isqrt_u64(value);
@@ -380,9 +382,9 @@ Result measure_math() {
 
 Result measure_software_interrupt() {
   Result result{};
-  const uint32_t start = Kernel::Drivers::PIT::get_ticks();
+  const uint32_t start = Kernel::Drivers::TSCDeadline::get_ticks();
   uint64_t entries = 0;
-  while (Kernel::Drivers::PIT::get_ticks() - start < RUN_MS &&
+  while (Kernel::Drivers::TSCDeadline::get_ticks() - start < RUN_MS &&
          !Kernel::Scheduler::should_stop()) {
     __asm__ volatile("int $0x30" ::: "memory");
     ++entries;
@@ -393,21 +395,51 @@ Result measure_software_interrupt() {
   return result;
 }
 
-// PIT::tick is updated by the timer IRQ handler; this measures delivered ticks.
+// TSCDeadline::tick is updated by the timer IRQ handler; this measures delivered ticks.
 Result measure_timer_interrupts() {
   Result result{};
-  const uint32_t start = Kernel::Drivers::PIT::get_ticks();
+  const uint32_t start = Kernel::Drivers::TSCDeadline::get_ticks();
   const uint32_t start_interrupts =
-      Kernel::Drivers::PIT::get_interrupt_count();
-  while (Kernel::Drivers::PIT::get_ticks() - start < RUN_MS &&
+      Kernel::Drivers::TSCDeadline::get_interrupt_count();
+  while (Kernel::Drivers::TSCDeadline::get_ticks() - start < RUN_MS &&
          !Kernel::Scheduler::should_stop())
     Kernel::Scheduler::thread_yield();
   result.elapsed_ms = elapsed_since(start);
   result.rate = static_cast<uint64_t>(
-                    Kernel::Drivers::PIT::get_interrupt_count() -
+                    Kernel::Drivers::TSCDeadline::get_interrupt_count() -
                     start_interrupts) *
                 1000 / result.elapsed_ms;
   result.complete = true;
+  return result;
+}
+
+Result measure_smoltcp_poll() {
+  Result result{};
+  const uint32_t start = Kernel::Drivers::TSCDeadline::get_ticks();
+  uint64_t polls = 0;
+  while (Kernel::Drivers::TSCDeadline::get_ticks() - start < RUN_MS &&
+         !Kernel::Scheduler::should_stop()) {
+    if (Kernel::Net::poll() < 0)
+      break;
+    ++polls;
+  }
+  result.elapsed_ms = elapsed_since(start);
+  result.rate = polls * 1000 / result.elapsed_ms;
+  result.complete = polls != 0;
+  return result;
+}
+
+// fetch() uses BearSSL for HTTPS and the smoltcp TCP transport. It is a
+// single end-to-end operation, so report its measured duration as one fetch.
+Result measure_bearssl_https() {
+  Result result{};
+  char response[256];
+  const uint32_t start = Kernel::Drivers::TSCDeadline::get_ticks();
+  const int fetched = Kernel::Net::fetch("https://example.com/", response,
+                                        sizeof(response));
+  result.elapsed_ms = elapsed_since(start);
+  result.rate = fetched >= 0 ? 1000 / result.elapsed_ms : 0;
+  result.complete = fetched >= 0;
   return result;
 }
 
@@ -415,7 +447,7 @@ Result measure_timer_interrupts() {
 // Each case runs for the same wall-clock interval as the original suite.
 Result measure_extended(VirtualFramebuffer &vfb, size_t test_id) {
   Result result{};
-  const uint32_t start = Kernel::Drivers::PIT::get_ticks();
+  const uint32_t start = Kernel::Drivers::TSCDeadline::get_ticks();
   uint64_t operations = 0;
   volatile uint64_t checksum = 0;
   bool valid = true;
@@ -423,7 +455,7 @@ Result measure_extended(VirtualFramebuffer &vfb, size_t test_id) {
   for (size_t i = 0; i < 256; ++i)
     pixels[i] = static_cast<uint32_t>(i * 2654435761u);
   auto &heap = Kernel::Memory::g_kheap;
-  while (Kernel::Drivers::PIT::get_ticks() - start < RUN_MS &&
+  while (Kernel::Drivers::TSCDeadline::get_ticks() - start < RUN_MS &&
          !Kernel::Scheduler::should_stop() && valid) {
     switch (test_id) {
     case 8: // sequential memory read
@@ -527,10 +559,10 @@ void render(VirtualFramebuffer &vfb, size_t app_count) {
   const int32_t width = static_cast<int32_t>(vfb.width());
   const int32_t height = static_cast<int32_t>(vfb.height());
   vfb.clear(BG);
-  text(vfb, 18, 12, "SYSTEM BENCHMARK", FG);
-  text(vfb, 18, 28, "OSFOS / LIVE KERNEL MEASUREMENTS", MUTED);
+  Kernel::UICommon::text(vfb, 18, 12, "SYSTEM BENCHMARK", FG);
+  Kernel::UICommon::text(vfb, 18, 28, "OSFOS / LIVE KERNEL MEASUREMENTS", MUTED);
   vfb.fill_rect(18, 44, width - 36, 1, PANEL);
-  text(vfb, 18, 54, running ? "RUNNING  |  29 TESTS" : "29 TESTS  |  CLICK ROW OR SPACE FOR ALL", running ? AMBER : CYAN);
+  Kernel::UICommon::text(vfb, 18, 54, running ? "RUNNING  |  31 TESTS" : "31 TESTS  |  CLICK ROW OR SPACE FOR ALL", running ? AMBER : CYAN);
   const char *names[TEST_COUNT] = {
       "01 KEYBOARD DRIVER", "02 MOUSE DRIVER", "03 PCI CONFIG READ",
       "04 FRAMEBUFFER DRAW + FLUSH", "05 SCHEDULER HANDOFFS",
@@ -542,11 +574,12 @@ void render(VirtualFramebuffer &vfb, size_t app_count) {
       "19 OPAQUE BLIT", "20 TRANSPARENT BLIT", "21 ALPHA BLIT",
       "22 TRIANGLE FILL", "23 ROUNDED RECTANGLES", "24 ARC / SECTOR RASTER",
       "25 PASSWORD HASH", "26 FIXED-POINT MATH", "27 VFS READ / LOOKUP",
-      "28 SOFTWARE INTERRUPT / SCHEDULER TRAP", "29 PIT TIMER IRQ RATE"};
+      "28 SOFTWARE INTERRUPT / SCHEDULER TRAP", "29 PIT TIMER IRQ RATE",
+      "30 SMOLTCP POLL", "31 BEARSSL HTTPS FETCH"};
   const uint32_t colors[TEST_COUNT] = {
       CYAN, GREEN, AMBER, GREEN, AMBER, RED, AMBER, CYAN, GREEN, GREEN, AMBER,
       AMBER, GREEN, CYAN, CYAN, GREEN, RED, FG, CYAN, CYAN, RED, AMBER, AMBER,
-      GREEN, RED, CYAN, AMBER, RED, AMBER};
+      GREEN, RED, CYAN, AMBER, RED, AMBER, CYAN, GREEN};
   uint64_t max_rate = 1;
   for (size_t i = 0; i < TEST_COUNT; ++i) {
     max_rate = std::max(results[i].rate, max_rate);
@@ -555,22 +588,22 @@ void render(VirtualFramebuffer &vfb, size_t app_count) {
   const int32_t bar_width = width - 36;
   for (size_t i = 0; i < TEST_COUNT; ++i) {
     const int32_t row_y = 78 + static_cast<int32_t>(i) * 12;
-    text(vfb, 18, row_y, names[i], FG);
+    Kernel::UICommon::text(vfb, 18, row_y, names[i], FG);
     if (results[i].complete) {
       char value[32];
       format_rate(results[i].rate, value, sizeof(value));
       const int32_t value_x = width - 72;
-      text(vfb, value_x, row_y, value, colors[i]);
+      Kernel::UICommon::text(vfb, value_x, row_y, value, colors[i]);
       const uint64_t scaled = results[i].rate * static_cast<uint64_t>(bar_width) /
                               max_rate;
       vfb.fill_rect(18, row_y + 9,
                     static_cast<int32_t>(scaled ? scaled : 1), 2, colors[i]);
     } else {
-      text(vfb, width - 42, row_y, "--", MUTED);
+      Kernel::UICommon::text(vfb, width - 42, row_y, "--", MUTED);
     }
   }
   (void)app_count;
-  text(vfb, 18, height - 22, "SPACE RUN ALL  R RESET  Q / ESC CLOSE", CYAN);
+  Kernel::UICommon::text(vfb, 18, height - 22, "SPACE RUN ALL  R RESET  Q / ESC CLOSE", CYAN);
   vfb.flush();
 }
 
@@ -604,6 +637,10 @@ void run_selected(VirtualFramebuffer &vfb, size_t test_id, size_t app_count) {
     results[test_id] = measure_software_interrupt();
   else if (test_id == 28)
     results[test_id] = measure_timer_interrupts();
+  else if (test_id == 29)
+    results[test_id] = measure_smoltcp_poll();
+  else if (test_id == 30)
+    results[test_id] = measure_bearssl_https();
   else
     results[test_id] = measure_extended(vfb, test_id);
   const char *names[TEST_COUNT] = {
@@ -612,7 +649,7 @@ void run_selected(VirtualFramebuffer &vfb, size_t test_id, size_t app_count) {
       "fb_fill", "fb_rect", "fb_line", "fb_circle", "fb_alpha", "fb_glyph",
       "fb_blit", "fb_blit_key", "fb_blit_alpha", "fb_triangle", "fb_round",
       "fb_sector", "password_hash", "math_fixed", "vfs", "soft_interrupt",
-      "pit_timer_irq"};
+      "pit_timer_irq", "smoltcp_poll", "bearssl_https"};
   log_result(names[test_id], results[test_id]);
   running = false;
 }
@@ -647,13 +684,13 @@ void run_benchmark() {
       }
     }
 
-    const bool mouse_down = Kernel::AppCommon::is_left_pressed();
+    const bool mouse_down = Kernel::UICommon::primary_pressed();
     if (mouse_down && !previous_mouse) {
       int window_x = 0, window_y = 0;
       if (Kernel::AppCommon::get_window_position(
               Kernel::Scheduler::current_thread_id(), &window_x, &window_y)) {
-        const int32_t mouse_x = Kernel::AppCommon::get_mouse_x() - window_x;
-        const int32_t mouse_y = Kernel::AppCommon::get_mouse_y() - window_y;
+        const int32_t mouse_x = Kernel::UICommon::mouse_x() - window_x;
+        const int32_t mouse_y = Kernel::UICommon::mouse_y() - window_y;
         if (mouse_x >= 18 && mouse_x < static_cast<int32_t>(vfb.width()) - 18 &&
             mouse_y >= 78 && mouse_y < 78 + static_cast<int32_t>(TEST_COUNT) * 12)
           selected = (mouse_y - 78) / 12;

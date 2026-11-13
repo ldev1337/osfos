@@ -1,10 +1,10 @@
 #include <kernel/bootinfo.h>
 #include <kernel/cpu.h>
-#include <kernel/drivers/e1000.h>
+#include <kernel/drivers/net/device.h>
 #include <kernel/drivers/framebuffer.h>
 #include <kernel/drivers/keyboard.h>
 #include <kernel/drivers/mouse.h>
-#include <kernel/drivers/pit.h>
+#include <kernel/drivers/tsc_deadline.h>
 #include <kernel/fs/laziofs.h>
 #include <kernel/graphics/lwm.h>
 #include <kernel/lib/random.h>
@@ -40,6 +40,7 @@ extern "C" void main(unsigned long multiboot_info_addr) {
 
   Kernel::Debug::log("initializing CPU tables and checking required ISA");
   cpu_init();
+  Kernel::Scheduler::scheduler_cpu_early_init();
   Kernel::Debug::log("cpu tables and feature check ready");
 
   Kernel::SMP::CpuInfo firmware_cpus[Kernel::SMP::MAX_CPUS]{};
@@ -103,26 +104,32 @@ extern "C" void main(unsigned long multiboot_info_addr) {
   Kernel::Debug::log("scheduler ready");
   Kernel::Drivers::Keyboard::init();
   Kernel::Drivers::Mouse::init();
-  Kernel::Drivers::PIT::init(250);
-  Kernel::Debug::log("keyboard, mouse, PIT initialized");
+  if (!Kernel::Drivers::TSCDeadline::init(250)) {
+    Kernel::Debug::log("FATAL: TSC-deadline timer initialization failed");
+    for (;;)
+      __asm__ volatile("cli; hlt");
+  }
+  Kernel::Debug::log("keyboard, mouse, TSC-deadline timer initialized");
   __asm__ volatile("sti");
   Kernel::FS::VFS::init();
   Kernel::Debug::log(Kernel::FS::VFS::is_mounted()
                          ? "VFS disk mounted"
                          : "VFS disk unavailable or unformatted");
-  Kernel::Debug::log("boot benchmark starting before welcome screen");
-  Kernel::Apps::benchmark_startup_run();
+  //ONLY UNCOMMENT FOR OPTIMIZING
+  //Kernel::Debug::log("boot benchmark starting before welcome screen");
+  //Kernel::Apps::benchmark_startup_run();
 
-  if (Kernel::Drivers::E1000::detect_and_init()) {
-    Kernel::Debug::log("E1000 detected and initialized");
-    if (!Kernel::Drivers::E1000::start()) {
-      Kernel::Debug::log("ERROR: E1000 RX worker failed");
-      kernel_printf("E1000 RX worker initialization failed.\n");
+  if (Kernel::Drivers::Net::detect_and_init()) {
+    const auto *net_device = Kernel::Drivers::Net::active_device();
+    Kernel::Debug::log(net_device ? net_device->name : "network device ready");
+    if (!Kernel::Drivers::Net::start()) {
+      Kernel::Debug::log("ERROR: network device start failed");
+      kernel_printf("Network device initialization failed.\n");
     }
     uint8_t mac[6];
-    Kernel::Drivers::E1000::get_mac_address(mac);
+    Kernel::Drivers::Net::get_mac_address(mac);
     uint64_t seed =
-        Kernel::Lib::Random::rdtsc() ^ Kernel::Drivers::PIT::get_ticks();
+        Kernel::Lib::Random::rdtsc() ^ Kernel::Drivers::TSCDeadline::get_ticks();
     for (unsigned char iii : mac) {
       seed = (seed << 8) ^ iii;
     }
@@ -133,7 +140,7 @@ extern "C" void main(unsigned long multiboot_info_addr) {
       Kernel::Debug::log("network stack ready");
     }
   } else {
-    Kernel::Debug::log("E1000 not detected; network disabled");
+    Kernel::Debug::log("no supported network device detected");
   }
 
   if (have_cpu_topology) {
@@ -149,7 +156,6 @@ extern "C" void main(unsigned long multiboot_info_addr) {
   }
   Kernel::Debug::log("boot initialization complete; showing welcome screen");
   Kernel::Programs::show();
-  Kernel::Programs::wait_seconds(1);
 
   if (window_manager_ready) {
     const int compositor_id = Kernel::Scheduler::thread_create(
