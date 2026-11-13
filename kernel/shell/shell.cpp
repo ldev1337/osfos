@@ -9,6 +9,7 @@
 #include <kernel/debug/debug.h>
 #include <kernel/fs/laziofs.h>
 #include <kernel/graphics/lwm.h>
+#include <kernel/graphics/open_font.h>
 #include <kernel/graphics/vfb.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/memory/heap.h>
@@ -54,6 +55,9 @@ void shitty_excel_run();
 void shitpad_run();
 void memory_analyzer_run();
 void task_manager_run();
+void font_viewer_run();
+void file_viewer_run();
+void nano_run(const char *path);
 namespace Pain {
 void run();
 }
@@ -69,7 +73,6 @@ namespace Kernel::Shell {
 
 // --- Constants & Theme ---
 constexpr uint32_t BG = 0x1B1111;
-constexpr uint32_t PANEL = 0x2E1E1E;
 constexpr uint32_t FG = 0xF4D6CD;
 constexpr uint32_t MUTED = 0xC8ADA6;
 constexpr uint32_t BLUE = 0xFAB489;
@@ -77,10 +80,8 @@ constexpr uint32_t GREEN = 0xA1E3A6;
 constexpr uint32_t RED = 0xA88BF3;
 constexpr uint32_t YELLOW = 0xAFE2F9;
 
-constexpr uint32_t CELL_W = 8;
-constexpr uint32_t CELL_H = 8;
-constexpr uint32_t LINE_H = 10;
-constexpr uint32_t TOP_H = 12;
+constexpr uint32_t CELL_W = 7;
+constexpr uint32_t LINE_H = 12;
 constexpr size_t MAX_COLS = 256;
 constexpr size_t MAX_ROWS = 64;
 constexpr size_t INPUT_SIZE = 256;
@@ -160,24 +161,38 @@ void run_c3d() { Kernel::Apps::Cube3D::run(); }
 void run_pain() { Kernel::Apps::Pain::run(); }
 void run_calc() { Kernel::Apps::Calc::run(); }
 
+namespace {
+
+Kernel::Graphics::TrueTypeFont &shell_mono_font() {
+  static Kernel::Graphics::TrueTypeFont font;
+  static bool initialized = false;
+  if (!initialized) {
+    initialized = Kernel::Graphics::OpenFont::load_preferred(font, "GeistMono.ttf",
+                                                            "Geist.ttf");
+  }
+  return font;
+}
+
+} // namespace
+
 inline void draw_glyph(uint32_t x, uint32_t y, char ch, uint32_t fg) {
+  auto &font = shell_mono_font();
+  if (font.is_valid()) {
+    char text[2] = {ch, '\0'};
+    term_vfb.draw_string(static_cast<int32_t>(x), static_cast<int32_t>(y),
+                         14.0f, text, fg);
+    return;
+  }
   term_vfb.draw_glyph_bg(static_cast<int32_t>(x), static_cast<int32_t>(y), ch,
                          fg, BG);
 }
 
-void draw_text_at(uint32_t x, uint32_t y, const char *s, uint32_t color) {
-  while (*s && x + CELL_W <= screen_w) {
-    draw_glyph(x, y, *s++, color);
-    x += CELL_W;
-  }
-}
-
-void draw_header() {
-  term_vfb.fill_rect(0, 0, static_cast<int32_t>(screen_w),
-                     static_cast<int32_t>(TOP_H), PANEL);
-  term_vfb.fill_rect(0, static_cast<int32_t>(TOP_H - 2),
-                     static_cast<int32_t>(screen_w), 1, BLUE);
-  draw_text_at(12, 2, "OSFOS / KERNEL SHELL", GREEN);
+void draw_cell(size_t cell_col, size_t cell_row, char ch, uint32_t color) {
+  const uint32_t x = static_cast<uint32_t>(cell_col) * CELL_W;
+  const uint32_t y = static_cast<uint32_t>(cell_row) * LINE_H;
+  term_vfb.fill_rect(x, y, CELL_W, LINE_H, BG);
+  if (ch != ' ')
+    draw_glyph(x, y, ch, color);
 }
 
 void clear_row(size_t r) {
@@ -190,7 +205,7 @@ void clear_row(size_t r) {
 void redraw_terminal() {
   for (size_t r = 0; r < rows; ++r)
     for (size_t c = 0; c < cols; ++c)
-      draw_glyph(c * CELL_W, TOP_H + r * LINE_H, screen[r][c], screen_fg[r][c]);
+      draw_cell(c, r, screen[r][c], screen_fg[r][c]);
 }
 
 void scroll_one_line() {
@@ -252,7 +267,7 @@ static void put_char_unlocked(char ch, uint32_t color) {
     for (int i = 0; i < 4; ++i) {
       screen[row][col] = ' ';
       screen_fg[row][col] = color;
-      draw_glyph(col * CELL_W, TOP_H + row * LINE_H, ' ', color);
+      draw_cell(col, row, ' ', color);
       if (++col >= cols)
         next_line();
     }
@@ -268,7 +283,7 @@ static void put_char_unlocked(char ch, uint32_t color) {
       return;
     screen[row][col] = ' ';
     screen_fg[row][col] = FG;
-    draw_glyph(col * CELL_W, TOP_H + row * LINE_H, ' ', FG);
+    draw_cell(col, row, ' ', FG);
     return;
   }
   if (static_cast<unsigned char>(ch) < 32 ||
@@ -276,7 +291,7 @@ static void put_char_unlocked(char ch, uint32_t color) {
     return;
   screen[row][col] = ch;
   screen_fg[row][col] = color;
-  draw_glyph(col * CELL_W, TOP_H + row * LINE_H, ch, color);
+  draw_cell(col, row, ch, color);
   if (++col >= cols)
     next_line();
 }
@@ -290,6 +305,37 @@ void print(const char *s, uint32_t color) {
   SpinlockGuard guard(shell_output_lock);
   while (*s)
     put_char_unlocked(*s++, color);
+  term_vfb.flush();
+}
+
+size_t terminal_columns() { return cols; }
+size_t terminal_rows() { return rows; }
+
+void terminal_clear() {
+  SpinlockGuard guard(shell_output_lock);
+  for (size_t screen_row = 0; screen_row < rows; ++screen_row)
+    clear_row(screen_row);
+  row = col = 0;
+  term_vfb.clear(BG);
+}
+
+void terminal_write_at(size_t column, size_t screen_row, const char *text,
+                       uint32_t color) {
+  if (!text || screen_row >= rows || column >= cols)
+    return;
+  SpinlockGuard guard(shell_output_lock);
+  while (*text && column < cols) {
+    const unsigned char value = static_cast<unsigned char>(*text++);
+    screen[screen_row][column] =
+        value >= 32 && value <= 126 ? static_cast<char>(value) : ' ';
+    screen_fg[screen_row][column] = color;
+    ++column;
+  }
+}
+
+void terminal_present() {
+  SpinlockGuard guard(shell_output_lock);
+  redraw_terminal();
   term_vfb.flush();
 }
 
@@ -403,6 +449,10 @@ void help() {
   kernel_printf("  c3d                   Run the 3D showoff\n");
   kernel_printf("  calc                  Use your brain, a pen and a paper "
                 "before this\n");
+  kernel_printf("  fontview              Open the TrueType font viewer/check app\n");
+  kernel_printf("  fileview              Browse and read files on the disk\n");
+  kernel_printf("  nano [file]           Edit a text file in this terminal\n");
+  kernel_printf("  fontcheck             List available TTF files and font status\n");
   kernel_printf("  exit                  Explain how to leave the shell\n");
 }
 
@@ -630,6 +680,46 @@ void run_tcp_echo(char *args) {
   kernel_printf("received %d bytes: %s\n", length, response);
 }
 
+void run_fontcheck(const char *) {
+  kernel_printf("TrueType font availability:\n");
+
+  Kernel::Graphics::TrueTypeFont embedded_font;
+  const bool embedded_ok = Kernel::Graphics::OpenFont::load_embedded(embedded_font);
+  kernel_printf("  embedded fallback: %s\n", embedded_ok ? "READY" : "MISSING");
+
+  if (!Kernel::FS::VFS::is_mounted()) {
+    kernel_printf("  VFS font directory: unavailable\n");
+    return;
+  }
+
+  bool found_any = false;
+  for (uint32_t i = 0; i < Kernel::FS::VFS_MAX_INODES; ++i) {
+    Kernel::FS::VFSFile file{};
+    if (!Kernel::FS::VFS::get_file_at(i, &file) || !file.exists || file.is_directory)
+      continue;
+
+    const size_t name_len = strlen(file.name);
+    if (name_len < 4)
+      continue;
+
+    const char *ext = file.name + name_len - 4;
+    const bool is_ttf = (ext[0] == '.' &&
+                         ((ext[1] == 't' || ext[1] == 'T') &&
+                          (ext[2] == 't' || ext[2] == 'T') &&
+                          (ext[3] == 'f' || ext[3] == 'F')));
+    if (!is_ttf)
+      continue;
+
+    found_any = true;
+    Kernel::Graphics::TrueTypeFont font;
+    const bool ok = Kernel::Graphics::OpenFont::load(font, file.name);
+    kernel_printf("  %s: %s\n", file.name, ok ? "loadable" : "unavailable");
+  }
+
+  if (!found_any)
+    kernel_printf("  no .ttf files found in the mounted VFS\n");
+}
+
 void run_fetch(const char *url) {
   if (!*url) {
     kernel_printf("usage: fetch <http[s]://host[:port]/path>\n");
@@ -714,7 +804,6 @@ void run_fetch(const char *url) {
 
 void reset_terminal_view() {
   term_vfb.clear(BG);
-  draw_header();
   redraw_terminal();
   term_vfb.flush();
 }
@@ -739,7 +828,6 @@ void execute(char *line) {
   else if (equals(line, "clear")) {
     SpinlockGuard guard(shell_output_lock);
     term_vfb.clear(BG);
-    draw_header();
     for (size_t r = 0; r < rows; ++r)
       clear_row(r);
     row = col = 0;
@@ -756,7 +844,17 @@ void execute(char *line) {
     run_tcp_echo(args);
   else if (equals(line, "fetch"))
     run_fetch(args);
-  else if (equals(line, "about"))
+  else if (equals(line, "fontcheck"))
+    run_fontcheck(args);
+  else if (equals(line, "fontview")) {
+    if (!launch_app("Font Viewer", Apps::font_viewer_run))
+      kernel_printf("Could not launch Font Viewer.\n");
+  } else if (equals(line, "fileview")) {
+    if (!launch_app("File Viewer", Apps::file_viewer_run))
+      kernel_printf("Could not launch File Viewer.\n");
+  } else if (equals(line, "nano")) {
+    Apps::nano_run(*args ? args : nullptr);
+  } else if (equals(line, "about"))
     kernel_printf("OSFOS kernel shell\nFramebuffer text UI with Virtual "
                   "Framebuffer abstraction.\n");
   else if (equals(line, "smpinfo"))
@@ -843,17 +941,17 @@ void initialize_screen() {
   if (has_window) {
     if (!term_vfb.open_window(screen_w > 48 ? screen_w - 48 : screen_w,
                               screen_h > 100 ? screen_h - 100 : screen_h,
-                              CELL_W, TOP_H + LINE_H))
+                              CELL_W, LINE_H))
       return;
     screen_w = term_vfb.width();
     screen_h = term_vfb.height();
   } else if (!term_vfb.init(0, 0, screen_w, screen_h))
     return;
-  if (screen_w == 0 || screen_h <= TOP_H)
+  if (screen_w == 0 || screen_h < LINE_H)
     return;
 
   cols = screen_w / CELL_W;
-  rows = (screen_h - TOP_H) / LINE_H;
+  rows = screen_h / LINE_H;
   if (cols > MAX_COLS)
     cols = MAX_COLS;
   if (rows > MAX_ROWS)
@@ -870,6 +968,9 @@ void initialize_screen() {
                   Kernel::Debug::g_kernel_debug_info.reclaimed_init_bytes,
                   Kernel::Debug::g_kernel_debug_info.reclaimed_init_pages);
   }
+
+  size_t size = 0;
+  kernel_printf("Embedded font size: %u bytes\n", size);
 
   kernel_printf("OSFOS kernel shell ready.\nType 'help' to get started.\n");
 }
@@ -890,10 +991,10 @@ void run() {
 
   for (;;) {
     uint32_t cx = col * CELL_W;
-    uint32_t cy = TOP_H + row * LINE_H;
-    for (uint32_t x = 0; x < CELL_W; ++x)
-      if (cx + x < screen_w && cy + CELL_H - 1 < screen_h)
-        term_vfb.put_pixel(cx + x, cy + CELL_H - 1, BLUE);
+    uint32_t cy = row * LINE_H;
+    const uint32_t cursor_y = cy + LINE_H - 1;
+    if (cx + CELL_W <= screen_w)
+      term_vfb.fill_rect(cx, cursor_y, CELL_W, 1, BLUE);
     term_vfb.flush();
 
     if (!term_vfb.has_focus()) {
@@ -902,7 +1003,7 @@ void run() {
     }
     char ch = Kernel::Drivers::Keyboard::getchar();
     if (col < cols && row < rows)
-      draw_glyph(cx, cy, screen[row][col], screen_fg[row][col]);
+      draw_cell(col, row, screen[row][col], screen_fg[row][col]);
     term_vfb.flush();
 
     if (ch == '\r' || ch == '\n') {

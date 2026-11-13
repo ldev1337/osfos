@@ -1,6 +1,7 @@
 #include <kernel/drivers/net/rtl8168.h>
 
 #include <kernel/cpu.h>
+#include <kernel/memory/dma.h>
 #include <kernel/drivers/net/realtek.h>
 
 namespace Kernel::Drivers::Net::RTL8168 {
@@ -48,10 +49,6 @@ uint32_t read32(uint32_t offset) { return inl(io_base + offset); }
 void write8(uint32_t offset, uint8_t value) { outb(io_base + offset, value); }
 void write16(uint32_t offset, uint16_t value) { outw(io_base + offset, value); }
 void write32(uint32_t offset, uint32_t value) { outl(io_base + offset, value); }
-bool dma32(const void *ptr, size_t length) {
-  const uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
-  return length && address <= UINT32_MAX && length - 1 <= UINT32_MAX - address;
-}
 } // namespace
 
 bool detect_and_init() {
@@ -64,9 +61,14 @@ bool detect_and_init() {
     return false;
   io_base = device.io_base;
 
-  if (!dma32(rx_desc, sizeof(rx_desc)) || !dma32(tx_desc, sizeof(tx_desc)) ||
-      !dma32(rx_buffers, sizeof(rx_buffers)) ||
-      !dma32(tx_buffers, sizeof(tx_buffers)))
+  if (!Kernel::Memory::dma32_range(reinterpret_cast<uintptr_t>(rx_desc),
+                                   sizeof(rx_desc)) ||
+      !Kernel::Memory::dma32_range(reinterpret_cast<uintptr_t>(tx_desc),
+                                   sizeof(tx_desc)) ||
+      !Kernel::Memory::dma32_range(reinterpret_cast<uintptr_t>(rx_buffers),
+                                   sizeof(rx_buffers)) ||
+      !Kernel::Memory::dma32_range(reinterpret_cast<uintptr_t>(tx_buffers),
+                                   sizeof(tx_buffers)))
     return false;
 
   write8(REG_CHIP_CMD, 0x10);

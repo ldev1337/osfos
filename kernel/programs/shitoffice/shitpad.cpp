@@ -3,6 +3,7 @@
 #include <kernel/drivers/keyboard.h>
 #include <kernel/fs/laziofs.h>
 #include <kernel/graphics/vfb.h>
+#include <kernel/lib/uicommon.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/memory/heap.h>
 #include <kernel/scheduler.h>
@@ -33,7 +34,7 @@ constexpr int PAD_X = 6;
 constexpr int PAD_Y = 2;
 constexpr int ROW_H = 14;
 constexpr int CHAR_W = 8;
-constexpr int CURSOR_H = 12;
+constexpr int CURSOR_H = 14;
 
 struct TextBuffer {
   char lines[MAX_LINES][MAX_LINE_LEN];
@@ -250,50 +251,95 @@ void place_cursor(TextBuffer &buf, size_t view_r, int mx, int my, int w, int h,
   if (target_r >= buf.line_count)
     target_r = buf.line_count - 1;
 
-  int col = 0;
-  if (mx >= text_x)
-    col = (mx - text_x) / CHAR_W;
-  if (col < 0)
-    col = 0;
   size_t len = strlen(buf.lines[target_r]);
-  if (static_cast<size_t>(col) > len)
-    col = static_cast<int>(len);
+  const int click_x = mx - text_x;
+  size_t col = 0;
+  int previous_width = 0;
+  char prefix[MAX_LINE_LEN]{};
+  for (size_t i = 0; i < len; ++i) {
+    prefix[i] = buf.lines[target_r][i];
+    prefix[i + 1] = '\0';
+    const int next_width = text_width(prefix);
+    if (click_x < previous_width + (next_width - previous_width) / 2)
+      break;
+    col = i + 1;
+    previous_width = next_width;
+  }
 
   cursor_r = target_r;
-  cursor_c = static_cast<size_t>(col);
+  cursor_c = col;
   (void)w;
+}
+
+int cursor_pixel_offset(const char *line, size_t column) {
+  char prefix[MAX_LINE_LEN]{};
+  size_t length = strlen(line);
+  if (column > length)
+    column = length;
+  for (size_t i = 0; i < column; ++i)
+    prefix[i] = line[i];
+  prefix[column] = '\0';
+  return text_width(prefix);
 }
 
 bool prompt_path(Kernel::Graphics::VirtualFramebuffer &vfb, const char *prompt,
                  char *buf, size_t max_len) {
-  size_t len = strlen(buf);
-  const int box_w = 360;
-  const int box_h = 64;
-  const int box_x = 30;
-  const int box_y = 70;
+  using namespace Kernel::UICommon;
+  const Rect dialog = FlexLayout::center(
+      {0, 0, static_cast<int32_t>(vfb.width()),
+       static_cast<int32_t>(vfb.height())},
+      420, 116);
+  Label title(dialog.x + 14, dialog.y + 10, prompt, FG);
+  title.set_font_size_pixels(15.0f);
+  TextInput input(dialog.x + 14, dialog.y + 38, dialog.width - 28, 24, buf,
+                  max_len);
+  input.set_focused(true);
+  input.set_font_size_pixels(13.0f);
+  Button cancel(dialog.x + dialog.width - 176, dialog.y + 72, 76, 28,
+                "Cancel");
+  Button confirm(dialog.x + dialog.width - 90, dialog.y + 72, 76, 28,
+                 "Open", COLOR_BLUE, COLOR_BG, 0);
+  cancel.set_font_size_pixels(12.0f);
+  confirm.set_font_size_pixels(12.0f);
+  WidgetGroup controls;
+  controls.add(input);
+  controls.add(cancel);
+  controls.add(confirm);
+  bool previous_left = Kernel::UICommon::primary_pressed();
 
-  while (true) {
-    vfb.fill_rect(box_x, box_y, box_w, box_h, BG);
-    vfb.draw_rect(box_x, box_y, box_w, box_h, RULE);
-    text(vfb, box_x + 10, box_y + 10, prompt, FG);
-    text(vfb, box_x + 10, box_y + 34, buf, FG);
-    // Flat caret after filename.
-    int cx = box_x + 10 + static_cast<int>(len) * CHAR_W;
-    vfb.fill_rect(cx, box_y + 34, 1, CURSOR_H, CURSOR);
-    text(vfb, box_x + 10, box_y + 50, "Enter=OK  Esc=Cancel", MUTED);
+  for (;;) {
+    vfb.fill_rounded_rect(dialog.x, dialog.y, dialog.width, dialog.height, 6,
+                          BG);
+    vfb.draw_rounded_rect(dialog.x, dialog.y, dialog.width, dialog.height, 6,
+                          RULE);
+    title.draw(vfb);
+    controls.draw(vfb, false);
+    Kernel::UICommon::text(vfb, dialog.x + 14, dialog.y + 104,
+                           "Enter confirms   Esc cancels", MUTED, 11.0f);
     vfb.flush();
 
-    char c = Keyboard::getchar();
-    if (c == '\n' || c == '\r')
-      return true;
-    if (c == 27)
+    const int mx = Kernel::UICommon::mouse_x();
+    const int my = Kernel::UICommon::mouse_y();
+    const bool left = Kernel::UICommon::primary_pressed();
+    const bool released = previous_left && !left;
+    previous_left = left;
+    Widget *clicked = controls.handle_mouse(mx, my, left, released);
+    if (clicked == &cancel)
       return false;
-    if (c == '\b' && len > 0) {
-      buf[--len] = '\0';
-    } else if (c >= 32 && c < 127 && len + 1 < max_len) {
-      buf[len++] = c;
-      buf[len] = '\0';
+    if (clicked == &confirm)
+      return true;
+
+    if (!Kernel::Drivers::Keyboard::available()) {
+      Kernel::Scheduler::thread_sleep_ms(8);
+      continue;
     }
+    const char key = Keyboard::getchar();
+    if (key == '\n' || key == '\r')
+      return true;
+    if (key == 27)
+      return false;
+    if (controls.handle_key(key))
+      input.mark_dirty();
   }
 }
 
@@ -301,9 +347,9 @@ void draw_menu_item(Kernel::Graphics::VirtualFramebuffer &vfb, int x, int y,
                     int w, int h, const char *label, bool active) {
   if (active) {
     vfb.fill_rect(x, y, w, h, INVERT_BG);
-    text(vfb, x + 6, y + (h / 2) - 4, label, INVERT_FG);
+    Kernel::UICommon::text(vfb, x + 6, y + (h / 2) - 4, label, INVERT_FG);
   } else {
-    text(vfb, x + 6, y + (h / 2) - 4, label, FG);
+    Kernel::UICommon::text(vfb, x + 6, y + (h / 2) - 4, label, FG);
   }
 }
 
@@ -478,7 +524,7 @@ void run_shitty_pad() {
       draw_menu_item(vfb, btn_x[i], btn_y, btn_w[i], btn_h, btn_label[i],
                      active);
       if (i < 3)
-        text(vfb, btn_x[i] + btn_w[i] - 2, btn_y + (btn_h / 2) - 4, "|",
+        Kernel::UICommon::text(vfb, btn_x[i] + btn_w[i] - 2, btn_y + (btn_h / 2) - 4, "|",
              MUTED);
     }
     vfb.draw_line(0, MENU_H, w, MENU_H, RULE);
@@ -499,11 +545,11 @@ void run_shitty_pad() {
       int ln_x = GUTTER_W - 4 - static_cast<int>(ln_len) * CHAR_W;
       if (ln_x < 2)
         ln_x = 2;
-      text(vfb, ln_x, ry, ln, MUTED);
+      Kernel::UICommon::text(vfb, ln_x, ry, ln, MUTED);
 
-      text(vfb, text_x, ry, text_buf->lines[cur_r], FG);
+      Kernel::UICommon::text(vfb, text_x, ry, text_buf->lines[cur_r], FG);
       if (cur_r == cursor_r) {
-        int cx = text_x + static_cast<int>(cursor_c) * CHAR_W;
+        int cx = text_x + cursor_pixel_offset(text_buf->lines[cur_r], cursor_c);
         vfb.fill_rect(cx, ry, 1, CURSOR_H, CURSOR);
       }
     }
@@ -526,14 +572,14 @@ void run_shitty_pad() {
     append(pos_str, sizeof(pos_str), p, "  Lines ");
     append(pos_str, sizeof(pos_str), p, n_str);
 
-    text(vfb, 6, ty + 5, pos_str, FG);
-    text(vfb, 210, ty + 5, status_msg, MUTED);
+    Kernel::UICommon::text(vfb, 6, ty + 5, pos_str, FG);
+    Kernel::UICommon::text(vfb, 210, ty + 5, status_msg, MUTED);
 
     size_t path_len = strlen(current_filepath);
     int path_x = w - 6 - static_cast<int>(path_len) * CHAR_W;
     if (path_x < 320)
       path_x = 320;
-    text(vfb, path_x, ty + 5, current_filepath, MUTED);
+    Kernel::UICommon::text(vfb, path_x, ty + 5, current_filepath, MUTED);
 
     vfb.flush();
     delay(10);

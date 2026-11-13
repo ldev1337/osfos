@@ -1,5 +1,6 @@
 #include <kernel/drivers/keyboard.h>
 #include <kernel/graphics/vfb.h>
+#include <kernel/lib/uicommon.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/scheduler.h>
 #include <stdint.h>
@@ -19,7 +20,7 @@ constexpr uint32_t RED = 0xA88BF3;
 constexpr uint32_t YELLOW = 0xAFE2F9;
 
 constexpr int COLS = 10;
-constexpr int BRICK_ROWS = 7;
+constexpr int BRICK_ROWS = 5;
 constexpr int MAX_BRICKS = COLS * BRICK_ROWS;
 constexpr int BALL_R = 7;
 constexpr int PADDLE_H = 10;
@@ -89,13 +90,10 @@ static void reset_game() {
 }
 
 static void text_center(int y, const char *s, uint32_t color) {
-  int n = 0;
-  for (const char *p = s; *p; ++p)
-    ++n;
-  int x = (sw - n * 8) / 2;
-  if (x < 0)
-    x = 0;
-  Kernel::AppCommon::text(vfb, x, y, s, color);
+  const int width = Kernel::UICommon::text_width(s);
+  const auto bounds = Kernel::UICommon::FlexLayout::center(
+      {0, y, sw, 14}, width, 14);
+  Kernel::UICommon::text(vfb, bounds.x, bounds.y, s, color);
 }
 
 static bool overlaps_rect(int cx, int cy, int radius, int rx, int ry, int rw,
@@ -164,11 +162,11 @@ static void draw() {
 
   vfb.fill_rect(0, 0, sw, 34, PANEL);
   vfb.fill_rect(0, 33, sw, 2, BLUE);
-  Kernel::AppCommon::text(vfb, 12, 12, "OSFOS / BREAKOUT", GREEN);
-  Kernel::AppCommon::text(vfb, sw / 2 - 56, 12, "SCORE", MUTED);
-  Kernel::AppCommon::number(vfb, sw / 2 + 4, 12, score, FG);
-  Kernel::AppCommon::text(vfb, sw - 100, 12, "LIVES", MUTED);
-  Kernel::AppCommon::number(vfb, sw - 48, 12, lives, FG);
+  Kernel::UICommon::text(vfb, 12, 12, "OSFOS / BREAKOUT", GREEN);
+  Kernel::UICommon::text(vfb, sw / 2 - 56, 12, "SCORE", MUTED);
+  Kernel::UICommon::number(vfb, sw / 2 + 4, 12, score, FG);
+  Kernel::UICommon::text(vfb, sw - 100, 12, "LIVES", MUTED);
+  Kernel::UICommon::number(vfb, sw - 48, 12, lives, FG);
 
   for (int r = 0; r < BRICK_ROWS; ++r) {
     const uint32_t colors[] = {RED, YELLOW, GREEN, BLUE, RED};
@@ -207,7 +205,7 @@ static void draw() {
     text_center(sh / 2 + 2, "SPACE: RESTART", FG);
     text_center(sh / 2 + 22, "Q: QUIT", MUTED);
   } else {
-    Kernel::AppCommon::text(vfb, 12, sh - 20,
+    Kernel::UICommon::text(vfb, 12, sh - 20,
                             "A/D or J/L: MOVE    SPACE: LAUNCH    Q: QUIT",
                             MUTED);
   }

@@ -1,6 +1,8 @@
 #pragma once
 #include <cstdint>
 
+#include <kernel/graphics/truetype.h>
+
 namespace Kernel::Graphics {
 
 class VirtualFramebuffer {
@@ -57,6 +59,8 @@ public:
 
   void draw_glyph(int32_t gx, int32_t gy, char ch, uint32_t color);
   void draw_glyph_bg(int32_t gx, int32_t gy, char ch, uint32_t fg, uint32_t bg);
+  int draw_string(int32_t x, int32_t y, float font_size_pixels, const char *text,
+                  uint32_t color);
 
   void blit(const uint32_t *src, uint32_t bx, uint32_t by, uint32_t bw,
             uint32_t bh, uint32_t src_pitch);
@@ -85,6 +89,8 @@ public:
                          int32_t radius, uint32_t color);
   void fill_rounded_rect(int32_t rx, int32_t ry, int32_t w, int32_t h,
                          int32_t radius, uint32_t color);
+
+  int draw_text_truetype(int32_t x, int32_t y, float font_size_pixels, TrueTypeFont &font, const char *text, uint32_t color);
 };
 
 } // namespace Kernel::Graphics

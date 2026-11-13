@@ -3,6 +3,7 @@
 #include <kernel/drivers/ata.h>
 #include <kernel/drivers/pci.h>
 #include <kernel/init.h>
+#include <kernel/memory/dma.h>
 #include <kernel/scheduler.h>
 #include <kernel/shell/shell.h>
 
@@ -177,12 +178,6 @@ static bool __init drive_supports_enabled_dma() {
   return dma_supported && dma_mode_enabled;
 }
 
-static bool fits_dma32(const void *ptr, size_t length) {
-  const uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
-  return length != 0 && address <= UINT32_MAX &&
-         length - 1 <= UINT32_MAX - address;
-}
-
 static size_t __init prepare_prdt(size_t length) {
   const uintptr_t buffer_address = reinterpret_cast<uintptr_t>(dma_buffer);
   size_t entries = 0;
@@ -236,8 +231,11 @@ static bool transfer_dma(uint32_t lba, uint8_t sector_count, void *buffer,
                          bool read) {
   const size_t byte_count = static_cast<size_t>(sector_count) * ATA_SECTOR_SIZE;
   if (!dma_enabled || lba > 0x0FFFFFFF || byte_count > sizeof(dma_buffer) ||
-      !fits_dma32(dma_buffer, byte_count) ||
-      !fits_dma32(dma_prdt, sizeof(dma_prdt)) || prepare_prdt(byte_count) == 0)
+      !Kernel::Memory::dma32_range(reinterpret_cast<uintptr_t>(dma_buffer),
+                   byte_count) ||
+      !Kernel::Memory::dma32_range(reinterpret_cast<uintptr_t>(dma_prdt),
+                   sizeof(dma_prdt)) ||
+      prepare_prdt(byte_count) == 0)
     return false;
 
   if (!read) {
@@ -310,8 +308,11 @@ void __init ATADriver::init() {
   outb(ATA_DEVICE, 0xA0);
   dma_enabled = find_bus_master_ide(&bus_master_base) &&
                 drive_supports_enabled_dma() &&
-                fits_dma32(dma_buffer, sizeof(dma_buffer)) &&
-                fits_dma32(dma_prdt, sizeof(dma_prdt));
+                Kernel::Memory::dma32_range(
+                  reinterpret_cast<uintptr_t>(dma_buffer),
+                  sizeof(dma_buffer)) &&
+                Kernel::Memory::dma32_range(
+                  reinterpret_cast<uintptr_t>(dma_prdt), sizeof(dma_prdt));
 
   if (dma_enabled) {
     outb(bus_master_base + ATA_BM_COMMAND, ATA_BM_INTERRUPT_ENABLE);

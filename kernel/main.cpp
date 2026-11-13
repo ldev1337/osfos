@@ -110,8 +110,9 @@ extern "C" void main(unsigned long multiboot_info_addr) {
   Kernel::Debug::log(Kernel::FS::VFS::is_mounted()
                          ? "VFS disk mounted"
                          : "VFS disk unavailable or unformatted");
-  Kernel::Debug::log("boot benchmark starting before welcome screen");
-  Kernel::Apps::benchmark_startup_run();
+  //ONLY UNCOMMENT FOR OPTIMIZING
+  //Kernel::Debug::log("boot benchmark starting before welcome screen");
+  //Kernel::Apps::benchmark_startup_run();
 
   if (Kernel::Drivers::Net::detect_and_init()) {
     const auto *net_device = Kernel::Drivers::Net::active_device();
@@ -150,7 +151,6 @@ extern "C" void main(unsigned long multiboot_info_addr) {
   }
   Kernel::Debug::log("boot initialization complete; showing welcome screen");
   Kernel::Programs::show();
-  Kernel::Programs::wait_seconds(1);
 
   if (window_manager_ready) {
     const int compositor_id = Kernel::Scheduler::thread_create(

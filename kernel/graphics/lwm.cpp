@@ -2,32 +2,48 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <utility>
 
 #include <arch/x86_64/spinlock.h>
 #include <arch/x86_64/string.h>
 #include <kernel/drivers/framebuffer.h>
 #include <kernel/drivers/mouse.h>
 #include <kernel/graphics/simplefonts.h>
+#include <kernel/graphics/open_font.h>
 #include <kernel/graphics/vfb.h>
 #include <kernel/graphics/lwm.h>
 #include <kernel/memory/heap.h>
 #include <kernel/scheduler.h>
 #include <kernel/init.h>
+#include <kernel/shell/shell.h>
 
 namespace Kernel::Graphics::WindowManager {
 namespace {
 
 constexpr size_t MAX_WINDOWS = 32;
-constexpr int TITLE_H = 26;
-constexpr uint32_t DESKTOP = 0x18232E;
-constexpr uint32_t TITLE_ACTIVE = 0x42698A;
-constexpr uint32_t TITLE_INACTIVE = 0x344657;
-constexpr uint32_t BORDER = 0x8AAFC4;
-constexpr uint32_t TEXT = 0xF1F5F8;
+constexpr int TITLE_H = 34;
+constexpr int WINDOW_RADIUS = 12;
+constexpr int SHADOW_EXTENT = 14;
+constexpr uint32_t DESKTOP = 0xFF101216;
+constexpr uint32_t TITLE_ACTIVE = 0xFF28232F;
+constexpr uint32_t TITLE_INACTIVE = 0xFF211E29;
+constexpr uint32_t TEXT = 0xFFF0F5F4;
+constexpr uint32_t ACCENT = 0xFF68D4C1;
 constexpr int STRIP_ROWS_MAX = 16;
 constexpr int RETRY = -2;
 constexpr int MAX_WAIT_TRIES = 16;
+
+Kernel::Graphics::TrueTypeFont g_title_font;
+bool g_title_font_loaded = false;
+
+void init_title_font() {
+  if (g_title_font_loaded)
+    return;
+  g_title_font_loaded =
+      Kernel::Graphics::OpenFont::load_embedded_named(g_title_font,
+                                                      "GeistMono.ttf") ||
+      Kernel::Graphics::OpenFont::load_preferred(g_title_font, "GeistMono.ttf",
+                                                 "Geist.ttf");
+}
 
 // One presented surface per window (the app's VFB is the only other copy).
 // `rendering`: compositor is reading `pixels`.  `copying`: present() is
@@ -106,10 +122,19 @@ void draw_text(VirtualFramebuffer &fb, int x, int y, const char *s,
                uint32_t color, int cl, int ct, int cr, int cb) {
   if (!s || !fb.valid())
     return;
-  for (; *s && x < cr; x += 8, ++s) {
-    if (x + 8 > cl)
-      draw_glyph(fb, x, y, *s, color, cl, ct, cr, cb);
+  if (!g_title_font_loaded || !g_title_font.is_valid()) {
+    for (int cursor_x = x; *s && cursor_x < cr; ++s, cursor_x += 8)
+      draw_glyph(fb, cursor_x, y, *s, color, cl, ct, cr, cb);
+    return;
   }
+  const int width = fb.width();
+  if (width <= 0)
+    return;
+  const int text_width = g_title_font.get_text_width(14.0f, s);
+  if (text_width <= 0)
+    return;
+  fb.draw_text_truetype(x, y, 14.0f, g_title_font, s, color);
+  (void)cl; (void)ct; (void)cr; (void)cb;
 }
 
 void free_window_pixels(Window &w) {
@@ -127,9 +152,10 @@ uint32_t *allocate_surface(uint32_t width, uint32_t height) {
 bool window_busy(const Window &w) { return w.rendering || w.copying; }
 
 bool window_intersects(const Window &w, int l, int t, int r, int b) {
-  return !(w.x - 1 >= r || w.x + static_cast<int>(w.width) + 1 <= l ||
-           w.y - 1 >= b ||
-           w.y + TITLE_H + static_cast<int>(w.height) + 1 <= t);
+  return !(w.x - SHADOW_EXTENT >= r ||
+           w.x + static_cast<int>(w.width) + SHADOW_EXTENT <= l ||
+           w.y - SHADOW_EXTENT >= b ||
+           w.y + TITLE_H + static_cast<int>(w.height) + SHADOW_EXTENT <= t);
 }
 
 void mark_dirty(int left, int top, int right, int bottom) {
@@ -150,8 +176,9 @@ void mark_dirty(int left, int top, int right, int bottom) {
 }
 
 void mark_window_dirty(const Window &w) {
-  mark_dirty(w.x - 1, w.y - 1, w.x + static_cast<int>(w.width) + 1,
-             w.y + TITLE_H + static_cast<int>(w.height) + 1);
+  mark_dirty(w.x - SHADOW_EXTENT, w.y - SHADOW_EXTENT,
+             w.x + static_cast<int>(w.width) + SHADOW_EXTENT,
+             w.y + TITLE_H + static_cast<int>(w.height) + SHADOW_EXTENT);
 }
 
 void fill_rect_clipped(VirtualFramebuffer &fb, int x, int y, int width,
@@ -163,6 +190,17 @@ void fill_rect_clipped(VirtualFramebuffer &fb, int x, int y, int width,
   const int cb = std::min(y + height, bottom);
   if (cl < cr && ct < cb)
     fb.fill_rect(cl - left, ct - top, cr - cl, cb - ct, color);
+}
+
+void fill_alpha_clipped(VirtualFramebuffer &fb, int x, int y, int width,
+                        int height, uint32_t color, uint8_t alpha, int left,
+                        int top, int right, int bottom) {
+  const int cl = std::max(x, left);
+  const int ct = std::max(y, top);
+  const int cr = std::min(x + width, right);
+  const int cb = std::min(y + height, bottom);
+  if (cl < cr && ct < cb)
+    fb.fill_rect_alpha(cl - left, ct - top, cr - cl, cb - ct, color, alpha);
 }
 
 bool clip_to_screen(int &l, int &t, int &r, int &b) {
@@ -292,7 +330,7 @@ int register_window_locked(uint64_t thread_id, const char *title, bool launcher,
       (margin + offset + static_cast<int>(width) <= static_cast<int>(screen_w))
           ? (margin + offset)
           : 0;
-  w.y = (launcher ? 42 : 48) + offset;
+  w.y = (launcher ? 24 : 32) + offset;
   if (w.y + static_cast<int>(height) + TITLE_H > static_cast<int>(screen_h))
     w.y = 30;
   w.alive = true;
@@ -315,57 +353,125 @@ void render_strip(const RenderWindow *rendered_windows, size_t rendered_count,
 
   region_fb.fill_rect(0, 0, w_w, w_h, DESKTOP);
 
-  if (top < 30) {
-    fill_rect_clipped(region_fb, 0, 0, screen_w, 30, 0x22313E, left, top, right,
-                      bottom);
-    if (left < 150)
-      draw_text(region_fb, 12, 10, "OSFOS DESKTOP", TEXT, left, top, right,
-                bottom);
-  }
-
   for (size_t i = 0; i < rendered_count; ++i) {
     const auto &w = rendered_windows[i];
-    const int outer_w = static_cast<int>(w.width) + 2;
-    const int outer_h = static_cast<int>(w.height) + TITLE_H + 2;
-    const int wl = w.x - 1, wt = w.y - 1;
-
-    if (wl + outer_w <= left || wl >= right || wt + outer_h <= top ||
-        wt >= bottom)
+    if (w.x - SHADOW_EXTENT >= right ||
+        w.x + static_cast<int>(w.width) + SHADOW_EXTENT <= left ||
+        w.y - SHADOW_EXTENT >= bottom ||
+        w.y + TITLE_H + static_cast<int>(w.height) + SHADOW_EXTENT <= top)
       continue;
 
-    const uint32_t title_color = w.focused ? TITLE_ACTIVE : TITLE_INACTIVE;
-    fill_rect_clipped(region_fb, wl, wt, outer_w, outer_h, BORDER, left, top,
-                      right, bottom);
-    fill_rect_clipped(region_fb, w.x, w.y, w.width, TITLE_H, title_color, left,
-                      top, right, bottom);
-    draw_text(region_fb, w.x + 9, w.y + 8, w.title, TEXT, left, top,
-              std::min(w.x + static_cast<int>(w.width) - 24, right), bottom);
+    const int window_h = TITLE_H + static_cast<int>(w.height) + 2;
+    fill_alpha_clipped(region_fb, w.x - 8, w.y + 2, w.width + 16,
+                       window_h + 18, 0xFF020609, 12, left, top, right, bottom);
+    fill_alpha_clipped(region_fb, w.x - 5, w.y - 2, w.width + 10,
+                       window_h + 12, 0xFF020609, 22, left, top, right, bottom);
+    fill_alpha_clipped(region_fb, w.x - 2, w.y - 3, w.width + 4,
+                       window_h + 7, 0xFF020609, 30, left, top, right, bottom);
 
-    const int btn_x = w.x + static_cast<int>(w.width) - 22;
-    const int btn_y = w.y + 4;
-    fill_rect_clipped(region_fb, btn_x, btn_y, 16, 16, 0x9E4D55, left, top,
-                      right, bottom);
-    draw_glyph(region_fb, btn_x + 4, btn_y + 4, 'X', TEXT, left, top, right,
-               bottom);
+    region_fb.fill_rounded_rect(w.x - left, w.y - top,
+                                static_cast<int>(w.width), TITLE_H + 7,
+                                WINDOW_RADIUS - 2,
+                                w.focused ? TITLE_ACTIVE : TITLE_INACTIVE);
+    region_fb.fill_rect(w.x - left, w.y + TITLE_H - 8 - top,
+                        static_cast<int>(w.width), 12,
+                        w.focused ? TITLE_ACTIVE : TITLE_INACTIVE);
+    fill_rect_clipped(region_fb, w.x, w.y + TITLE_H - 1,
+                      static_cast<int>(w.width), 1,
+                      w.focused ? 0xFF40515A : 0xFF35434A, left, top, right,
+                      bottom);
+
+    if (top < w.y + TITLE_H && bottom > w.y) {
+      char title[32];
+      copy_name(title, w.title);
+      const int available_width = static_cast<int>(w.width) - 78;
+      while (title[0] &&
+             (g_title_font_loaded && g_title_font.is_valid()
+                  ? g_title_font.get_text_width(13.0f, title)
+                  : static_cast<int>(strlen(title) * 8)) > available_width)
+        title[strlen(title) - 1] = '\0';
+      const int measured_width =
+          g_title_font_loaded && g_title_font.is_valid()
+              ? g_title_font.get_text_width(13.0f, title)
+              : static_cast<int>(strlen(title) * 8);
+      const int title_x = std::max(
+          w.x + 62,
+          w.x + (static_cast<int>(w.width) - measured_width) / 2);
+      const int title_y = w.y + 10;
+      if (g_title_font_loaded && g_title_font.is_valid()) {
+        const int local_x = title_x - left;
+        const int local_y = title_y - top;
+        region_fb.draw_text_truetype(local_x, local_y, 13.0f, g_title_font,
+                                    title, TEXT);
+      } else {
+        draw_text(region_fb, title_x, title_y, title, TEXT, left, top,
+                  std::min(w.x + static_cast<int>(w.width) - 12, right),
+                  bottom);
+      }
+    }
+
+    const int light_y = w.y + TITLE_H / 2;
+    const int light_start = w.x + 18;
+    region_fb.fill_circle(light_start - left, light_y - top, 5, 0xFFFF6B67);
+    region_fb.fill_circle(light_start + 16 - left, light_y - top, 5,
+                          0xFFFFC45C);
+    region_fb.fill_circle(light_start + 32 - left, light_y - top, 5,
+                          0xFF5FD39A);
+    region_fb.fill_circle(light_start - left, light_y - top, 2, 0xFFE44845);
+    region_fb.fill_circle(light_start + 16 - left, light_y - top, 2,
+                          0xFFE5A535);
+    region_fb.fill_circle(light_start + 32 - left, light_y - top, 2,
+                          0xFF39A96D);
 
     const int body_top = w.y + TITLE_H;
+    const int body_radius = std::min(
+      WINDOW_RADIUS - 2,
+      std::min(static_cast<int>(w.width) / 2,
+           static_cast<int>(w.height) / 2));
+    const int body_local_x = w.x - left;
+    const int body_local_y = body_top - top;
+    region_fb.fill_rounded_rect(body_local_x, body_local_y,
+                  static_cast<int>(w.width),
+                  static_cast<int>(w.height), body_radius,
+                  0xFF171B20);
+    region_fb.fill_rect(body_local_x, body_local_y,
+              static_cast<int>(w.width), body_radius, 0xFF171B20);
     if (w.pixels) {
-      // The blit covers the whole clipped body, no placeholder fill needed.
       const int cl = std::max(w.x, left);
       const int ct = std::max(body_top, top);
       const int cr = std::min(w.x + static_cast<int>(w.width), right);
       const int cb = std::min(body_top + static_cast<int>(w.height), bottom);
       if (cl < cr && ct < cb) {
-        const auto *src = w.pixels +
-                          static_cast<size_t>(ct - body_top) * w.width +
-                          (cl - w.x);
-        region_fb.blit(src, cl - left, ct - top, cr - cl, cb - ct,
-                       w.width * sizeof(uint32_t));
+        const int radius = body_radius;
+        for (int py = ct; py < cb; ++py) {
+          const int body_y = py - body_top;
+          int inset = 0;
+          if (radius > 0 && body_y >= static_cast<int>(w.height) - radius) {
+            const int dy = body_y - (static_cast<int>(w.height) - radius);
+            while (inset < radius) {
+              const int dx = radius - inset;
+              if (dx * dx + dy * dy <= radius * radius)
+                break;
+              ++inset;
+            }
+          }
+          const int row_left = std::max(cl, w.x + inset);
+          const int row_right =
+              std::min(cr, w.x + static_cast<int>(w.width) - inset);
+          if (row_left >= row_right)
+            continue;
+          const auto *src = w.pixels +
+                            static_cast<size_t>(body_y) * w.width +
+                            (row_left - w.x);
+          region_fb.blit(src, row_left - left, py - top, row_right - row_left,
+                         1, w.width * sizeof(uint32_t));
+        }
       }
     } else {
-      fill_rect_clipped(region_fb, w.x, body_top, w.width, w.height, 0x101820,
-                        left, top, right, bottom);
+      fill_rect_clipped(region_fb, w.x, body_top, w.width, body_radius,
+                        0xFF171B20, left, top, right, bottom);
     }
+
   }
 
   fill_rect_clipped(region_fb, cursor_x - 1, cursor_y - 7, 3, 15, TEXT, left,
@@ -412,8 +518,8 @@ void mouse_update() {
       bring_to_front(i);
       mark_window_dirty(w);
 
-      if (my >= w.y && my < w.y + TITLE_H &&
-          mx >= w.x + static_cast<int>(w.width) - 24) {
+        if (my >= w.y + 5 && my < w.y + TITLE_H - 5 && mx >= w.x + 7 &&
+          mx < w.x + 29) {
         const uint64_t tid = w.thread_id;
         unregister_window_index(i);
         Kernel::Scheduler::terminate_thread(tid);
@@ -438,8 +544,10 @@ void mouse_update() {
     if (new_x != prev_x || new_y != prev_y) {
       w.x = new_x;
       w.y = new_y;
-      mark_dirty(prev_x - 1, prev_y - 1, prev_x + static_cast<int>(w.width) + 1,
-                 prev_y + TITLE_H + static_cast<int>(w.height) + 1);
+        mark_dirty(prev_x - SHADOW_EXTENT, prev_y - SHADOW_EXTENT,
+             prev_x + static_cast<int>(w.width) + SHADOW_EXTENT,
+             prev_y + TITLE_H + static_cast<int>(w.height) +
+               SHADOW_EXTENT);
       mark_window_dirty(w);
     }
   }
@@ -515,6 +623,9 @@ bool __init initialize() {
   screen_h = Kernel::Drivers::Framebuffer::height();
   if (screen_w < 240 || screen_h < 160)
     return false;
+
+  // Preload the embedded title font before the compositor starts drawing.
+  init_title_font();
 
   if (strip_buf) {
     kfree(strip_buf);

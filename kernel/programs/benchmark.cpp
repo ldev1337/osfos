@@ -8,6 +8,7 @@
 #include <kernel/crypto/password.h>
 #include <kernel/debug/debug.h>
 #include <kernel/graphics/vfb.h>
+#include <kernel/lib/uicommon.h>
 #include <kernel/fs/laziofs.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/lib/math.h>
@@ -17,7 +18,7 @@
 
 namespace Kernel::Apps {
 namespace {
-using Kernel::AppCommon::text;
+using Kernel::UICommon::text;
 using Kernel::Graphics::VirtualFramebuffer;
 
 constexpr uint32_t BG = 0x171b22;
@@ -558,10 +559,10 @@ void render(VirtualFramebuffer &vfb, size_t app_count) {
   const int32_t width = static_cast<int32_t>(vfb.width());
   const int32_t height = static_cast<int32_t>(vfb.height());
   vfb.clear(BG);
-  text(vfb, 18, 12, "SYSTEM BENCHMARK", FG);
-  text(vfb, 18, 28, "OSFOS / LIVE KERNEL MEASUREMENTS", MUTED);
+  Kernel::UICommon::text(vfb, 18, 12, "SYSTEM BENCHMARK", FG);
+  Kernel::UICommon::text(vfb, 18, 28, "OSFOS / LIVE KERNEL MEASUREMENTS", MUTED);
   vfb.fill_rect(18, 44, width - 36, 1, PANEL);
-  text(vfb, 18, 54, running ? "RUNNING  |  31 TESTS" : "31 TESTS  |  CLICK ROW OR SPACE FOR ALL", running ? AMBER : CYAN);
+  Kernel::UICommon::text(vfb, 18, 54, running ? "RUNNING  |  31 TESTS" : "31 TESTS  |  CLICK ROW OR SPACE FOR ALL", running ? AMBER : CYAN);
   const char *names[TEST_COUNT] = {
       "01 KEYBOARD DRIVER", "02 MOUSE DRIVER", "03 PCI CONFIG READ",
       "04 FRAMEBUFFER DRAW + FLUSH", "05 SCHEDULER HANDOFFS",
@@ -587,22 +588,22 @@ void render(VirtualFramebuffer &vfb, size_t app_count) {
   const int32_t bar_width = width - 36;
   for (size_t i = 0; i < TEST_COUNT; ++i) {
     const int32_t row_y = 78 + static_cast<int32_t>(i) * 12;
-    text(vfb, 18, row_y, names[i], FG);
+    Kernel::UICommon::text(vfb, 18, row_y, names[i], FG);
     if (results[i].complete) {
       char value[32];
       format_rate(results[i].rate, value, sizeof(value));
       const int32_t value_x = width - 72;
-      text(vfb, value_x, row_y, value, colors[i]);
+      Kernel::UICommon::text(vfb, value_x, row_y, value, colors[i]);
       const uint64_t scaled = results[i].rate * static_cast<uint64_t>(bar_width) /
                               max_rate;
       vfb.fill_rect(18, row_y + 9,
                     static_cast<int32_t>(scaled ? scaled : 1), 2, colors[i]);
     } else {
-      text(vfb, width - 42, row_y, "--", MUTED);
+      Kernel::UICommon::text(vfb, width - 42, row_y, "--", MUTED);
     }
   }
   (void)app_count;
-  text(vfb, 18, height - 22, "SPACE RUN ALL  R RESET  Q / ESC CLOSE", CYAN);
+  Kernel::UICommon::text(vfb, 18, height - 22, "SPACE RUN ALL  R RESET  Q / ESC CLOSE", CYAN);
   vfb.flush();
 }
 
@@ -683,13 +684,13 @@ void run_benchmark() {
       }
     }
 
-    const bool mouse_down = Kernel::AppCommon::is_left_pressed();
+    const bool mouse_down = Kernel::UICommon::primary_pressed();
     if (mouse_down && !previous_mouse) {
       int window_x = 0, window_y = 0;
       if (Kernel::AppCommon::get_window_position(
               Kernel::Scheduler::current_thread_id(), &window_x, &window_y)) {
-        const int32_t mouse_x = Kernel::AppCommon::get_mouse_x() - window_x;
-        const int32_t mouse_y = Kernel::AppCommon::get_mouse_y() - window_y;
+        const int32_t mouse_x = Kernel::UICommon::mouse_x() - window_x;
+        const int32_t mouse_y = Kernel::UICommon::mouse_y() - window_y;
         if (mouse_x >= 18 && mouse_x < static_cast<int32_t>(vfb.width()) - 18 &&
             mouse_y >= 78 && mouse_y < 78 + static_cast<int32_t>(TEST_COUNT) * 12)
           selected = (mouse_y - 78) / 12;

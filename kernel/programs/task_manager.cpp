@@ -2,7 +2,9 @@
 #include <cstdint>
 #include <kernel/drivers/keyboard.h>
 #include <kernel/drivers/pit.h>
+#include <kernel/graphics/open_font.h>
 #include <kernel/graphics/vfb.h>
+#include <kernel/lib/uicommon.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/memory/heap.h>
 #include <kernel/scheduler.h>
@@ -63,6 +65,9 @@ void run_task_manager() {
   Kernel::Scheduler::ApplicationTaskInfo tasks[MAX_TASKS]{};
   size_t heap_usage[MAX_TASKS]{};
   constexpr int32_t ROW_HEIGHT = 11;
+  Kernel::Graphics::TrueTypeFont ui_font;
+  char ui_font_name[96]{};
+  const bool ui_font_loaded = Kernel::Graphics::OpenFont::load_first_available(ui_font, ui_font_name, sizeof(ui_font_name));
 
   while (!Kernel::Scheduler::should_stop()) {
     while (Kernel::Drivers::Keyboard::available()) {
@@ -78,11 +83,19 @@ void run_task_manager() {
           tasks[i].id);
 
     vfb.clear(COLOR_BACKGROUND);
-    Kernel::AppCommon::text(vfb, 12, 10, "TASK MANAGER", COLOR_TEXT);
-    Kernel::AppCommon::text(vfb, 12, 30, "PID", COLOR_MUTED);
-    Kernel::AppCommon::text(vfb, 68, 30, "NAME", COLOR_MUTED);
-    Kernel::AppCommon::text(vfb, 250, 30, "HEAP KiB", COLOR_MUTED);
-    Kernel::AppCommon::text(vfb, 390, 30, "UPTIME", COLOR_MUTED);
+    if (ui_font_loaded) {
+      Kernel::UICommon::text(vfb, 12, 12, 18.0f, ui_font, "TASK MANAGER", COLOR_TEXT);
+      Kernel::UICommon::text(vfb, 12, 34, 12.0f, ui_font, "PID", COLOR_MUTED);
+      Kernel::UICommon::text(vfb, 68, 34, 12.0f, ui_font, "NAME", COLOR_MUTED);
+      Kernel::UICommon::text(vfb, 250, 34, 12.0f, ui_font, "HEAP KiB", COLOR_MUTED);
+      Kernel::UICommon::text(vfb, 390, 34, 12.0f, ui_font, "UPTIME", COLOR_MUTED);
+    } else {
+      Kernel::UICommon::text(vfb, 12, 10, "TASK MANAGER", COLOR_TEXT);
+      Kernel::UICommon::text(vfb, 12, 30, "PID", COLOR_MUTED);
+      Kernel::UICommon::text(vfb, 68, 30, "NAME", COLOR_MUTED);
+      Kernel::UICommon::text(vfb, 250, 30, "HEAP KiB", COLOR_MUTED);
+      Kernel::UICommon::text(vfb, 390, 30, "UPTIME", COLOR_MUTED);
+    }
     vfb.fill_rect(12, 44, static_cast<int32_t>(vfb.width()) - 24, 1,
                   COLOR_HEADER);
 
@@ -101,10 +114,17 @@ void run_task_manager() {
       format_uptime(now - tasks[i].start_ticks, uptime_text,
                     sizeof(uptime_text));
 
-      Kernel::AppCommon::text(vfb, 12, y, id_text, COLOR_TEXT);
-      Kernel::AppCommon::text(vfb, 68, y, tasks[i].name, COLOR_TEXT);
-      Kernel::AppCommon::text(vfb, 250, y, heap_text, COLOR_TEXT);
-      Kernel::AppCommon::text(vfb, 390, y, uptime_text, COLOR_TEXT);
+      if (ui_font_loaded) {
+        Kernel::UICommon::text(vfb, 12, y, 12.0f, ui_font, id_text, COLOR_TEXT);
+        Kernel::UICommon::text(vfb, 68, y, 12.0f, ui_font, tasks[i].name, COLOR_TEXT);
+        Kernel::UICommon::text(vfb, 250, y, 12.0f, ui_font, heap_text, COLOR_TEXT);
+        Kernel::UICommon::text(vfb, 390, y, 12.0f, ui_font, uptime_text, COLOR_TEXT);
+      } else {
+        Kernel::UICommon::text(vfb, 12, y, id_text, COLOR_TEXT);
+        Kernel::UICommon::text(vfb, 68, y, tasks[i].name, COLOR_TEXT);
+        Kernel::UICommon::text(vfb, 250, y, heap_text, COLOR_TEXT);
+        Kernel::UICommon::text(vfb, 390, y, uptime_text, COLOR_TEXT);
+      }
     }
 
     vfb.flush();

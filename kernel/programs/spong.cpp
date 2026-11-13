@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <kernel/drivers/keyboard.h>
 #include <kernel/graphics/vfb.h>
+#include <kernel/lib/uicommon.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/lib/random.h>
 #include <kernel/scheduler.h>
@@ -57,10 +58,12 @@ void render(const Game &g, Kernel::Graphics::VirtualFramebuffer &vfb) {
   vfb.fill_rect(g.w - 20 - PW, g.p2, PW, g.paddle_h, RED);
   vfb.fill_rect(g.bx, g.by, BW, BW, FG);
 
-  text(vfb, (g.w / 2) - 80, 20, "SPONG", BLUE);
-  number(vfb, (g.w / 2) - 24, 20, g.score1, GREEN);
-  number(vfb, (g.w / 2) + 8, 20, g.score2, RED);
-  text(vfb, 16, g.h - 20, g.ai ? "W/S   AI   Q: QUIT" : "W/S   I/K   Q: QUIT",
+  const auto title_bounds = Kernel::UICommon::FlexLayout::center(
+      {0, 20, g.w, 16}, Kernel::UICommon::text_width("SPONG"), 16);
+  Kernel::UICommon::text(vfb, title_bounds.x, title_bounds.y, "SPONG", BLUE);
+  Kernel::UICommon::number(vfb, 16, 20, g.score1, GREEN);
+  Kernel::UICommon::number(vfb, g.w - 48, 20, g.score2, RED);
+  Kernel::UICommon::text(vfb, 16, g.h - 20, g.ai ? "W/S   AI   Q: QUIT" : "W/S   I/K   Q: QUIT",
        FG);
   vfb.flush();
 }

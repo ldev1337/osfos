@@ -1,6 +1,7 @@
 #include <kernel/cpu.h>
 #include <kernel/drivers/e1000.h>
 #include <kernel/init.h>
+#include <kernel/memory/dma.h>
 #include <kernel/scheduler.h>
 
 namespace Kernel::Drivers {
@@ -54,11 +55,6 @@ constexpr uint32_t RX_INTERRUPT_MASK = (1u << 4) | (1u << 6) | (1u << 7);
 constexpr size_t RX_POLL_BUDGET = 8;
 
 static_assert((RX_QUEUE_SIZE & (RX_QUEUE_SIZE - 1)) == 0);
-
-static bool fits_dma32(const void *ptr, size_t len) {
-  const uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
-  return len != 0 && address <= UINT32_MAX && len - 1 <= UINT32_MAX - address;
-}
 
 void E1000::write_reg(uint32_t offset, uint32_t value) {
   *reinterpret_cast<volatile uint32_t *>(s_mmio_base + offset) = value;
@@ -126,10 +122,14 @@ bool __init E1000::detect_and_init() {
 
 bool __init E1000::init(uintptr_t mmio_base) {
   if (mmio_base == 0 || mmio_base > UINT32_MAX - REG_RAH ||
-      !fits_dma32(s_rx_descs, sizeof(s_rx_descs)) ||
-      !fits_dma32(s_tx_descs, sizeof(s_tx_descs)) ||
-      !fits_dma32(s_rx_buffers, sizeof(s_rx_buffers)) ||
-      !fits_dma32(s_tx_buffers, sizeof(s_tx_buffers)))
+      !Kernel::Memory::dma32_range(reinterpret_cast<uintptr_t>(s_rx_descs),
+                   sizeof(s_rx_descs)) ||
+      !Kernel::Memory::dma32_range(reinterpret_cast<uintptr_t>(s_tx_descs),
+                   sizeof(s_tx_descs)) ||
+      !Kernel::Memory::dma32_range(reinterpret_cast<uintptr_t>(s_rx_buffers),
+                   sizeof(s_rx_buffers)) ||
+      !Kernel::Memory::dma32_range(reinterpret_cast<uintptr_t>(s_tx_buffers),
+                   sizeof(s_tx_buffers)))
     return false;
 
   s_mmio_base = mmio_base;

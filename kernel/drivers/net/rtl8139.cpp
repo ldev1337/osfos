@@ -1,6 +1,7 @@
 #include <kernel/drivers/net/rtl8139.h>
 
 #include <kernel/cpu.h>
+#include <kernel/memory/dma.h>
 #include <kernel/drivers/net/realtek.h>
 
 namespace Kernel::Drivers::Net::RTL8139 {
@@ -44,11 +45,11 @@ bool detect_and_init() {
   if (!Realtek::find_io_device(IDS, sizeof(IDS) / sizeof(IDS[0]), &device))
     return false;
   const uintptr_t rx_addr = reinterpret_cast<uintptr_t>(rx_buffer);
-  if (rx_addr > UINT32_MAX || BUFFER_SIZE - 1 > UINT32_MAX - rx_addr)
+  if (!Kernel::Memory::dma32_range(rx_addr, BUFFER_SIZE))
     return false;
   for (size_t i = 0; i < TX_COUNT; ++i) {
     const uintptr_t tx_addr = reinterpret_cast<uintptr_t>(tx_buffers[i]);
-    if (tx_addr > UINT32_MAX || TX_SIZE - 1 > UINT32_MAX - tx_addr)
+    if (!Kernel::Memory::dma32_range(tx_addr, TX_SIZE))
       return false;
   }
   io_base = device.io_base;

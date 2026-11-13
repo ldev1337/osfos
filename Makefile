@@ -177,18 +177,23 @@ compare-compiler:
 	@python3 tools/compare-compiler.py --runs "$(RUNS)" --jobs "$(JOBS)" \
 	  --boot-timeout "$(BOOT_TIMEOUT)" --qemu "$(QEMU)"
 
+# Locate any .ttf font files in the project asset tree and add them to the disk image.
+FONT_FILES := $(sort $(wildcard *.ttf) $(wildcard fonts/*.ttf) $(wildcard assets/*.ttf) $(wildcard assets/fonts/*.ttf))
+FONT_ADD_ARGS := $(foreach font,$(FONT_FILES),--add /fonts/$(notdir $(font))=$(font))
+
 DOOM1_WAD = $(firstword $(wildcard doom1.wad doom.wad))
 DOOM2_WAD = $(wildcard doom2.wad)
 DOOM_WADS = $(DOOM1_WAD) $(DOOM2_WAD)
-ifneq ($(DOOM_WADS),)
-$(DISK_IMAGE): $(DOOM_WADS) tools/mklaziofs.py
+
+# Build disk image with WADs and/or Font files if present
+DISK_DEPS = tools/mklaziofs.py $(DOOM_WADS) $(FONT_FILES)
+
+$(DISK_IMAGE): $(DISK_DEPS)
 	@mkdir -p $(@D)
-	@python3 tools/mklaziofs.py $@ $(if $(DOOM1_WAD),--add /bin/doom/doom1.wad=$(DOOM1_WAD)) $(if $(DOOM2_WAD),--add /bin/doom/doom2.wad=$(DOOM2_WAD))
-else
-$(DISK_IMAGE): tools/mklaziofs.py
-	@mkdir -p $(@D)
-	@python3 tools/mklaziofs.py $@
-endif
+	@python3 tools/mklaziofs.py $@ \
+		$(if $(DOOM1_WAD),--add /bin/doom/doom1.wad=$(DOOM1_WAD)) \
+		$(if $(DOOM2_WAD),--add /bin/doom/doom2.wad=$(DOOM2_WAD)) \
+		$(FONT_ADD_ARGS)
 
 $(BUILD_DIR)/%.o: %.asm Makefile
 	@mkdir -p $(@D)
