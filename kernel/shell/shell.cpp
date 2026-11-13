@@ -45,6 +45,9 @@ void run(const char *wad);
 namespace Tetris {
 void run();
 }
+namespace Pacman {
+void run();
+}
 } // namespace Kernel::Games
 
 namespace Kernel::Apps {
@@ -152,6 +155,7 @@ void run_breakout() { Kernel::Games::Breakout::run(); }
 void run_doom1() { Kernel::Games::Doom::run("/bin/doom/doom1.wad"); }
 void run_doom2() { Kernel::Games::Doom::run("/bin/doom/doom2.wad"); }
 void run_tetris() { Kernel::Games::Tetris::run(); }
+void run_pacman() { Kernel::Games::Pacman::run(); }
 void run_graphic_test() { Kernel::Apps::graphic_test_run(); }
 void run_stress_test() { Kernel::Apps::stress_test_run(); }
 void run_benchmark() { Kernel::Apps::benchmark_run(); }
@@ -438,6 +442,7 @@ void help() {
   kernel_printf("  doom1                 Launch Doom I\n");
   kernel_printf("  doom2                 Launch Doom II\n");
   kernel_printf("  tetris                The Tetrominoes\n");
+  kernel_printf("  pacman                Play Pac-Man\n");
   kernel_printf("  breakout              Play Breakout\n");
   kernel_printf("  gtest                 Run Graphic test app suite\n");
   kernel_printf("  stress                Run the stress test\n");
@@ -904,6 +909,9 @@ void execute(char *line) {
   } else if (equals(line, "tetris")) {
     if (!launch_app("Tetris", run_tetris))
       kernel_printf("Could not launch Tetris.\n");
+  } else if (equals(line, "pacman")) {
+    if (!launch_app("Pac-Man", run_pacman))
+      kernel_printf("Could not launch Pac-Man.\n");
   } else if (equals(line, "gtest")) {
     if (!launch_app("Graphics test", run_graphic_test))
       kernel_printf("Could not launch graphics test.\n");
