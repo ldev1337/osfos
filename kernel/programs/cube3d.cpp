@@ -8,8 +8,6 @@
 #include <kernel/memory/heap.h>
 #include <kernel/scheduler.h>
 
-#include <utility>
-
 namespace Kernel::Apps::Cube3D {
 
 using namespace Kernel::Graphics::K3D;

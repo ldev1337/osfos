@@ -6,7 +6,7 @@
 #include <kernel/graphics/vfb.h>
 #include <kernel/lib/uicommon.h>
 #include <kernel/drivers/keyboard.h>
-#include <kernel/drivers/pit.h>
+#include <kernel/drivers/tsc_deadline.h>
 #include <kernel/programs/welcome.h>
 namespace Kernel::Programs {
 namespace {
@@ -225,9 +225,9 @@ void wait_seconds(uint32_t seconds) {
   if (!seconds) return;
   uint64_t flags;
   __asm__ volatile("pushfq; popq %0" : "=r"(flags));
-  const uint32_t start = Kernel::Drivers::PIT::get_ticks();
+  const uint32_t start = Kernel::Drivers::TSCDeadline::get_ticks();
   const uint32_t duration = seconds * 1000u;
-  while (static_cast<uint32_t>(Kernel::Drivers::PIT::get_ticks() - start) < duration)
+  while (static_cast<uint32_t>(Kernel::Drivers::TSCDeadline::get_ticks() - start) < duration)
     __asm__ volatile("sti; hlt" ::: "memory");
   if (!(flags & (1ull << 9))) __asm__ volatile("cli" ::: "memory");
 }

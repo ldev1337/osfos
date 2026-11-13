@@ -4,7 +4,7 @@
 #include <kernel/drivers/keyboard.h>
 #include <kernel/drivers/mouse.h>
 #include <kernel/drivers/pci.h>
-#include <kernel/drivers/pit.h>
+#include <kernel/drivers/tsc_deadline.h>
 #include <kernel/crypto/password.h>
 #include <kernel/debug/debug.h>
 #include <kernel/graphics/vfb.h>
@@ -167,15 +167,15 @@ void workflow_worker(void *argument) {
 }
 
 uint32_t elapsed_since(uint32_t start) {
-  const uint32_t elapsed = Kernel::Drivers::PIT::get_ticks() - start;
+  const uint32_t elapsed = Kernel::Drivers::TSCDeadline::get_ticks() - start;
   return elapsed ? elapsed : 1;
 }
 
 Result measure_driver(void (*probe)()) {
   Result result{};
-  const uint32_t start = Kernel::Drivers::PIT::get_ticks();
+  const uint32_t start = Kernel::Drivers::TSCDeadline::get_ticks();
   uint64_t probes = 0;
-  while (Kernel::Drivers::PIT::get_ticks() - start < RUN_MS &&
+  while (Kernel::Drivers::TSCDeadline::get_ticks() - start < RUN_MS &&
          !Kernel::Scheduler::should_stop()) {
     probe();
     ++probes;
@@ -208,10 +208,10 @@ Result measure_vfs() {
   uint8_t buffer[64];
   const uint32_t bytes_to_read =
       read_file && file.size < sizeof(buffer) ? file.size : sizeof(buffer);
-  const uint32_t start = Kernel::Drivers::PIT::get_ticks();
+  const uint32_t start = Kernel::Drivers::TSCDeadline::get_ticks();
   uint64_t operations = 0;
   bool valid = true;
-  while (Kernel::Drivers::PIT::get_ticks() - start < RUN_MS &&
+  while (Kernel::Drivers::TSCDeadline::get_ticks() - start < RUN_MS &&
          !Kernel::Scheduler::should_stop()) {
     Kernel::FS::VFSFile current{};
     if (!Kernel::FS::VFS::find_file(file.name, &current)) {
@@ -238,9 +238,9 @@ Result measure_vfs() {
 
 Result measure_graphics(VirtualFramebuffer &vfb) {
   Result result{};
-  const uint32_t start = Kernel::Drivers::PIT::get_ticks();
+  const uint32_t start = Kernel::Drivers::TSCDeadline::get_ticks();
   uint64_t batches = 0;
-  while (Kernel::Drivers::PIT::get_ticks() - start < RUN_MS &&
+  while (Kernel::Drivers::TSCDeadline::get_ticks() - start < RUN_MS &&
          !Kernel::Scheduler::should_stop()) {
     draw_probe(vfb, static_cast<uint32_t>(batches));
     vfb.flush();
@@ -263,8 +263,8 @@ Result measure_context() {
     return result;
   }
 
-  const uint32_t start = Kernel::Drivers::PIT::get_ticks();
-  while (Kernel::Drivers::PIT::get_ticks() - start < RUN_MS &&
+  const uint32_t start = Kernel::Drivers::TSCDeadline::get_ticks();
+  while (Kernel::Drivers::TSCDeadline::get_ticks() - start < RUN_MS &&
          !Kernel::Scheduler::should_stop())
     Kernel::Scheduler::thread_yield();
   result.elapsed_ms = elapsed_since(start);
@@ -300,8 +300,8 @@ Result measure_workflow() {
     return result;
   }
 
-  const uint32_t start = Kernel::Drivers::PIT::get_ticks();
-  while (Kernel::Drivers::PIT::get_ticks() - start < RUN_MS &&
+  const uint32_t start = Kernel::Drivers::TSCDeadline::get_ticks();
+  while (Kernel::Drivers::TSCDeadline::get_ticks() - start < RUN_MS &&
          !Kernel::Scheduler::should_stop())
     Kernel::Scheduler::thread_yield();
   result.elapsed_ms = elapsed_since(start);
@@ -320,10 +320,10 @@ Result measure_workflow() {
 Result measure_heap() {
   Result result{};
   auto &heap = Kernel::Memory::g_kheap;
-  const uint32_t start = Kernel::Drivers::PIT::get_ticks();
+  const uint32_t start = Kernel::Drivers::TSCDeadline::get_ticks();
   uint64_t batches = 0;
   bool valid = true;
-  while (Kernel::Drivers::PIT::get_ticks() - start < RUN_MS &&
+  while (Kernel::Drivers::TSCDeadline::get_ticks() - start < RUN_MS &&
          !Kernel::Scheduler::should_stop()) {
     void *blocks[32]{};
     for (size_t i = 0; i < 32; ++i) {
@@ -360,10 +360,10 @@ Result measure_heap() {
 
 Result measure_math() {
   Result result{};
-  const uint32_t start = Kernel::Drivers::PIT::get_ticks();
+  const uint32_t start = Kernel::Drivers::TSCDeadline::get_ticks();
   uint64_t iterations = 0;
   volatile uint64_t checksum = 0;
-  while (Kernel::Drivers::PIT::get_ticks() - start < RUN_MS &&
+  while (Kernel::Drivers::TSCDeadline::get_ticks() - start < RUN_MS &&
          !Kernel::Scheduler::should_stop()) {
     const uint64_t value = 1000000 + (iterations & 0xffff);
     checksum += Kernel::Lib::Math::isqrt_u64(value);
@@ -382,9 +382,9 @@ Result measure_math() {
 
 Result measure_software_interrupt() {
   Result result{};
-  const uint32_t start = Kernel::Drivers::PIT::get_ticks();
+  const uint32_t start = Kernel::Drivers::TSCDeadline::get_ticks();
   uint64_t entries = 0;
-  while (Kernel::Drivers::PIT::get_ticks() - start < RUN_MS &&
+  while (Kernel::Drivers::TSCDeadline::get_ticks() - start < RUN_MS &&
          !Kernel::Scheduler::should_stop()) {
     __asm__ volatile("int $0x30" ::: "memory");
     ++entries;
@@ -395,18 +395,18 @@ Result measure_software_interrupt() {
   return result;
 }
 
-// PIT::tick is updated by the timer IRQ handler; this measures delivered ticks.
+// TSCDeadline::tick is updated by the timer IRQ handler; this measures delivered ticks.
 Result measure_timer_interrupts() {
   Result result{};
-  const uint32_t start = Kernel::Drivers::PIT::get_ticks();
+  const uint32_t start = Kernel::Drivers::TSCDeadline::get_ticks();
   const uint32_t start_interrupts =
-      Kernel::Drivers::PIT::get_interrupt_count();
-  while (Kernel::Drivers::PIT::get_ticks() - start < RUN_MS &&
+      Kernel::Drivers::TSCDeadline::get_interrupt_count();
+  while (Kernel::Drivers::TSCDeadline::get_ticks() - start < RUN_MS &&
          !Kernel::Scheduler::should_stop())
     Kernel::Scheduler::thread_yield();
   result.elapsed_ms = elapsed_since(start);
   result.rate = static_cast<uint64_t>(
-                    Kernel::Drivers::PIT::get_interrupt_count() -
+                    Kernel::Drivers::TSCDeadline::get_interrupt_count() -
                     start_interrupts) *
                 1000 / result.elapsed_ms;
   result.complete = true;
@@ -415,9 +415,9 @@ Result measure_timer_interrupts() {
 
 Result measure_smoltcp_poll() {
   Result result{};
-  const uint32_t start = Kernel::Drivers::PIT::get_ticks();
+  const uint32_t start = Kernel::Drivers::TSCDeadline::get_ticks();
   uint64_t polls = 0;
-  while (Kernel::Drivers::PIT::get_ticks() - start < RUN_MS &&
+  while (Kernel::Drivers::TSCDeadline::get_ticks() - start < RUN_MS &&
          !Kernel::Scheduler::should_stop()) {
     if (Kernel::Net::poll() < 0)
       break;
@@ -434,7 +434,7 @@ Result measure_smoltcp_poll() {
 Result measure_bearssl_https() {
   Result result{};
   char response[256];
-  const uint32_t start = Kernel::Drivers::PIT::get_ticks();
+  const uint32_t start = Kernel::Drivers::TSCDeadline::get_ticks();
   const int fetched = Kernel::Net::fetch("https://example.com/", response,
                                         sizeof(response));
   result.elapsed_ms = elapsed_since(start);
@@ -447,7 +447,7 @@ Result measure_bearssl_https() {
 // Each case runs for the same wall-clock interval as the original suite.
 Result measure_extended(VirtualFramebuffer &vfb, size_t test_id) {
   Result result{};
-  const uint32_t start = Kernel::Drivers::PIT::get_ticks();
+  const uint32_t start = Kernel::Drivers::TSCDeadline::get_ticks();
   uint64_t operations = 0;
   volatile uint64_t checksum = 0;
   bool valid = true;
@@ -455,7 +455,7 @@ Result measure_extended(VirtualFramebuffer &vfb, size_t test_id) {
   for (size_t i = 0; i < 256; ++i)
     pixels[i] = static_cast<uint32_t>(i * 2654435761u);
   auto &heap = Kernel::Memory::g_kheap;
-  while (Kernel::Drivers::PIT::get_ticks() - start < RUN_MS &&
+  while (Kernel::Drivers::TSCDeadline::get_ticks() - start < RUN_MS &&
          !Kernel::Scheduler::should_stop() && valid) {
     switch (test_id) {
     case 8: // sequential memory read

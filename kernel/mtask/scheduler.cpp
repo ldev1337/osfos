@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <kernel/debug/debug.h>
-#include <kernel/drivers/pit.h>
+#include <kernel/drivers/tsc_deadline.h>
 #include <kernel/memory/heap.h>
 #include <kernel/scheduler.h>
 
@@ -58,6 +58,8 @@ static unsigned dispatches_since_idle = 0;
 // One cache line per CPU: `current` is written on every context switch, so
 // packing four CPUs per line (the old 16-byte layout) caused false sharing.
 struct alignas(64) CpuSchedulerState {
+  CpuSchedulerState *self;
+  uint32_t cpu_id;
   ThreadControlBlock *current;
   ThreadControlBlock *idle;
   // Exited thread whose stack this CPU may still be standing on. It is handed
@@ -92,17 +94,30 @@ static uint32_t bootstrap_cpu_id = 0;
     __asm__ volatile("sti; hlt" ::: "memory");
 }
 
-// CPUID traps to the hypervisor under virtualization (microseconds, not
-// nanoseconds) and is serializing on bare metal. Every entry point below calls
-// this AT MOST ONCE and passes the result down. The next step is a GS-relative
-// per-CPU slot; that needs the arch layer, so it is left as the one-line swap.
+// Used only while installing per-CPU state, never on a scheduling entry.
 static inline size_t cpu_index() {
   uint32_t eax = 1, ebx, ecx, edx;
   __asm__ volatile("cpuid" : "+a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx));
   return (ebx >> 24) & 0xffu;
 }
 
-static inline CpuSchedulerState &cpu_state() { return cpu_states[cpu_index()]; }
+static inline void install_cpu_state(size_t index) {
+  CpuSchedulerState &state = cpu_states[index];
+  state.self = &state;
+  state.cpu_id = static_cast<uint32_t>(index);
+  const uint64_t base = reinterpret_cast<uint64_t>(&state);
+  __asm__ volatile("wrmsr"
+                   :
+                   : "c"(0xC0000101u), "a"(static_cast<uint32_t>(base)),
+                     "d"(static_cast<uint32_t>(base >> 32))
+                   : "memory");
+}
+
+static inline CpuSchedulerState &cpu_state() {
+  CpuSchedulerState *state;
+  __asm__ volatile("movq %%gs:0, %0" : "=r"(state));
+  return *state;
+}
 
 extern "C" void thread_start_wrapper(void (*)());
 extern "C" void thread_start_arg_wrapper(ThreadEntry, void *);
@@ -301,9 +316,19 @@ static ThreadControlBlock *dequeue_fair(uint32_t cpu_id) {
 
   const bool is_service_cpu = cpu_id == bootstrap_cpu_id;
   bool skip_preferred = !is_service_cpu;
-  bool high_ready = queue_available(HIGH, skip_preferred);
-  bool normal_ready = queue_available(NORMAL, skip_preferred);
-  bool idle_ready = queue_available(IDLE, skip_preferred);
+  bool high_ready;
+  bool normal_ready;
+  bool idle_ready;
+  if (is_service_cpu) {
+    const uint32_t ready = ready_priorities;
+    high_ready = (ready & (1u << HIGH)) != 0;
+    normal_ready = (ready & (1u << NORMAL)) != 0;
+    idle_ready = (ready & (1u << IDLE)) != 0;
+  } else {
+    high_ready = queue_available(HIGH, skip_preferred);
+    normal_ready = queue_available(NORMAL, skip_preferred);
+    idle_ready = queue_available(IDLE, skip_preferred);
+  }
 
   // Kernel service work gets first access to the BSP's dispatch budget. The
   // normal high-priority fairness limit still forces progress for other work.
@@ -536,10 +561,17 @@ void scheduler_init() {
   register_thread(main_tcb);
   cpu_states[index].idle = &idle_thread_storage[index];
   cpu_states[index].current = main_tcb;
+  install_cpu_state(index);
   scheduler_initialized = true;
   irq_restore(flags);
   Kernel::Debug::log("scheduler initialized; bootstrap task registered");
   Kernel::Debug::log_dec("bootstrap_task_id", main_tcb->id);
+}
+
+void scheduler_cpu_early_init() {
+  const size_t index = cpu_index();
+  if (index < MAX_APIC_IDS)
+    install_cpu_state(index);
 }
 
 bool prefer_bootstrap_cpu(uint64_t id) {
@@ -610,6 +642,7 @@ void scheduler_ap_init() {
     state.idle = &idle;
     state.current = &idle;
   }
+  install_cpu_state(index);
   irq_restore(flags);
 }
 
@@ -667,7 +700,7 @@ auto thread_create(ThreadEntry entry, void *argument, ThreadPriority priority)
 }
 
 // The per-CPU readers below only touch this CPU's state, so they need IRQs off
-// (to avoid migrating between cpu_index() and the load) but not the global
+// (to avoid migration between the GS lookup and the load) but not the global
 // lock. This also fixes the old unprotected cpu_state() read.
 auto current_thread_id() -> uint64_t {
   const uint64_t flags = local_irq_save();
@@ -682,7 +715,7 @@ void mark_current_thread_as_application(const char *name) {
   ThreadControlBlock *current_thread = cpu_state().current;
   if (current_thread) {
     current_thread->application_thread = true;
-    current_thread->application_start_ticks = Kernel::Drivers::PIT::get_ticks();
+    current_thread->application_start_ticks = Kernel::Drivers::TSCDeadline::get_ticks();
     size_t index = 0;
     if (name) {
       while (name[index] &&
@@ -841,7 +874,7 @@ void thread_sleep_ms(uint32_t milliseconds) {
     return;
   }
 
-  const uint32_t now = static_cast<uint32_t>(Kernel::Drivers::PIT::get_ticks());
+  const uint32_t now = static_cast<uint32_t>(Kernel::Drivers::TSCDeadline::get_ticks());
   current_thread->wake_tick = now + milliseconds;
   current_thread->timed_wait = true;
   insert_sleeper(current_thread);
@@ -890,8 +923,8 @@ bool thread_unblock(uint64_t id) {
 auto should_preempt() -> bool { return true; }
 
 auto schedule(uint64_t current_rsp) -> uint64_t {
-  const size_t cpu = cpu_index(); // the only CPUID on the whole switch path
-  CpuSchedulerState &state = cpu_states[cpu];
+  CpuSchedulerState &state = cpu_state();
+  const uint32_t cpu = state.cpu_id;
 
   uint64_t flags = 0;
   if (state.lock_held) {
@@ -920,7 +953,7 @@ auto schedule(uint64_t current_rsp) -> uint64_t {
   }
 
   if (sleep_queue)
-    wake_sleepers(static_cast<uint32_t>(Kernel::Drivers::PIT::get_ticks()));
+    wake_sleepers(static_cast<uint32_t>(Kernel::Drivers::TSCDeadline::get_ticks()));
 
   ThreadControlBlock *idle_thread = state.idle;
   const bool previous_is_idle = previous == idle_thread;

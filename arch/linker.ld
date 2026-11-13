@@ -28,7 +28,7 @@ SECTIONS {
         _os_init_end = .;
     } :text
 
-    .data : ALIGN(2M) {          /* the only 2M boundary: W^X split */
+    .data : ALIGN(4K) {
         *(.data .data.*)
     } :data
 

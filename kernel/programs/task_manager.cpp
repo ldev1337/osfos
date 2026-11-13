@@ -1,7 +1,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <kernel/drivers/keyboard.h>
-#include <kernel/drivers/pit.h>
+#include <kernel/drivers/tsc_deadline.h>
 #include <kernel/graphics/open_font.h>
 #include <kernel/graphics/vfb.h>
 #include <kernel/lib/uicommon.h>
@@ -103,7 +103,7 @@ void run_task_manager() {
         (vfb.height() > 52) ? (vfb.height() - 52) / ROW_HEIGHT : 0;
     const size_t shown_tasks = task_count < visible_rows ? task_count
                                                          : visible_rows;
-    const uint32_t now = Kernel::Drivers::PIT::get_ticks();
+    const uint32_t now = Kernel::Drivers::TSCDeadline::get_ticks();
     for (size_t i = 0; i < shown_tasks; ++i) {
       const int32_t y = 50 + static_cast<int32_t>(i) * ROW_HEIGHT;
       char id_text[24];

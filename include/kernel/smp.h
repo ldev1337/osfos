@@ -19,6 +19,10 @@ bool discover(uintptr_t multiboot_info, CpuInfo *cpus, size_t capacity,
 size_t launch_application_processors(const CpuInfo *cpus, size_t count);
 size_t online_cpu_count(void);
 void local_apic_eoi(void);
+bool local_apic_tsc_deadline_init(uint64_t interval_tsc);
+void local_apic_tsc_deadline_arm(uint64_t deadline_tsc);
+uint64_t read_tsc(void);
+bool is_bootstrap_cpu(void);
 [[noreturn]] void application_processor_main(uint32_t cpu_index);
 
 } // namespace Kernel::SMP

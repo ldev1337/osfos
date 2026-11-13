@@ -2,7 +2,7 @@
 #include <kernel/drivers/e1000.h>
 #include <kernel/drivers/keyboard.h>
 #include <kernel/drivers/mouse.h>
-#include <kernel/drivers/pit.h>
+#include <kernel/drivers/tsc_deadline.h>
 #include <kernel/init.h>
 #include <kernel/scheduler.h>
 #include <kernel/smp.h>
@@ -88,43 +88,38 @@ extern "C" void ata_irq_handler();
 
 extern "C" uint64_t c_interrupt_handler(struct InterruptFrame *frame) {
   const uint64_t vector = frame->interrupt_number;
-  uint64_t next_rsp = (uint64_t)frame;
-
-  if (vector == 0x20) {
-    Kernel::Drivers::PIT::tick();
-    if (Kernel::Scheduler::should_preempt())
-      next_rsp = Kernel::Scheduler::schedule((uint64_t)frame);
-  } else if (vector == 0x30) {
-    next_rsp = Kernel::Scheduler::schedule((uint64_t)frame);
-  } else if (vector == 0x31) {
+  if (vector == 0x30) {
+    return Kernel::Scheduler::schedule(reinterpret_cast<uint64_t>(frame));
+  }
+  if (vector == 0x31) {
     Kernel::SMP::local_apic_eoi();
-    next_rsp = Kernel::Scheduler::schedule((uint64_t)frame);
-  }
-
-  if (vector == 0x21) {
-    Kernel::Drivers::Keyboard::handle_interrupt();
-  }
-
-  if (vector == 0x2C) {
-    Kernel::Drivers::Mouse::handle_interrupt();
-  }
-
-  if (vector == 0x2E) {
-    ata_irq_handler();
-  }
-
-  if (vector == (0x20 + Kernel::Drivers::E1000::get_irq())) {
-    Kernel::Drivers::E1000::handle_interrupt();
+    Kernel::Drivers::TSCDeadline::tick();
+    return Kernel::Scheduler::schedule(reinterpret_cast<uint64_t>(frame));
   }
 
   if (vector >= 0x20 && vector <= 0x2F) {
+    switch (vector) {
+    case 0x21:
+      Kernel::Drivers::Keyboard::handle_interrupt();
+      break;
+    case 0x2C:
+      Kernel::Drivers::Mouse::handle_interrupt();
+      break;
+    case 0x2E:
+      ata_irq_handler();
+      break;
+    default:
+      break;
+    }
+    if (vector == 0x20 + Kernel::Drivers::E1000::get_irq())
+      Kernel::Drivers::E1000::handle_interrupt();
+
     if (vector >= 0x28)
       outb(0xA0, 0x20);
-
     outb(0x20, 0x20);
   }
 
-  return next_rsp;
+  return reinterpret_cast<uint64_t>(frame);
 }
 
 static void set_gdt_entry(GDTEntry *entries, int index, uint32_t base,
@@ -247,7 +242,7 @@ static void __init init_pic(void) {
   outb(0xA1, 0x01);
   io_wait();
 
-  pic_master_mask = 0xF8;
+  pic_master_mask = 0xF9;
   pic_slave_mask = 0xEF;
   outb(0x21, pic_master_mask);
   outb(0xA1, pic_slave_mask);

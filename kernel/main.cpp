@@ -4,7 +4,7 @@
 #include <kernel/drivers/framebuffer.h>
 #include <kernel/drivers/keyboard.h>
 #include <kernel/drivers/mouse.h>
-#include <kernel/drivers/pit.h>
+#include <kernel/drivers/tsc_deadline.h>
 #include <kernel/fs/laziofs.h>
 #include <kernel/graphics/lwm.h>
 #include <kernel/lib/random.h>
@@ -40,6 +40,7 @@ extern "C" void main(unsigned long multiboot_info_addr) {
 
   Kernel::Debug::log("initializing CPU tables and checking required ISA");
   cpu_init();
+  Kernel::Scheduler::scheduler_cpu_early_init();
   Kernel::Debug::log("cpu tables and feature check ready");
 
   Kernel::SMP::CpuInfo firmware_cpus[Kernel::SMP::MAX_CPUS]{};
@@ -103,8 +104,12 @@ extern "C" void main(unsigned long multiboot_info_addr) {
   Kernel::Debug::log("scheduler ready");
   Kernel::Drivers::Keyboard::init();
   Kernel::Drivers::Mouse::init();
-  Kernel::Drivers::PIT::init(250);
-  Kernel::Debug::log("keyboard, mouse, PIT initialized");
+  if (!Kernel::Drivers::TSCDeadline::init(250)) {
+    Kernel::Debug::log("FATAL: TSC-deadline timer initialization failed");
+    for (;;)
+      __asm__ volatile("cli; hlt");
+  }
+  Kernel::Debug::log("keyboard, mouse, TSC-deadline timer initialized");
   __asm__ volatile("sti");
   Kernel::FS::VFS::init();
   Kernel::Debug::log(Kernel::FS::VFS::is_mounted()
@@ -124,7 +129,7 @@ extern "C" void main(unsigned long multiboot_info_addr) {
     uint8_t mac[6];
     Kernel::Drivers::Net::get_mac_address(mac);
     uint64_t seed =
-        Kernel::Lib::Random::rdtsc() ^ Kernel::Drivers::PIT::get_ticks();
+        Kernel::Lib::Random::rdtsc() ^ Kernel::Drivers::TSCDeadline::get_ticks();
     for (unsigned char iii : mac) {
       seed = (seed << 8) ^ iii;
     }

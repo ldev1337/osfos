@@ -45,6 +45,7 @@ constexpr size_t MAX_APPLICATION_TASKS = 32;
 using ThreadEntry = void (*)(void *);
 
 void scheduler_init();
+void scheduler_cpu_early_init();
 void scheduler_ap_init();
 bool prefer_bootstrap_cpu(uint64_t id);
 KernelIoSchedulingHint prioritize_current_for_kernel_io();

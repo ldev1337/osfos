@@ -35,6 +35,7 @@ private:
 
     bool full() const { return ((tail + 1) % BUFFER_SIZE) == head; }
     bool empty() const { return head == tail; }
+    void clear() { head = tail; }
 
     void push(char c) {
       if (!full()) {
@@ -53,6 +54,7 @@ private:
   };
 
   static RingBuffer rx_buffer;
+  static uint64_t rx_buffer_owner;
   static bool rx_buffer_empty();
 
   static bool shift_pressed;

@@ -1,7 +1,6 @@
 #include <arch/x86_64/string.h>
 #include <kernel/drivers/keyboard.h>
 #include <kernel/drivers/mouse.h>
-#include <kernel/drivers/pit.h>
 #include <kernel/graphics/lwm.h>
 #include <kernel/graphics/open_font.h>
 #include <kernel/lib/appcommon.h>

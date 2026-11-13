@@ -1,5 +1,5 @@
 #include <kernel/drivers/net/device.h>
-#include <kernel/drivers/pit.h>
+#include <kernel/drivers/tsc_deadline.h>
 #include <kernel/net/smoltcp_bridge.h>
 #include <kernel/scheduler.h>
 
@@ -29,7 +29,7 @@ bool os_net_device_send(const uint8_t *buffer, size_t length) {
 }
 
 uint64_t os_net_clock_ms() {
-  return static_cast<uint64_t>(Kernel::Drivers::PIT::get_ticks()) * 4;
+  return static_cast<uint64_t>(Kernel::Drivers::TSCDeadline::get_ticks()) * 4;
 }
 
 void os_net_yield() { Kernel::Scheduler::thread_sleep_ms(1); }

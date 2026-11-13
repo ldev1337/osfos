@@ -822,6 +822,14 @@ bool has_keyboard_focus(uint64_t thread_id) {
          windows[z_order[focused_index_in_z]].thread_id == thread_id;
 }
 
+uint64_t keyboard_focus_thread_id() {
+  SpinlockGuard guard(compositor_lock);
+  if (window_count == 0 || focused_index_in_z >= window_count)
+    return 0;
+  const auto &focused = windows[z_order[focused_index_in_z]];
+  return focused.alive ? focused.thread_id : 0;
+}
+
 bool get_window_position(uint64_t thread_id, int *x, int *y) {
   if (!thread_id || !x || !y)
     return false;

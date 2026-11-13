@@ -243,7 +243,7 @@ else
 	@$(call PRINT_TUI, $(TAG_CPP), $<)
 endif
 
-$(BUILD_DIR)/os.bin: $(OBJS) $(RUST_NET_LIB)
+$(BUILD_DIR)/os.bin: $(OBJS) $(RUST_NET_LIB) arch/linker.ld
 	$(Q)mkdir -p $(@D)
 	$(Q)$(CC) $(LDFLAGS) $(OBJS) $(RUST_NET_LIB) -o $@
 	$(Q)llvm-strip --strip-all --remove-section=.comment --remove-section=.note $@ 2>/dev/null || true

@@ -1,6 +1,7 @@
 #include <arch/x86_64/string.h>
 #include <atomic>
 #include <kernel/cpu.h>
+#include <kernel/drivers/tsc_deadline.h>
 #include <kernel/memory/pmm.h>
 #include <kernel/scheduler.h>
 #include <kernel/smp.h>
@@ -14,6 +15,7 @@ constexpr size_t AP_STACK_SIZE = 16 * 1024;
 alignas(16) static uint8_t ap_stacks[MAX_CPUS][AP_STACK_SIZE];
 static volatile uint32_t *local_apic = nullptr;
 static std::atomic<uint32_t> online_processors{1};
+static uint32_t bootstrap_apic_id = UINT32_MAX;
 
 extern "C" uint8_t ap_trampoline_start[];
 extern "C" uint8_t ap_trampoline_end[];
@@ -35,9 +37,11 @@ static void wrmsr(uint32_t msr, uint64_t value) {
                    : "memory");
 }
 
-static bool lapic_init(bool start_timer) {
+static bool lapic_init() {
   uint32_t eax = 1, ebx, ecx, edx;
   __asm__ volatile("cpuid" : "+a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx));
+  if (bootstrap_apic_id == UINT32_MAX)
+    bootstrap_apic_id = (ebx >> 24) & 0xffu;
   if (!(edx & (1u << 9)))
     return false;
   uint64_t apic_base = rdmsr(0x1B);
@@ -51,11 +55,30 @@ static bool lapic_init(bool start_timer) {
   local_apic[0x80 / 4] = 0;
   local_apic[0xF0 / 4] = (1u << 8) | 0xFF;
   local_apic[0x280 / 4] = 0;
-  if (start_timer) {
-    local_apic[0x3E0 / 4] = 0x3; // Divide the APIC clock by 16.
-    local_apic[0x320 / 4] = (1u << 17) | LAPIC_TIMER_VECTOR;
-    local_apic[0x380 / 4] = 1000000;
-  }
+  return true;
+}
+
+uint64_t read_tsc_internal(void) {
+  uint32_t lo, hi;
+  __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+  return (uint64_t(hi) << 32) | lo;
+}
+
+bool is_bootstrap_cpu_internal(void) {
+  return local_apic && (local_apic[0x20 / 4] >> 24) == bootstrap_apic_id;
+}
+
+void local_apic_tsc_deadline_arm_internal(uint64_t deadline_tsc) {
+  wrmsr(0x6E0, deadline_tsc);
+}
+
+bool local_apic_tsc_deadline_init_internal(uint64_t interval_tsc) {
+  uint32_t eax = 1, ebx, ecx, edx;
+  __asm__ volatile("cpuid" : "+a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx));
+  if (!(ecx & (1u << 24)) || !lapic_init())
+    return false;
+  local_apic[0x320 / 4] = (1u << 18) | LAPIC_TIMER_VECTOR;
+  local_apic_tsc_deadline_arm_internal(read_tsc_internal() + interval_tsc);
   return true;
 }
 
@@ -188,6 +211,18 @@ const Madt *find_madt(const RsdpV2 *rsdp) {
 
 } // namespace
 
+uint64_t read_tsc(void) { return read_tsc_internal(); }
+
+bool is_bootstrap_cpu(void) { return is_bootstrap_cpu_internal(); }
+
+void local_apic_tsc_deadline_arm(uint64_t deadline_tsc) {
+  local_apic_tsc_deadline_arm_internal(deadline_tsc);
+}
+
+bool local_apic_tsc_deadline_init(uint64_t interval_tsc) {
+  return local_apic_tsc_deadline_init_internal(interval_tsc);
+}
+
 bool discover(uintptr_t info_addr, CpuInfo *cpus, size_t capacity,
               size_t *count) {
   if (!info_addr || !cpus || !capacity || !count)
@@ -262,7 +297,7 @@ bool discover(uintptr_t info_addr, CpuInfo *cpus, size_t capacity,
 }
 
 size_t launch_application_processors(const CpuInfo *cpus, size_t count) {
-  if (!cpus || count < 2 || count > MAX_CPUS || !lapic_init(false))
+  if (!cpus || count < 2 || count > MAX_CPUS || !lapic_init())
     return 0;
 
   const size_t image_size = ap_trampoline_end - ap_trampoline_start;
@@ -334,7 +369,7 @@ size_t online_cpu_count(void) {
 [[noreturn]] void application_processor_main(uint32_t cpu_index) {
   cpu_ap_init(cpu_index);
   Kernel::Scheduler::scheduler_ap_init();
-  if (!lapic_init(true)) {
+  if (!lapic_init() || !Kernel::Drivers::TSCDeadline::init_cpu()) {
     for (;;)
       __asm__ volatile("cli; hlt");
   }

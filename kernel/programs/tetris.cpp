@@ -1,6 +1,6 @@
 #include <cstdint>
 #include <kernel/drivers/keyboard.h>
-#include <kernel/drivers/pit.h>
+#include <kernel/drivers/tsc_deadline.h>
 #include <kernel/graphics/vfb.h>
 #include <kernel/lib/uicommon.h>
 #include <kernel/lib/appcommon.h>
@@ -360,13 +360,13 @@ void run() {
   level = 1;
   game_over = false;
 
-  uint32_t last_drop_tick = Kernel::Drivers::PIT::get_ticks();
+  uint32_t last_drop_tick = Kernel::Drivers::TSCDeadline::get_ticks();
   uint32_t last_key_tick = 0;
 
   for (;;) {
     if (Kernel::Scheduler::should_stop())
       return;
-    uint32_t current_tick = Kernel::Drivers::PIT::get_ticks();
+    uint32_t current_tick = Kernel::Drivers::TSCDeadline::get_ticks();
 
     if (Kernel::Drivers::Keyboard::is_pressed(0x01)) {
       break;

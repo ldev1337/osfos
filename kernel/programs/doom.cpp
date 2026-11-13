@@ -1,7 +1,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <kernel/drivers/keyboard.h>
-#include <kernel/drivers/pit.h>
+#include <kernel/drivers/tsc_deadline.h>
 #include <kernel/fs/laziofs.h>
 #include <kernel/graphics/lwm.h>
 #include <kernel/graphics/vfb.h>
@@ -80,7 +80,7 @@ void DG_DrawFrame() {
 }
 void DG_SleepMs(uint32_t ms) { Kernel::Scheduler::thread_sleep_ms(ms); }
 
-uint32_t DG_GetTicksMs() { return Kernel::Drivers::PIT::get_ticks(); }
+uint32_t DG_GetTicksMs() { return Kernel::Drivers::TSCDeadline::get_ticks(); }
 
 int DG_GetKey(int *pressed, unsigned char *doomKey) {
   static const KeyMapping mappings[] = {
