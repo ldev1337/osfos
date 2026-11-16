@@ -392,7 +392,6 @@ void run() {
   const uint32_t COLOR_BG = 0xFF1E1E2E;
   const uint32_t COLOR_CANVAS = 0xFFFFFFFF;
   const uint32_t COLOR_TEXT = 0xFFCDD6F4;
-  const uint32_t COLOR_CURSOR = 0xFFF38BA8;
 
   uint32_t *canvas =
       static_cast<uint32_t *>(kmalloc(canvas_w * canvas_h * sizeof(uint32_t)));
@@ -704,11 +703,6 @@ void run() {
                              static_cast<uint32_t>(cur_b);
       vfb.fill_rect(830, canvas_h + 44, 45, 22, preview_col);
       vfb.draw_rect(830, canvas_h + 44, 45, 22, COLOR_TEXT);
-
-      // Draw Custom Cursor on Canvas
-      if (my < static_cast<int>(canvas_h)) {
-        vfb.draw_rect(mx - 3, my - 3, 7, 7, COLOR_CURSOR);
-      }
 
       vfb.flush();
       panel_redraw_needed = false;

@@ -29,7 +29,7 @@ public:
                    uint32_t min_width = 1, uint32_t min_height = 1);
   void destroy();
 
-  bool valid() const { return initialized_ && buffer_ != nullptr; }
+  bool valid() const { return initialized_; }
   bool has_focus() const;
   int32_t x() const { return x_; }
   int32_t y() const { return y_; }
@@ -42,7 +42,7 @@ public:
 
   void flush() const;
 
-  void put_pixel(uint32_t px, uint32_t py, uint32_t color);
+  void put_pixel(int32_t px, int32_t py, uint32_t color);
   void clear(uint32_t color) { fill(color); }
   void fill(uint32_t color);
   void fill_rect(int32_t rx, int32_t ry, int32_t rw, int32_t rh,
@@ -62,12 +62,12 @@ public:
   int draw_string(int32_t x, int32_t y, float font_size_pixels, const char *text,
                   uint32_t color);
 
-  void blit(const uint32_t *src, uint32_t bx, uint32_t by, uint32_t bw,
+  void blit(const uint32_t *src, int32_t bx, int32_t by, uint32_t bw,
             uint32_t bh, uint32_t src_pitch);
-  void blit_transparent(const uint32_t *src, uint32_t bx, uint32_t by,
+  void blit_transparent(const uint32_t *src, int32_t bx, int32_t by,
                         uint32_t bw, uint32_t bh, uint32_t src_pitch,
                         uint32_t transparent_color);
-  void blit_alpha(const uint32_t *src, uint32_t bx, uint32_t by, uint32_t bw,
+  void blit_alpha(const uint32_t *src, int32_t bx, int32_t by, uint32_t bw,
                   uint32_t bh, uint32_t src_pitch, uint8_t global_alpha);
   void draw_arc(int32_t xc, int32_t yc, int32_t r, int32_t start_angle,
                 int32_t end_angle, uint32_t color);

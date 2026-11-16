@@ -882,8 +882,6 @@ void run_shitty_excel() {
       vfb.fill_rect(10, h - 22 + 18, 70, 2, SHITCELL_PRIMARY);
       Kernel::UICommon::text(vfb, 22, h - 22 + 5, "Sheet1", SHITCELL_PRIMARY);
 
-      vfb.draw_rect(mx - 3, my - 3, 7, 7, SHITCELL_PRIMARY);
-
       vfb.flush();
       panel_redraw_needed = false;
     } else {
