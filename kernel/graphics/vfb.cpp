@@ -2,9 +2,9 @@
 // hardware framebuffer (or a caller-owned buffer), clipped by the window
 // manager. Nothing is allocated.
 //
-//  * window mode (open_window()):  draws into the thread's window client area
-//  * screen mode (init(x,y,w,h)):  draws at (x,y) on the raw screen
-//  * memory mode (attach(buf,..)): draws into a caller-owned buffer
+//   window mode (open_window()): draws into the thread's window client area
+//   screen mode (init(x,y,w,h)): draws at (x,y) on the raw screen
+//   memory mode (attach(buf,..)): draws into a caller-owned buffer
 //
 // Anti-aliasing is 2x2 supersampling on the lattice (4x+1|3, 4y+1|3), i.e. a
 // pixel owns the odd sample columns 4x+1 and 4x+3. Discs, rings, triangles and
@@ -22,7 +22,8 @@
 #include <kernel/lib/math.h>
 #include <kernel/scheduler.h>
 
-// temp abs fix
+// Temporary freestanding compatibility helper for this project's minimal
+// standard-library surface.
 namespace std {
 static inline int abs(int x) { return x < 0 ? -x : x; }
 } // namespace std
@@ -57,8 +58,8 @@ inline void fill32(uint32_t *p, uint32_t v, size_t n) {
   asm volatile("rep stosl" : "+D"(p), "+c"(n) : "a"(v) : "memory");
 }
 
-// Exact per-channel (fg*a + bg*(255-a)) / 255 with rounding; R and B share one
-// multiply. Valid for any a, callers handle the 0 / 255 shortcuts.
+// Exact per-channel (fg*a + bg*(255-a)) / 255 with rounding; R and B share
+// one multiply. Valid for any a, callers handle the 0 / 255 shortcuts.
 inline uint32_t mix(uint32_t fg, uint32_t bg, uint32_t a) {
   const uint32_t ia = 255 - a;
   uint32_t rb = (fg & 0x00FF00FFu) * a + (bg & 0x00FF00FFu) * ia + 0x00800080u;
@@ -68,7 +69,7 @@ inline uint32_t mix(uint32_t fg, uint32_t bg, uint32_t a) {
   return 0xFF000000u | rb | (g << 8);
 }
 
-// samples in 0..4 scaled by alpha; fully covered pixels are written blind.
+// Samples in 0..4 scaled by alpha; fully covered pixels are written blind.
 inline void put_cov(const Canvas &c, int32_t x, int32_t y, uint32_t color,
                     uint32_t samples, uint32_t alpha = 255) {
   const uint32_t cov = (samples * alpha + 2) / 4;
@@ -85,7 +86,7 @@ inline void span_fill(uint32_t *p, int64_t n, uint32_t color, uint32_t alpha) {
     p[i] = mix(color, p[i], alpha);
 }
 
-// ---- 8x8 bitmap text --------------------------------------------------------
+// ---- 8x8 bitmap text ------------------------------------------------------
 
 void glyph(const Canvas &c, int32_t x, int32_t y, char ch, uint32_t fg,
            uint32_t bg, bool opaque) {
@@ -133,18 +134,18 @@ int text8(const Canvas &c, int32_t x, int32_t y, float size, const char *text,
   return cursor;
 }
 
-// ---- sample-interval scan conversion ---------------------------------------
+// ---- sample-interval scan conversion -------------------------------------
 
 // Samples (all integers; only odd ones exist) in [lo, hi]; empty if lo > hi.
 struct Iv {
   int64_t lo = 1, hi = 0;
   bool empty() const { return lo > hi; }
 };
-struct Iv2 { // two disjoint intervals, a left of b; b only used when a is
+struct Iv2 {
   Iv a, b;
 };
 
-inline int64_t isqrt(int64_t v) { // floor(sqrt(v)), v >= 0
+inline int64_t isqrt(int64_t v) {
   if (v < 2)
     return v;
   int64_t r = 0, bit = int64_t(1) << (62 - (__builtin_clzll(v) & ~1));
@@ -159,7 +160,7 @@ inline int64_t isqrt(int64_t v) { // floor(sqrt(v)), v >= 0
   return r;
 }
 
-inline int64_t floordiv(int64_t a, int64_t b) { // b > 0
+inline int64_t floordiv(int64_t a, int64_t b) {
   return a >= 0 ? a / b : -((-a + b - 1) / b);
 }
 inline int64_t ceildiv(int64_t a, int64_t b) { return -floordiv(-a, b); }
@@ -199,7 +200,7 @@ void cover_row(const Canvas &c, int32_t y, int32_t xl, int32_t xr,
   if (a > z)
     return;
 
-  int64_t fa = 1, fz = 0, ha = 1, hz = 0; // solid run / empty hole (pixels)
+  int64_t fa = 1, fz = 0, ha = 1, hz = 0;
   const bool sp0 = !s[0].b.empty(), sp1 = !s[1].b.empty();
   if (!sp0 && !sp1) {
     if (!s[0].a.empty() && !s[1].a.empty()) {
@@ -345,12 +346,12 @@ void sector(const Canvas &c, int32_t xc, int32_t yc, int32_t r, int32_t start,
       const Iv d{cx - m, cx + m};
       if (whole) {
         s[k].a = d;
-      } else if (!big) { // between the two radii
+      } else if (!big) {
         Iv v = d;
         halfplane(v, -d0y, d0x * dy + d0y * cx);
         halfplane(v, d1y, -d1y * cx - dy * d1x);
         s[k].a = v;
-      } else { // disc minus the (convex) complementary wedge
+      } else {
         Iv w = d;
         halfplane(w, -d1y, d1x * dy + d1y * cx);
         halfplane(w, d0y, -d0y * cx - dy * d0x);
@@ -369,8 +370,7 @@ void sector(const Canvas &c, int32_t xc, int32_t yc, int32_t r, int32_t start,
   }
 }
 
-// ---- lines
-// -------------------------------------------------------------------
+// ---- lines ---------------------------------------------------------------
 
 struct Seg {
   int64_t ax, ay, dx, dy, len2;
@@ -392,49 +392,54 @@ inline bool near_seg(const Seg &s, int64_t px, int64_t py) {
 
 void line(const Canvas &c, int32_t x0, int32_t y0, int32_t x1, int32_t y1,
           uint32_t color) {
-  if (x0 == x1 || y0 == y1) { // axis-aligned 1px line == exact pixel run
+  if (x0 == x1 || y0 == y1) {
     Raster::fill_rect(c, std::min(x0, x1), std::min(y0, y1),
                       std::abs(x1 - x0) + 1, std::abs(y1 - y0) + 1, color);
     return;
   }
-  const Seg s{int64_t(x0) * 4 + 2, int64_t(y0) * 4 + 2, int64_t(x1 - x0) * 4,
-              int64_t(y1 - y0) * 4,
-              (int64_t(x1 - x0) * 4) * (int64_t(x1 - x0) * 4) +
-                  (int64_t(y1 - y0) * 4) * (int64_t(y1 - y0) * 4)};
-  auto plot = [&](int32_t x, int32_t y) {
-    const int64_t px = int64_t(x) * 4, py = int64_t(y) * 4;
-    put_cov(c, x, y, color,
-            near_seg(s, px + 1, py + 1) + near_seg(s, px + 3, py + 1) +
-                near_seg(s, px + 1, py + 3) + near_seg(s, px + 3, py + 3));
-  };
-  // Walk the major axis; only +-3 pixels around the centre line can be covered.
-  if (std::abs(x1 - x0) >= std::abs(y1 - y0)) {
-    if (x0 > x1) {
-      std::swap(x0, x1);
-      std::swap(y0, y1);
-    }
-    const int64_t dx = x1 - x0, dy = y1 - y0;
-    for (int32_t x = std::max(x0 - 1, c.l), xe = std::min(x1 + 2, c.r); x < xe;
-         ++x) {
-      const int32_t xc = std::clamp(x, x0, x1);
-      const int32_t yc = y0 + int32_t((int64_t(xc - x0) * dy + dx / 2) / dx);
-      for (int32_t y = std::max(yc - 3, c.t), ye = std::min(yc + 4, c.b);
-           y < ye; ++y)
-        plot(x, y);
+  int32_t dx = std::abs(x1 - x0);
+  int32_t dy = std::abs(y1 - y0);
+  int32_t sx = (x0 < x1) ? 1 : -1;
+  int32_t sy = (y0 < y1) ? 1 : -1;
+  int32_t err = dx - dy;
+  bool fully_inside = (std::min(x0, x1) >= c.l && std::max(x0, x1) < c.r &&
+                       std::min(y0, y1) >= c.t && std::max(y0, y1) < c.b);
+
+  if (fully_inside) {
+    uint32_t *ptr = row_ptr(c, y0) + x0;
+    int32_t stride = c.stride;
+    while (true) {
+      *ptr = color;
+      if (x0 == x1 && y0 == y1)
+        break;
+      int32_t e2 = 2 * err;
+      if (e2 > -dy) {
+        err -= dy;
+        x0 += sx;
+        ptr += sx; // Step horizontally in memory
+      }
+      if (e2 < dx) {
+        err += dx;
+        y0 += sy;
+        ptr += sy * stride;
+      }
     }
   } else {
-    if (y0 > y1) {
-      std::swap(x0, x1);
-      std::swap(y0, y1);
-    }
-    const int64_t dx = x1 - x0, dy = y1 - y0;
-    for (int32_t y = std::max(y0 - 1, c.t), ye = std::min(y1 + 2, c.b); y < ye;
-         ++y) {
-      const int32_t yc = std::clamp(y, y0, y1);
-      const int32_t xc = x0 + int32_t((int64_t(yc - y0) * dx + dy / 2) / dy);
-      for (int32_t x = std::max(xc - 3, c.l), xe = std::min(xc + 4, c.r);
-           x < xe; ++x)
-        plot(x, y);
+    while (true) {
+      if (x0 >= c.l && x0 < c.r && y0 >= c.t && y0 < c.b) {
+        row_ptr(c, y0)[x0] = color;
+      }
+      if (x0 == x1 && y0 == y1)
+        break;
+      int32_t e2 = 2 * err;
+      if (e2 > -dy) {
+        err -= dy;
+        x0 += sx;
+      }
+      if (e2 < dx) {
+        err += dx;
+        y0 += sy;
+      }
     }
   }
 }
@@ -476,7 +481,6 @@ void rounded_outline(const Canvas &c, int32_t rx, int32_t ry, int32_t w,
 
   const int64_t Ro = int64_t(radius) * 4 + 2;
   const int64_t Ri = std::max<int64_t>(int64_t(radius) * 4 - 2, 0);
-  // Corner arc = ring restricted to the quadrant box of its centre pixel.
   auto corner = [&](int32_t cx, int32_t cy, bool left, bool top) {
     Box q;
     if (box(c, left ? cx - radius - 1 : cx, top ? cy - radius - 1 : cy,
@@ -524,19 +528,19 @@ bool glyph_ttf(const Canvas &c, int32_t gx, int32_t gy, char ch, uint32_t fg,
   return true;
 }
 
-// ---- how a VirtualFramebuffer reaches pixels --------------------------------
+// ---- how a VirtualFramebuffer reaches pixels -----------------------------
 
 struct View {
   uint64_t tid;
   int32_t x, y;
   uint32_t w, h;
-  uint32_t *buf; // memory mode only
+  uint32_t *buf;
   uint32_t pitch;
   bool windowed;
 };
 
 // Runs fn(const Canvas&) once per visible clip rectangle. (bx,by,bw,bh) is the
-// local bounding box that will be touched (used to hide the cursor).
+// local bounding box that will be touched.
 template <class F>
 void paint(const View &v, int32_t bx, int32_t by, int32_t bw, int32_t bh,
            F &&fn) {
@@ -569,7 +573,7 @@ namespace Raster {
 
 TrueTypeFont *default_font() {
   static TrueTypeFont font;
-  static int state = 0; // 0 = not tried, 1 = loaded, 2 = unavailable
+  static int state = 0;
   if (!state)
     state = (OpenFont::load_embedded_named(font, "GeistMono.ttf") ||
              OpenFont::load_preferred(font, "GeistMono.ttf", "Geist.ttf")) &&
@@ -590,7 +594,7 @@ void fill_rect(const Canvas &c, int32_t x, int32_t y, int32_t w, int32_t h,
     return;
   const size_t n = size_t(b.r - b.l);
   uint32_t *row = row_ptr(c, b.t) + b.l;
-  if (ptrdiff_t(n) == c.stride) // rows are contiguous
+  if (ptrdiff_t(n) == c.stride)
     return fill32(row, color, n * size_t(b.b - b.t));
   for (int32_t y2 = b.t; y2 < b.b; ++y2, row += c.stride)
     fill32(row, color, n);
@@ -624,7 +628,7 @@ void fill_rounded_rect(const Canvas &c, int32_t rx, int32_t ry, int32_t w,
 
 int text(const Canvas &c, TrueTypeFont &font, int32_t x, int32_t y, float size,
          const char *str, uint32_t color) {
-  uint32_t *sub = row_ptr(c, c.t) + c.l; // clip origin as a sub-buffer
+  uint32_t *sub = row_ptr(c, c.t) + c.l;
   return font.render_text(sub, uint32_t(c.r - c.l), uint32_t(c.b - c.t),
                           uint32_t(c.stride * 4), x - c.l, y - c.t, size, str,
                           color) +
@@ -695,7 +699,8 @@ bool VirtualFramebuffer::attach(uint32_t *buffer, int32_t x, int32_t y,
   return true;
 }
 
-// Window mode: reserves a window; pixels go straight to the screen inside it.
+// Window mode: reserves a window; pixels go straight to the screen inside
+// it.
 bool VirtualFramebuffer::open_window(uint32_t requested_width,
                                      uint32_t requested_height, uint32_t,
                                      uint32_t) {
@@ -894,7 +899,8 @@ void VirtualFramebuffer::fill_sector(int32_t xc, int32_t yc, int32_t r,
 void VirtualFramebuffer::fill_triangle(int32_t x0, int32_t y0, int32_t x1,
                                        int32_t y1, int32_t x2, int32_t y2,
                                        uint32_t color) {
-  const int32_t l = std::min({x0, x1, x2}) - 1, t = std::min({y0, y1, y2}) - 1;
+  const int32_t l = std::min({x0, x1, x2}) - 1;
+  const int32_t t = std::min({y0, y1, y2}) - 1;
   paint(VFB_VIEW, l, t, std::max({x0, x1, x2}) + 2 - l,
         std::max({y0, y1, y2}) + 2 - t,
         [&](const Canvas &c) { triangle(c, x0, y0, x1, y1, x2, y2, color); });
