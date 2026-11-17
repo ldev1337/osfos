@@ -1,15 +1,16 @@
-// vfb.cpp - VirtualFramebuffer: every primitive draws straight into the
-// hardware framebuffer (or a caller-owned buffer), clipped by the window
-// manager. Nothing is allocated.
+// vfb.cpp - rasteriser + command encoder.
 //
-//   window mode (open_window()): draws into the thread's window client area
-//   screen mode (init(x,y,w,h)): draws at (x,y) on the raw screen
-//   memory mode (attach(buf,..)): draws into a caller-owned buffer
+//   window mode (open_window): primitives are ENCODED into the window's SPSC
+//     command ring (a few stores, no lock, no wait). The compositor thread
+//     decodes and rasterises them (Raster::execute).
+//   screen mode (init):        primitives rasterise immediately at (x,y) on
+//     the raw framebuffer.
+//   memory mode (attach):      primitives rasterise immediately into the
+//     caller's buffer; flush() queues that buffer to the window (by reference).
 //
-// Anti-aliasing is 2x2 supersampling on the lattice (4x+1|3, 4y+1|3), i.e. a
-// pixel owns the odd sample columns 4x+1 and 4x+3. Discs, rings, triangles and
-// sectors are scan-converted from per-sample-row intervals: only edge pixels
-// are evaluated, interiors are plain stores and never read the destination.
+// Anti-aliasing is 2x2 supersampling on the lattice (4x+1|3, 4y+1|3).
+// Discs, rings, triangles and sectors are scan-converted from per-sample-row
+// intervals: only edge pixels are evaluated, interiors are plain stores.
 #include <algorithm>
 #include <arch/x86_64/string.h>
 #include <kernel/drivers/framebuffer.h>
@@ -22,14 +23,21 @@
 #include <kernel/lib/math.h>
 #include <kernel/scheduler.h>
 
-// Temporary freestanding compatibility helper for this project's minimal
-// standard-library surface.
 namespace std {
 static inline int abs(int x) { return x < 0 ? -x : x; }
 } // namespace std
 
 namespace Kernel::Graphics {
 namespace {
+
+enum Op : uint32_t {
+  OpPad = Cmd::kPad,
+  OpPixel, OpFillRect, OpRect, OpLine, OpCircle, OpFillCircle, OpFillRectA,
+  OpFillCircleA, OpGlyph, OpGlyphBg, OpText, OpBlit, OpArc, OpSector,
+  OpFillTri, OpRRect, OpFillRRect
+};
+enum : uint32_t { BlitOpaque, BlitKey, BlitAlpha };
+constexpr uint32_t kMaxText = 1024;
 
 struct Box {
   int32_t l, t, r, b;
@@ -493,22 +501,29 @@ void rounded_outline(const Canvas &c, int32_t rx, int32_t ry, int32_t w,
   corner(r - radius, b - radius, false, false);
 }
 
-template <typename Pixel>
-void blit_pixels(const Canvas &c, int64_t bx, int64_t by, uint32_t bw,
-                 uint32_t bh, const uint32_t *src, uint32_t src_pitch,
-                 Pixel pixel) {
+
+void blit_any(const Canvas &c, int64_t bx, int64_t by, uint32_t bw,
+              uint32_t bh, const uint32_t *src, uint32_t sp, uint32_t mode,
+              uint32_t param) {
   Box b;
   if (!box(c, bx, by, bx + bw, by + bh, b))
     return;
   const uint8_t *srow = reinterpret_cast<const uint8_t *>(src) +
-                        size_t(b.t - by) * src_pitch +
-                        size_t(b.l - bx) * sizeof(uint32_t);
+                        size_t(b.t - by) * sp + size_t(b.l - bx) * 4;
   const int32_t n = b.r - b.l;
-  for (int32_t y = b.t; y < b.b; ++y, srow += src_pitch) {
+  for (int32_t y = b.t; y < b.b; ++y, srow += sp) {
     const auto *s = reinterpret_cast<const uint32_t *>(srow);
     uint32_t *d = row_ptr(c, y) + b.l;
-    for (int32_t x = 0; x < n; ++x)
-      d[x] = pixel(s[x], d[x]);
+    if (mode == BlitOpaque)
+      memcpy(d, s, size_t(n) * 4);
+    else if (mode == BlitKey)
+      for (int32_t x = 0; x < n; ++x) {
+        if (s[x] != param)
+          d[x] = s[x];
+      }
+    else
+      for (int32_t x = 0; x < n; ++x)
+        d[x] = Raster::blend(s[x], d[x], param);
   }
 }
 
@@ -528,47 +543,129 @@ bool glyph_ttf(const Canvas &c, int32_t gx, int32_t gy, char ch, uint32_t fg,
   return true;
 }
 
-// ---- how a VirtualFramebuffer reaches pixels -----------------------------
+// ---- submission: encode into the ring, or rasterise right now -------------
 
-struct View {
-  uint64_t tid;
-  int32_t x, y;
-  uint32_t w, h;
+struct Target {
+  Cmd::Ring *q;
   uint32_t *buf;
   uint32_t pitch;
-  bool windowed;
+  int32_t x, y;
+  uint32_t w, h;
 };
 
-// Runs fn(const Canvas&) once per visible clip rectangle. (bx,by,bw,bh) is the
-// local bounding box that will be touched.
-template <class F>
-void paint(const View &v, int32_t bx, int32_t by, int32_t bw, int32_t bh,
-           F &&fn) {
-  using namespace WindowManager;
-  if (v.buf) {
-    fn(Canvas{v.buf, ptrdiff_t(v.pitch / 4), 0, 0, int32_t(v.w), int32_t(v.h)});
-    return;
+// Canvas for the immediate (screen / memory) modes.
+bool direct_canvas(const Target &t, Canvas &c) {
+  if (t.buf) {
+    c = {t.buf, ptrdiff_t(t.pitch / 4), 0, 0, int32_t(t.w), int32_t(t.h)};
+    return t.w && t.h;
   }
-  Surface s;
-  if (begin_draw(v.tid, v.windowed, v.x, v.y, bx, by, bw, bh, s) !=
-      DrawStatus::Ok)
+  const Canvas s = Raster::screen();
+  if (!s.origin)
+    return false;
+  c.origin = s.origin + ptrdiff_t(t.y) * s.stride + t.x;
+  c.stride = s.stride;
+  c.l = std::max<int32_t>(0, -t.x);
+  c.t = std::max<int32_t>(0, -t.y);
+  c.r = int32_t(std::min<int64_t>(t.w, int64_t(s.r) - t.x));
+  c.b = int32_t(std::min<int64_t>(t.h, int64_t(s.b) - t.y));
+  return c.l < c.r && c.t < c.b;
+}
+
+template <class... A>
+inline void submit(const Target &t, uint32_t op, A... a) {
+  constexpr uint32_t n = 1 + sizeof...(A);
+  uint32_t tmp[n];
+  uint32_t *p = tmp;
+  if (t.q && !(p = Cmd::begin(t.q, n))) [[unlikely]]
     return;
-  for (uint32_t i = 0; i < s.n; ++i) {
-    const Canvas c{s.origin,
-                   s.stride,
-                   std::max<int32_t>(s.clip[i].l - s.ox, 0),
-                   std::max<int32_t>(s.clip[i].t - s.oy, 0),
-                   std::min<int32_t>(s.clip[i].r - s.ox, int32_t(v.w)),
-                   std::min<int32_t>(s.clip[i].b - s.oy, int32_t(v.h))};
-    if (c.l < c.r && c.t < c.b)
-      fn(c);
+  Canvas c;
+  if (!t.q && !direct_canvas(t, c))
+    return;
+  p[0] = op | n << 8;
+  uint32_t i = 1;
+  ((p[i++] = uint32_t(a)), ...);
+  if (t.q)
+    Cmd::end(t.q);
+  else
+    Raster::execute(c, tmp);
+}
+
+int submit_text(const Target &t, int32_t x, int32_t y, float size,
+                TrueTypeFont *font, const char *s, uint32_t color) {
+  const int gs = std::max(1, int(size + 0.5f));
+  const int end = font ? x + font->get_text_width(size, s)
+                       : x + gs * int(strlen(s));
+  if (t.q) {
+    uint32_t len = uint32_t(strlen(s));
+    if (len > kMaxText)
+      len = kMaxText;
+    const uint32_t words = 8 + (len + 4) / 4; // chars + NUL
+    if (uint32_t *p = Cmd::begin(t.q, words)) {
+      uint32_t sb;
+      __builtin_memcpy(&sb, &size, 4);
+      const uint64_t f = uint64_t(uintptr_t(font));
+      p[0] = OpText | words << 8;
+      p[1] = uint32_t(x);
+      p[2] = uint32_t(y);
+      p[3] = sb;
+      p[4] = color;
+      p[5] = uint32_t(f);
+      p[6] = uint32_t(f >> 32);
+      p[7] = len;
+      p[words - 1] = 0;
+      memcpy(p + 8, s, len);
+      Cmd::end(t.q);
+    }
+  } else if (Canvas c; direct_canvas(t, c)) {
+    if (font)
+      Raster::text(c, *font, x, y, size, s, color);
+    else
+      text8(c, x, y, size, s, color);
   }
-  end_draw();
+  return end;
+}
+
+void submit_blit(const Target &t, int32_t bx, int32_t by, uint32_t bw,
+                 uint32_t bh, const uint32_t *src, uint32_t sp, uint32_t mode,
+                 uint32_t param) {
+  if (!bw || !bh)
+    return;
+  if (t.q)
+    Cmd::blit(t.q, bx, by, bw, bh, src, sp, mode, param);
+  else if (Canvas c; direct_canvas(t, c))
+    blit_any(c, bx, by, bw, bh, src, sp, mode, param);
 }
 
 } // namespace
 
-// Raster: exported primitives (also used by the compositor)
+namespace Cmd {
+void blit(Ring *q, int32_t x, int32_t y, uint32_t w, uint32_t h,
+          const uint32_t *src, uint32_t pitch, uint32_t mode, uint32_t param) {
+  const bool inl = uint64_t(w) * h <= kInlinePixels;
+  const uint32_t n = 10 + (inl ? w * h : 0);
+  uint32_t *p = begin(q, n);
+  if (!p)
+    return;
+  const uint64_t ptr = inl ? 0 : uint64_t(uintptr_t(src));
+  p[0] = OpBlit | n << 8;
+  p[1] = uint32_t(x);
+  p[2] = uint32_t(y);
+  p[3] = w;
+  p[4] = h;
+  p[5] = pitch;
+  p[6] = mode;
+  p[7] = param;
+  p[8] = uint32_t(ptr);
+  p[9] = uint32_t(ptr >> 32);
+  if (inl)
+    for (uint32_t r = 0; r < h; ++r)
+      memcpy(p + 10 + r * w,
+             reinterpret_cast<const uint8_t *>(src) + size_t(r) * pitch,
+             size_t(w) * 4);
+  end(q);
+}
+} // namespace Cmd
+
 namespace Raster {
 
 TrueTypeFont *default_font() {
@@ -581,6 +678,18 @@ TrueTypeFont *default_font() {
                 ? 1
                 : 2;
   return state == 1 ? &font : nullptr;
+}
+
+Canvas screen() {
+  static Canvas s{};
+  if (!s.origin && Kernel::Drivers::Framebuffer::valid()) {
+    const auto info = Kernel::Drivers::Framebuffer::get_info();
+    s = {reinterpret_cast<uint32_t *>(uintptr_t(info.address)),
+         ptrdiff_t(info.pitch / 4), 0, 0,
+         int32_t(Kernel::Drivers::Framebuffer::width()),
+         int32_t(Kernel::Drivers::Framebuffer::height())};
+  }
+  return s;
 }
 
 uint32_t blend(uint32_t fg, uint32_t bg, uint32_t alpha) {
@@ -639,16 +748,99 @@ void glyph8(const Canvas &c, int32_t x, int32_t y, char ch, uint32_t color) {
   glyph(c, x, y, ch, color, 0, false);
 }
 
+// Decodes one record and draws it clipped to c.
+void execute(const Canvas &c, const uint32_t *r) {
+  const int32_t *a = reinterpret_cast<const int32_t *>(r) + 1;
+  const uint32_t *u = r + 1;
+  switch (r[0] & 0xFFu) {
+  case OpPixel: {
+    const int x = int16_t(u[0]), y = int16_t(u[0] >> 16);
+    if (x >= c.l && x < c.r && y >= c.t && y < c.b)
+      row_ptr(c, y)[x] = u[1];
+    break;
+  }
+  case OpFillRect:
+    fill_rect(c, a[0], a[1], a[2], a[3], u[4]);
+    break;
+  case OpRect:
+    rect_outline(c, a[0], a[1], a[2], a[3], u[4]);
+    break;
+  case OpLine:
+    line(c, a[0], a[1], a[2], a[3], u[4]);
+    break;
+  case OpCircle:
+    circle(c, a[0], a[1], a[2], u[3], 255, true);
+    break;
+  case OpFillCircle:
+    circle(c, a[0], a[1], a[2], u[3], 255, false);
+    break;
+  case OpFillRectA: {
+    Box b;
+    if (box(c, a[0], a[1], int64_t(a[0]) + a[2], int64_t(a[1]) + a[3], b))
+      for (int32_t y = b.t; y < b.b; ++y)
+        span_fill(row_ptr(c, y) + b.l, b.r - b.l, u[4], u[5]);
+    break;
+  }
+  case OpFillCircleA:
+    circle(c, a[0], a[1], a[2], u[3], u[4], false);
+    break;
+  case OpGlyph:
+    if (!glyph_ttf(c, a[0], a[1], char(u[2]), u[3], 0, false))
+      glyph(c, a[0], a[1], char(u[2]), u[3], 0, false);
+    break;
+  case OpGlyphBg:
+    if (!glyph_ttf(c, a[0], a[1], char(u[2]), u[3], u[4], true))
+      glyph(c, a[0], a[1], char(u[2]), u[3], u[4], true);
+    break;
+  case OpText: {
+    float size;
+    __builtin_memcpy(&size, &r[3], 4);
+    TrueTypeFont *font = reinterpret_cast<TrueTypeFont *>(
+        uintptr_t(uint64_t(r[5]) | uint64_t(r[6]) << 32));
+    const char *s = reinterpret_cast<const char *>(r + 8);
+    if (font)
+      text(c, *font, a[0], a[1], size, s, r[4]);
+    else
+      text8(c, a[0], a[1], size, s, r[4]);
+    break;
+  }
+  case OpBlit: {
+    const uint64_t ptr = uint64_t(r[8]) | uint64_t(r[9]) << 32;
+    const uint32_t *src =
+        ptr ? reinterpret_cast<const uint32_t *>(uintptr_t(ptr)) : r + 10;
+    blit_any(c, a[0], a[1], u[2], u[3], src, ptr ? u[4] : u[2] * 4, u[5],
+             u[6]);
+    break;
+  }
+  case OpArc:
+    walk_arc(a[0], a[1], a[2], a[3], a[4],
+             [&](int32_t x0, int32_t y0, int32_t x1, int32_t y1) {
+               line(c, x0, y0, x1, y1, u[5]);
+             });
+    break;
+  case OpSector:
+    sector(c, a[0], a[1], a[2], a[3], a[4], u[5]);
+    break;
+  case OpFillTri:
+    triangle(c, a[0], a[1], a[2], a[3], a[4], a[5], u[6]);
+    break;
+  case OpRRect:
+    rounded_outline(c, a[0], a[1], a[2], a[3], a[4], u[5]);
+    break;
+  case OpFillRRect:
+    fill_rounded_rect(c, a[0], a[1], a[2], a[3], a[4], u[5]);
+    break;
+  default:
+    break;
+  }
+}
+
 } // namespace Raster
 
 // ============================================================================
 // VirtualFramebuffer
 // ============================================================================
-#define VFB_VIEW                                                               \
-  View {                                                                       \
-    Kernel::Scheduler::current_thread_id(), x_, y_, width_, height_, buffer_,  \
-        static_cast<uint32_t>(pitch_), owns_buffer_                            \
-  }
+#define TGT Target{ring_, buffer_, pitch_, x_, y_, width_, height_}
 
 VirtualFramebuffer::VirtualFramebuffer(int32_t x, int32_t y, uint32_t width,
                                        uint32_t height) {
@@ -671,19 +863,17 @@ VirtualFramebuffer::operator=(VirtualFramebuffer &&other) noexcept {
     buffer_ = other.buffer_;
     pitch_ = other.pitch_;
     initialized_ = other.initialized_;
-    owns_buffer_ = other.owns_buffer_;
+    ring_ = other.ring_;
     other.destroy();
   }
   return *this;
 }
 
-// Screen mode. (owns_buffer_ doubles as "bound to this thread's window".)
 bool VirtualFramebuffer::init(int32_t x, int32_t y, uint32_t width,
                               uint32_t height) {
   return attach(nullptr, x, y, width, height);
 }
 
-// Memory mode: draw into a caller-owned buffer (never freed here).
 bool VirtualFramebuffer::attach(uint32_t *buffer, int32_t x, int32_t y,
                                 uint32_t width, uint32_t height) {
   destroy();
@@ -699,20 +889,19 @@ bool VirtualFramebuffer::attach(uint32_t *buffer, int32_t x, int32_t y,
   return true;
 }
 
-// Window mode: reserves a window; pixels go straight to the screen inside
-// it.
 bool VirtualFramebuffer::open_window(uint32_t requested_width,
                                      uint32_t requested_height, uint32_t,
                                      uint32_t) {
-  uint32_t width = 0, height = 0;
-  if (!Kernel::Graphics::WindowManager::request_window_size(
-          Kernel::Scheduler::current_thread_id(), requested_width,
-          requested_height, &width, &height) ||
-      !init(0, 0, width, height)) {
+  using namespace WindowManager;
+  const uint64_t tid = Kernel::Scheduler::current_thread_id();
+  uint32_t w = 0, h = 0;
+  Cmd::Ring *q = nullptr;
+  if (!request_window_size(tid, requested_width, requested_height, &w, &h) ||
+      !(q = queue_of(tid)) || !init(0, 0, w, h)) {
     destroy();
     return false;
   }
-  owns_buffer_ = true;
+  ring_ = q;
   return true;
 }
 
@@ -723,12 +912,12 @@ bool VirtualFramebuffer::has_focus() const {
 
 void VirtualFramebuffer::destroy() {
   buffer_ = nullptr;
-  owns_buffer_ = false;
+  ring_ = nullptr;
   initialized_ = false;
   width_ = height_ = 0;
 }
 
-// Direct modes already put every pixel on screen. Memory mode publishes.
+// Only memory mode needs publishing; window and screen modes already are.
 void VirtualFramebuffer::flush() const {
   if (!buffer_)
     return;
@@ -742,45 +931,36 @@ void VirtualFramebuffer::flush() const {
 void VirtualFramebuffer::put_pixel(int32_t px, int32_t py, uint32_t color) {
   if (uint32_t(px) >= width_ || uint32_t(py) >= height_) [[unlikely]]
     return;
-  paint(VFB_VIEW, px, py, 1, 1, [&](const Canvas &c) {
-    if (px >= c.l && px < c.r && py >= c.t && py < c.b)
-      row_ptr(c, py)[px] = color;
-  });
+  submit(TGT, OpPixel, uint32_t(uint16_t(px)) | uint32_t(py) << 16, color);
 }
 
 void VirtualFramebuffer::fill(uint32_t color) {
-  fill_rect(0, 0, int32_t(width_), int32_t(height_), color);
+  submit(TGT, OpFillRect, 0, 0, width_, height_, color);
 }
 
 void VirtualFramebuffer::fill_rect(int32_t rx, int32_t ry, int32_t rw,
                                    int32_t rh, uint32_t color) {
-  paint(VFB_VIEW, rx, ry, rw, rh,
-        [&](const Canvas &c) { Raster::fill_rect(c, rx, ry, rw, rh, color); });
+  submit(TGT, OpFillRect, rx, ry, rw, rh, color);
 }
 
 void VirtualFramebuffer::draw_rect(int32_t rx, int32_t ry, int32_t w, int32_t h,
                                    uint32_t color) {
-  paint(VFB_VIEW, rx, ry, w, h,
-        [&](const Canvas &c) { rect_outline(c, rx, ry, w, h, color); });
+  submit(TGT, OpRect, rx, ry, w, h, color);
 }
 
 void VirtualFramebuffer::draw_line(int32_t x0, int32_t y0, int32_t x1,
                                    int32_t y1, uint32_t color) {
-  paint(VFB_VIEW, std::min(x0, x1) - 1, std::min(y0, y1) - 1,
-        std::abs(x1 - x0) + 3, std::abs(y1 - y0) + 3,
-        [&](const Canvas &c) { line(c, x0, y0, x1, y1, color); });
+  submit(TGT, OpLine, x0, y0, x1, y1, color);
 }
 
 void VirtualFramebuffer::draw_circle(int32_t xc, int32_t yc, int32_t r,
                                      uint32_t color) {
-  paint(VFB_VIEW, xc - r - 1, yc - r - 1, 2 * r + 3, 2 * r + 3,
-        [&](const Canvas &c) { circle(c, xc, yc, r, color, 255, true); });
+  submit(TGT, OpCircle, xc, yc, r, color);
 }
 
 void VirtualFramebuffer::fill_circle(int32_t xc, int32_t yc, int32_t r,
                                      uint32_t color) {
-  paint(VFB_VIEW, xc - r - 1, yc - r - 1, 2 * r + 3, 2 * r + 3,
-        [&](const Canvas &c) { circle(c, xc, yc, r, color, 255, false); });
+  submit(TGT, OpFillCircle, xc, yc, r, color);
 }
 
 void VirtualFramebuffer::fill_rect_alpha(int32_t rx, int32_t ry, int32_t w,
@@ -789,77 +969,52 @@ void VirtualFramebuffer::fill_rect_alpha(int32_t rx, int32_t ry, int32_t w,
   if (alpha == 0)
     return;
   if (alpha == 255)
-    return fill_rect(rx, ry, w, h, color);
-  paint(VFB_VIEW, rx, ry, w, h, [&](const Canvas &c) {
-    Box b;
-    if (!box(c, rx, ry, int64_t(rx) + w, int64_t(ry) + h, b))
-      return;
-    for (int32_t y = b.t; y < b.b; ++y)
-      span_fill(row_ptr(c, y) + b.l, b.r - b.l, color, alpha);
-  });
+    return submit(TGT, OpFillRect, rx, ry, w, h, color);
+  submit(TGT, OpFillRectA, rx, ry, w, h, color, alpha);
 }
 
 void VirtualFramebuffer::fill_circle_alpha(int32_t xc, int32_t yc, int32_t r,
                                            uint32_t color, uint8_t alpha) {
   if (alpha == 0)
     return;
-  paint(VFB_VIEW, xc - r - 1, yc - r - 1, 2 * r + 3, 2 * r + 3,
-        [&](const Canvas &c) { circle(c, xc, yc, r, color, alpha, false); });
+  submit(TGT, OpFillCircleA, xc, yc, r, color, alpha);
 }
 
 int VirtualFramebuffer::draw_string(int32_t x, int32_t y,
                                     float font_size_pixels, const char *text,
                                     uint32_t color) {
-  if (TrueTypeFont *font = Raster::default_font())
-    return draw_text_truetype(x, y, font_size_pixels, *font, text, color);
-  int end = x + std::max(1, int(font_size_pixels + 0.5f)) * int(strlen(text));
-  paint(VFB_VIEW, 0, 0, width_, height_, [&](const Canvas &c) {
-    end = text8(c, x, y, font_size_pixels, text, color);
-  });
-  return end;
+  return submit_text(TGT, x, y, font_size_pixels, Raster::default_font(), text,
+                     color);
+}
+
+int VirtualFramebuffer::draw_text_truetype(int32_t x, int32_t y,
+                                           float font_size_pixels,
+                                           TrueTypeFont &font,
+                                           const char *text, uint32_t color) {
+  // The font must outlive the compositor's execution of this record.
+  return submit_text(TGT, x, y, font_size_pixels, &font, text, color);
 }
 
 void VirtualFramebuffer::draw_glyph(int32_t gx, int32_t gy, char ch,
                                     uint32_t color) {
-  paint(VFB_VIEW, gx, gy, 32, 32, [&](const Canvas &c) {
-    if (!glyph_ttf(c, gx, gy, ch, color, 0, false))
-      glyph(c, gx, gy, ch, color, 0, false);
-  });
+  submit(TGT, OpGlyph, gx, gy, uint8_t(ch), color);
 }
 
 void VirtualFramebuffer::draw_glyph_bg(int32_t gx, int32_t gy, char ch,
                                        uint32_t fg, uint32_t bg) {
-  paint(VFB_VIEW, gx, gy, 32, 32, [&](const Canvas &c) {
-    if (!glyph_ttf(c, gx, gy, ch, fg, bg, true))
-      glyph(c, gx, gy, ch, fg, bg, true);
-  });
+  submit(TGT, OpGlyphBg, gx, gy, uint8_t(ch), fg, bg);
 }
 
 void VirtualFramebuffer::blit(const uint32_t *src, int32_t bx, int32_t by,
                               uint32_t bw, uint32_t bh, uint32_t src_pitch) {
-  paint(VFB_VIEW, bx, by, bw, bh, [&](const Canvas &c) {
-    Box b;
-    if (!box(c, bx, by, int64_t(bx) + bw, int64_t(by) + bh, b))
-      return;
-    const uint8_t *srow = reinterpret_cast<const uint8_t *>(src) +
-                          size_t(b.t - by) * src_pitch +
-                          size_t(b.l - bx) * sizeof(uint32_t);
-    const size_t bytes = size_t(b.r - b.l) * sizeof(uint32_t);
-    for (int32_t y = b.t; y < b.b; ++y, srow += src_pitch)
-      memcpy(row_ptr(c, y) + b.l, srow, bytes);
-  });
+  submit_blit(TGT, bx, by, bw, bh, src, src_pitch, BlitOpaque, 0);
 }
 
 void VirtualFramebuffer::blit_transparent(const uint32_t *src, int32_t bx,
                                           int32_t by, uint32_t bw, uint32_t bh,
                                           uint32_t src_pitch,
                                           uint32_t transparent_color) {
-  paint(VFB_VIEW, bx, by, bw, bh, [&](const Canvas &c) {
-    blit_pixels(c, bx, by, bw, bh, src, src_pitch,
-                [transparent_color](uint32_t s, uint32_t d) {
-                  return s == transparent_color ? d : s;
-                });
-  });
+  submit_blit(TGT, bx, by, bw, bh, src, src_pitch, BlitKey, transparent_color);
 }
 
 void VirtualFramebuffer::blit_alpha(const uint32_t *src, int32_t bx, int32_t by,
@@ -867,75 +1022,40 @@ void VirtualFramebuffer::blit_alpha(const uint32_t *src, int32_t bx, int32_t by,
                                     uint32_t src_pitch, uint8_t global_alpha) {
   if (global_alpha == 0)
     return;
-  paint(VFB_VIEW, bx, by, bw, bh, [&](const Canvas &c) {
-    blit_pixels(c, bx, by, bw, bh, src, src_pitch,
-                [global_alpha](uint32_t s, uint32_t d) {
-                  return Raster::blend(s, d, global_alpha);
-                });
-  });
+  submit_blit(TGT, bx, by, bw, bh, src, src_pitch,
+              global_alpha == 255 ? BlitOpaque : BlitAlpha, global_alpha);
 }
 
 void VirtualFramebuffer::draw_arc(int32_t xc, int32_t yc, int32_t r,
                                   int32_t start_angle, int32_t end_angle,
                                   uint32_t color) {
-  paint(VFB_VIEW, xc - r - 1, yc - r - 1, 2 * r + 3, 2 * r + 3,
-        [&](const Canvas &c) {
-          walk_arc(xc, yc, r, start_angle, end_angle,
-                   [&](int32_t x0, int32_t y0, int32_t x1, int32_t y1) {
-                     line(c, x0, y0, x1, y1, color);
-                   });
-        });
+  submit(TGT, OpArc, xc, yc, r, start_angle, end_angle, color);
 }
 
 void VirtualFramebuffer::fill_sector(int32_t xc, int32_t yc, int32_t r,
                                      int32_t start_angle, int32_t end_angle,
                                      uint32_t color) {
-  paint(VFB_VIEW, xc - r - 1, yc - r - 1, 2 * r + 3, 2 * r + 3,
-        [&](const Canvas &c) {
-          sector(c, xc, yc, r, start_angle, end_angle, color);
-        });
+  submit(TGT, OpSector, xc, yc, r, start_angle, end_angle, color);
 }
 
 void VirtualFramebuffer::fill_triangle(int32_t x0, int32_t y0, int32_t x1,
                                        int32_t y1, int32_t x2, int32_t y2,
                                        uint32_t color) {
-  const int32_t l = std::min({x0, x1, x2}) - 1;
-  const int32_t t = std::min({y0, y1, y2}) - 1;
-  paint(VFB_VIEW, l, t, std::max({x0, x1, x2}) + 2 - l,
-        std::max({y0, y1, y2}) + 2 - t,
-        [&](const Canvas &c) { triangle(c, x0, y0, x1, y1, x2, y2, color); });
+  submit(TGT, OpFillTri, x0, y0, x1, y1, x2, y2, color);
 }
 
 void VirtualFramebuffer::draw_rounded_rect(int32_t rx, int32_t ry, int32_t w,
                                            int32_t h, int32_t radius,
                                            uint32_t color) {
-  paint(VFB_VIEW, rx - 1, ry - 1, w + 2, h + 2, [&](const Canvas &c) {
-    rounded_outline(c, rx, ry, w, h, radius, color);
-  });
+  submit(TGT, OpRRect, rx, ry, w, h, radius, color);
 }
 
 void VirtualFramebuffer::fill_rounded_rect(int32_t rx, int32_t ry, int32_t w,
                                            int32_t h, int32_t radius,
                                            uint32_t color) {
-  paint(VFB_VIEW, rx, ry, w, h, [&](const Canvas &c) {
-    Raster::fill_rounded_rect(c, rx, ry, w, h, radius, color);
-  });
+  submit(TGT, OpFillRRect, rx, ry, w, h, radius, color);
 }
 
-int VirtualFramebuffer::draw_text_truetype(int32_t x, int32_t y,
-                                           float font_size_pixels,
-                                           TrueTypeFont &font, const char *text,
-                                           uint32_t color) {
-  int end = 0;
-  bool drawn = false;
-  paint(VFB_VIEW, x, y, width_, int32_t(font_size_pixels * 2),
-        [&](const Canvas &c) {
-          end = Raster::text(c, font, x, y, font_size_pixels, text, color);
-          drawn = true;
-        });
-  return drawn ? end : x + font.get_text_width(font_size_pixels, text);
-}
-
-#undef VFB_VIEW
+#undef TGT
 
 } // namespace Kernel::Graphics

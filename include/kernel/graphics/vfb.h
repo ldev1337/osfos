@@ -5,13 +5,17 @@
 
 namespace Kernel::Graphics {
 
+namespace Cmd {
+struct Ring;
+}
+
 class VirtualFramebuffer {
 private:
   int32_t x_ = 0, y_ = 0;
   uint32_t width_ = 0, height_ = 0, pitch_ = 0;
   uint32_t *buffer_ = nullptr;
   bool initialized_ = false;
-  bool owns_buffer_ = true;
+  Cmd::Ring *ring_ = nullptr; // window mode: command ring (single producer)
 
 public:
   VirtualFramebuffer() = default;
