@@ -229,9 +229,14 @@ uint8_t g_cov[CORNER + 1][CORNER][CORNER];
 uint8_t g_ins[CORNER + 1][CORNER];
 
 uint32_t isqrt32(uint32_t n) {
-  uint32_t r = 0, bit = 1u << 30;
-  while (bit > n)
-    bit >>= 2;
+  if (n <= 1)
+    return n;
+  int leading_zeros = __builtin_clz(n);
+  int shift = 30 - ((30 - leading_zeros) & ~1); // Nearest even bit <= msb
+
+  uint32_t bit = 1u << shift;
+  uint32_t r = 0;
+
   while (bit) {
     if (n >= r + bit) {
       n -= r + bit;
@@ -722,9 +727,9 @@ void paint_title(const Canvas &c, const Window &w, bool focused,
   t.t = y0;
   t.b = y1;
   const uint32_t tc = focused ? TEXT : TEXT_DIM;
-  const int ty = y + 10, tx = x + w.tx_off;
+  const int ty = y + 7, tx = x + w.tx_off;
   if (font) {
-    Raster::text(t, *font, tx, ty, 13.0f, w.ctitle, tc);
+    Raster::text(t, *font, tx, ty, 14.0f, w.ctitle, tc);
   } else {
     const int limit = x + ww - 12;
     const char *s = w.ctitle;
