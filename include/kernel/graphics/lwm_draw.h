@@ -38,6 +38,7 @@ struct Ring {
   alignas(64) uint32_t head; // producer-owned
   alignas(64) uint32_t tail; // consumer-owned
   uint32_t pend;             // producer scratch
+  uint32_t cached_tail;      // producer scratch
   alignas(64) uint32_t buf[kRingWords];
 };
 
@@ -46,12 +47,16 @@ inline uint32_t *begin(Ring *q, uint32_t n) {
   if (n > kRingWords / 2) [[unlikely]]
     return nullptr;
   const uint32_t h = q->head;
-  const uint32_t t = __atomic_load_n(&q->tail, __ATOMIC_ACQUIRE);
+  uint32_t t = q->cached_tail;
   uint32_t idx = h & kMask;
   const uint32_t room = kRingWords - idx;
   const uint32_t adv = n > room ? room + n : n;
-  if (kRingWords - (h - t) < adv) [[unlikely]]
-    return nullptr;
+  if (kRingWords - (h - t) < adv) {
+    t = __atomic_load_n(&q->tail, __ATOMIC_ACQUIRE);
+    q->cached_tail = t;
+    if (kRingWords - (h - t) < adv) [[unlikely]]
+      return nullptr;
+  }
   if (n > room) {
     q->buf[idx] = kPad | (room << 8);
     idx = 0;
@@ -86,6 +91,7 @@ int text(const Canvas &c, TrueTypeFont &font, int32_t x, int32_t y,
          float size, const char *text, uint32_t color);
 void glyph8(const Canvas &c, int32_t x, int32_t y, char ch, uint32_t color);
 void execute(const Canvas &c, const uint32_t *record); // decode + draw one record
+bool get_record_bounds(const uint32_t *record, int32_t &l, int32_t &t, int32_t &r, int32_t &b);
 } // namespace Raster
 
 namespace WindowManager { // implemented in lwm.cpp

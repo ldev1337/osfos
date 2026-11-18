@@ -5,10 +5,14 @@
 // has an SPSC command ring (lwm_draw.h). Every tick this thread
 //   1. adopts / closes / resizes windows requested through per-slot mailboxes,
 //   2. handles the mouse,
-//   3. repaints damaged desktop / chrome,
-//   4. drains each window's ring, rasterising clipped to its visible region,
-//   5. redraws the software cursor (with a real save-under: the compositor is
-//      the only pixel writer, so moving the mouse never damages client area).
+//   3. repaints damaged desktop / chrome (tile-composed, one write per pixel),
+//   4. drains each window's ring, rasterising clipped to its exact visible
+//      shape (rounded corners respected, shadows of windows above applied),
+//   5. redraws the software cursor (real save-under, only lifted when the
+//      frame really writes underneath it).
+//
+// Memory: there is NO back buffer. The only scratch is one 512x16 tile
+// (32 KiB) + a 8 KiB change mask, reused for every tile.
 //
 // No spinlock anywhere. App-side calls are atomic loads/stores or a CAS on a
 // slot state. The loop only sleeps on a tick that had nothing at all to do.
@@ -27,17 +31,46 @@
 namespace Kernel::Graphics::WindowManager {
 namespace {
 
-constexpr size_t MAX_WINDOWS = 32, MAX_DAMAGE = 8, kMaxClip = 32;
-constexpr int TITLE_H = 26, WINDOW_RADIUS = 12, CORNER = WINDOW_RADIUS - 2;
-constexpr uint32_t DESKTOP = 0xFF101216, TITLE_ACTIVE = 0xFF28232F,
-                   TITLE_INACTIVE = 0xFF211E29, TEXT = 0xFFF0F5F4,
-                   BLACK = 0x00000000, BODY = 0xFF171B20, SHADOW = 0xFF020609;
+// ---- look -----------------------------------------------------------------
+
+constexpr size_t MAX_WINDOWS = 32, kMaxDamage = 32, kMaxClip = 96,
+                 kMaxPieces = 256;
+constexpr int TITLE_H = 26, CORNER = 10;
+
+constexpr uint32_t DESKTOP = 0xFF101216, TITLE_BG = 0xFF28232F,
+                   TEXT = 0xFFF0F5F4, TEXT_DIM = 0xFF8D969C, BLACK = 0x00000000,
+                   BODY = 0xFF171B20, SHADOW = 0xFF020609,
+                   LINE_ACTIVE = 0xFF40515A, LINE_INACTIVE = 0xFF35434A;
 constexpr uint32_t LIGHTS[3][2] = {{0xFFFF6B67, 0xFFE44845},
                                    {0xFFFFC45C, 0xFFE5A535},
                                    {0xFF5FD39A, 0xFF39A96D}};
-constexpr uint8_t SHADOW_LAYER_ALPHA[3] = {12, 22, 30};
+constexpr uint32_t LIGHT_OFF[2] = {0xFF444A52, 0xFF343A41};
+
+// Two stacked soft shadows (wide ambient + tight contact). Each one is the
+// exact blur of a rectangle: alpha(x,y) = A * cdf(x) * cdf(y), where cdf is a
+// smootherstep ramp of width 2k. Rect = window inset by `inset`, moved down
+// by `dy`.
+struct ShadowSpec {
+  int k, inset, dy;
+  uint32_t alpha; // 0..256
+};
+constexpr ShadowSpec kShadow[2] = {{20, 4, 10, 160}, {5, 0, 2, 110}};
+constexpr int kMaxK = 20;
+constexpr int cmax(int a, int b) { return a > b ? a : b; }
+// How far the shadows reach outside the window rectangle.
+constexpr int EXT_X =
+    cmax(kShadow[0].k - kShadow[0].inset, kShadow[1].k - kShadow[1].inset);
+constexpr int EXT_T = cmax(kShadow[0].k - kShadow[0].inset - kShadow[0].dy,
+                           kShadow[1].k - kShadow[1].inset - kShadow[1].dy);
+constexpr int EXT_B = cmax(kShadow[0].k - kShadow[0].inset + kShadow[0].dy,
+                           kShadow[1].k - kShadow[1].inset + kShadow[1].dy);
+
 constexpr int CURSOR_R = 7, CURSOR_SPAN = 2 * CURSOR_R + 1;
 constexpr int kIdleSleepMs = 1; // 0 = spin when idle
+
+// Compose tile: small enough to live in L1, big enough to amortise setup.
+constexpr int kTileW = 512, kTileH = 16;
+constexpr size_t kTilePx = size_t(kTileW) * kTileH;
 
 template <class T> inline T ld(const T &v) {
   return __atomic_load_n(&v, __ATOMIC_ACQUIRE);
@@ -56,6 +89,9 @@ inline bool is_empty(const Rect &r) { return r.l >= r.r || r.t >= r.b; }
 inline bool overlaps(const Rect &a, const Rect &b) {
   return a.l < b.r && b.l < a.r && a.t < b.b && b.t < a.b;
 }
+inline bool contains(const Rect &a, const Rect &b) {
+  return a.l <= b.l && a.t <= b.t && a.r >= b.r && a.b >= b.b;
+}
 inline Rect unite(const Rect &a, const Rect &b) {
   return {std::min(a.l, b.l), std::min(a.t, b.t), std::max(a.r, b.r),
           std::max(a.b, b.b)};
@@ -64,22 +100,22 @@ inline Rect inter(const Rect &a, const Rect &b) {
   return {std::max(a.l, b.l), std::max(a.t, b.t), std::min(a.r, b.r),
           std::min(a.b, b.b)};
 }
+inline int64_t area(const Rect &r) {
+  return is_empty(r) ? 0 : int64_t(r.r - r.l) * int64_t(r.b - r.t);
+}
 
 template <size_t N> struct RectList {
   Rect r[N];
   size_t n = 0;
+  bool ovf = false; // an add() was dropped: callers that care fall back
 
   void add(const Rect &x) {
-    if (!is_empty(x) && n < N)
-      r[n++] = x;
-  }
-  void add_or_grow(const Rect &x) {
     if (is_empty(x))
       return;
     if (n < N)
       r[n++] = x;
     else
-      r[N - 1] = unite(r[N - 1], x);
+      ovf = true;
   }
   void subtract(const Rect &h) {
     RectList out;
@@ -89,7 +125,8 @@ template <size_t N> struct RectList {
         out.add(a);
         continue;
       }
-      const int mt = std::max(a.t, h.t), mb = std::min(a.b, h.b);
+      const int mt = a.t > h.t ? a.t : h.t;
+      const int mb = a.b < h.b ? a.b : h.b;
       if (a.t < h.t)
         out.add({a.l, a.t, a.r, h.t});
       if (a.b > h.b)
@@ -99,14 +136,20 @@ template <size_t N> struct RectList {
       if (a.r > h.r)
         out.add({h.r, mt, a.r, mb});
     }
-    *this = out;
+    n = out.n;
+    ovf = ovf || out.ovf;
+    for (size_t i = 0; i < n; ++i)
+      r[i] = out.r[i];
   }
 };
 
-// Window = title bar + client; the shadow reaches 8px to the sides, 3px above
-// and 22px below.
-inline Rect bounds_at(int x, int y, uint32_t w, uint32_t h) {
-  return {x - 8, y - 3, x + int(w) + 8, y + TITLE_H + int(h) + 22};
+// The window rectangle (title bar + client) and everything it can darken.
+inline Rect body_at(int x, int y, uint32_t w, uint32_t h) {
+  return {x, y, x + int(w), y + TITLE_H + int(h)};
+}
+inline Rect ext_at(int x, int y, uint32_t w, uint32_t h) {
+  return {x - EXT_X, y - EXT_T, x + int(w) + EXT_X,
+          y + TITLE_H + int(h) + EXT_B};
 }
 inline Rect client_at(int x, int y, uint32_t w, uint32_t h) {
   return {x, y + TITLE_H, x + int(w), y + TITLE_H + int(h)};
@@ -141,62 +184,289 @@ struct Window {
 Window windows[MAX_WINDOWS]; // zero-initialised: all FREE
 size_t z_order[MAX_WINDOWS]; // bottom..top, last = focused
 size_t window_count = 0;
+uint32_t g_heads[MAX_WINDOWS]; // ring heads snapshotted once per tick
 
 uint32_t screen_w = 0, screen_h = 0;
 uint32_t *fb = nullptr;
 ptrdiff_t fb_stride = 0;
 int drag_x = 0, drag_y = 0, cursor_x = -1, cursor_y = -1;
 bool dragging = false, old_left = false;
-Rect damage[MAX_DAMAGE];
+Rect damage[kMaxDamage];
 size_t damage_n = 0;
-uint8_t g_shadow_alpha[8];
 uint64_t g_focus_tid = 0;
 
-struct CursorCell {
-  int8_t dx, dy;
+struct CursorSpan {
+  int8_t dy, x0, x1;
   uint32_t color;
+  size_t offset;
 };
-CursorCell cells[CURSOR_SPAN * CURSOR_SPAN];
+CursorSpan cursor_spans[CURSOR_SPAN * 3];
 uint32_t under[CURSOR_SPAN * CURSOR_SPAN];
-size_t ncells = 0;
+size_t nspans = 0, ncells = 0;
 bool cursor_on = false;
 int cur_x = 0, cur_y = 0;
 
+uint32_t scratch[kTilePx];
+uint8_t changed[kTilePx];
+
 inline uint32_t *fb_row(int y) { return fb + ptrdiff_t(y) * fb_stride; }
-inline Rect bounds(const Window &w) {
-  return bounds_at(w.x, w.y, w.width, w.height);
+inline Rect body(const Window &w) {
+  return body_at(w.x, w.y, w.width, w.height);
 }
+inline Rect ext(const Window &w) { return ext_at(w.x, w.y, w.width, w.height); }
 inline Rect client(const Window &w) {
   return client_at(w.x, w.y, w.width, w.height);
 }
 inline uint64_t pack(uint32_t w, uint32_t h) { return uint64_t(w) << 32 | h; }
 
-// ---- damage ---------------------------------------------------------------
+// ---- rounded corners (analytic coverage, no libm) --------------------------
+
+// g_cov[R][k][dx]: coverage (0..255) of the pixel k rows / dx columns in from
+// the outer corner of a corner of radius R. g_ins[R][k]: first dx that is
+// fully opaque. These two tables are the single source of truth for the
+// window shape: painting, shadow masking, clipping and moving all use them.
+uint8_t g_cov[CORNER + 1][CORNER][CORNER];
+uint8_t g_ins[CORNER + 1][CORNER];
+
+uint32_t isqrt32(uint32_t n) {
+  uint32_t r = 0, bit = 1u << 30;
+  while (bit > n)
+    bit >>= 2;
+  while (bit) {
+    if (n >= r + bit) {
+      n -= r + bit;
+      r = (r >> 1) + bit;
+    } else {
+      r >>= 1;
+    }
+    bit >>= 2;
+  }
+  return r;
+}
+
+void init_corners() {
+  for (int R = 1; R <= CORNER; ++R)
+    for (int k = 0; k < R; ++k) {
+      int ins = R;
+      for (int dx = 0; dx < R; ++dx) {
+        const int a = 2 * R - 2 * dx - 1, b = 2 * R - 2 * k - 1;
+        const int df = int(isqrt32(uint32_t(64 * (a * a + b * b))));
+        int cf = R * 16 - df + 8; // coverage in 1/16
+        cf = cf < 0 ? 0 : (cf > 16 ? 16 : cf);
+        const int cov = (cf * 255 + 8) / 16;
+        g_cov[R][k][dx] = uint8_t(cov);
+        if (cov == 255 && ins == R)
+          ins = dx;
+      }
+      g_ins[R][k] = uint8_t(ins);
+    }
+}
+
+inline int top_radius(const Window &w) {
+  return std::min(CORNER, int(w.width) / 2);
+}
+inline int bottom_radius(const Window &w) {
+  return std::min(CORNER, int(std::min(w.width, w.height)) / 2);
+}
+
+// Fully opaque span of window row `py` (title bar + client, rounded corners).
+inline bool opaque_span(const Window &w, int py, int &a, int &b) {
+  const int H = TITLE_H + int(w.height), dy = py - w.y;
+  if (dy < 0 || dy >= H)
+    return false;
+  const int rt = top_radius(w), rb = bottom_radius(w);
+  int ins = 0;
+  if (dy < rt)
+    ins = g_ins[rt][dy];
+  else if (dy >= H - rb)
+    ins = g_ins[rb][H - 1 - dy];
+  a = w.x + ins;
+  b = w.x + int(w.width) - ins;
+  return a < b;
+}
+
+// Fully opaque pixels as a handful of row-merged rects. client_only: skip the
+// title bar (what applications may draw into).
+template <size_t N>
+void opaque_rects(const Window &w, RectList<N> &out, bool client_only) {
+  const int x = w.x, r = x + int(w.width), H = TITLE_H + int(w.height);
+  const int rt = top_radius(w), rb = bottom_radius(w);
+  const int first = client_only ? TITLE_H : 0;
+  auto rows = [&](int ra, int re, int ins) {
+    ra = std::max(ra, first);
+    if (ra < re)
+      out.add({x + ins, w.y + ra, r - ins, w.y + re});
+  };
+  for (int dy = 0; dy < rt;) {
+    const int ins = g_ins[rt][dy];
+    int e = dy + 1;
+    while (e < rt && g_ins[rt][e] == ins)
+      ++e;
+    rows(dy, e, ins);
+    dy = e;
+  }
+  rows(rt, H - rb, 0);
+  for (int k = 0; k < rb;) {
+    const int ins = g_ins[rb][k];
+    int e = k + 1;
+    while (e < rb && g_ins[rb][e] == ins)
+      ++e;
+    rows(H - e, H - k, ins);
+    k = e;
+  }
+}
+
+// ---- soft shadow ------------------------------------------------------------
+
+struct ShadowLayer {
+  int k, inset, dy;
+  uint32_t alpha;
+  uint16_t cdf[2 * kMaxK];
+};
+ShadowLayer g_layers[2];
+
+void init_shadows() {
+  for (int i = 0; i < 2; ++i) {
+    ShadowLayer &L = g_layers[i];
+    L.k = kShadow[i].k;
+    L.inset = kShadow[i].inset;
+    L.dy = kShadow[i].dy;
+    L.alpha = kShadow[i].alpha;
+    for (int d = -L.k; d < L.k; ++d) {
+      // pixel centre, 0..1 across the ramp, 16.16 fixed point
+      const int64_t t = int64_t(2 * d + 1 + 2 * L.k) * 65536 / (4 * L.k);
+      const int64_t t2 = (t * t) >> 16, t3 = (t2 * t) >> 16;
+      const int64_t inner = (((6 * t - 15 * 65536) * t) >> 16) + 10 * 65536;
+      const int64_t s = (t3 * inner) >> 16; // smootherstep
+      L.cdf[d + L.k] = uint16_t((s * 256 + 32768) >> 16);
+    }
+  }
+}
+
+inline int prof(const ShadowLayer &L, int d) {
+  if (d < -L.k)
+    return 0;
+  if (d >= L.k)
+    return 256;
+  return L.cdf[d + L.k];
+}
+
+// d * (256-a)/256 + s * a/256 per channel, a in 0..256, result opaque.
+inline uint32_t mix(uint32_t d, uint32_t s, uint32_t a) {
+  const uint32_t ia = 256 - a;
+  const uint32_t rb =
+      (((d & 0x00FF00FFu) * ia + (s & 0x00FF00FFu) * a) >> 8) & 0x00FF00FFu;
+  const uint32_t g =
+      (((d & 0x0000FF00u) * ia + (s & 0x0000FF00u) * a) >> 8) & 0x0000FF00u;
+  return 0xFF000000u | rb | g;
+}
+
+void shade_generic(uint32_t *row, const ShadowLayer &L, uint32_t rowA, int sl,
+                   int sr, int a, int b) {
+  for (int px = a; px < b; ++px) {
+    const int fx = prof(L, px - sl) + prof(L, sr - 1 - px) - 256;
+    if (fx <= 0)
+      continue;
+    const uint32_t al = (uint32_t(fx) * rowA + 32768u) >> 16;
+    if (al)
+      row[px] = mix(row[px], SHADOW, al);
+  }
+}
+
+void shade_flat(uint32_t *row, uint32_t rowA, int a, int b) {
+  const uint32_t al = (rowA + 128u) >> 8;
+  if (!al)
+    return;
+  for (int px = a; px < b; ++px)
+    row[px] = mix(row[px], SHADOW, al);
+}
+
+void shade_run(uint32_t *row, const ShadowLayer &L, uint32_t rowA, int sl,
+               int sr, int a, int b) {
+  if (a >= b)
+    return;
+  const int f0 = sl + L.k, f1 = sr - L.k; // fx == 256 on [f0, f1)
+  if (f0 < f1) {
+    const int m0 = std::clamp(f0, a, b), m1 = std::clamp(f1, a, b);
+    shade_generic(row, L, rowA, sl, sr, a, m0);
+    shade_flat(row, rowA, m0, m1);
+    shade_generic(row, L, rowA, sl, sr, m1, b);
+  } else {
+    shade_generic(row, L, rowA, sl, sr, a, b);
+  }
+}
+
+// Darkens canvas pixels around (never under) the opaque window shape.
+void paint_shadow(const Canvas &c, const Window &w) {
+  const int H = TITLE_H + int(w.height);
+  for (const ShadowLayer &L : g_layers) {
+    const int sl = w.x + L.inset, sr = w.x + int(w.width) - L.inset;
+    const int st = w.y + L.inset + L.dy, sb = w.y + H - L.inset + L.dy;
+    if (sr <= sl || sb <= st)
+      continue;
+    const int y0 = std::max(c.t, st - L.k), y1 = std::min(c.b, sb + L.k);
+    const int xa = std::max(c.l, sl - L.k), xb = std::min(c.r, sr + L.k);
+    if (y0 >= y1 || xa >= xb)
+      continue;
+    for (int py = y0; py < y1; ++py) {
+      const int fy = prof(L, py - st) + prof(L, sb - 1 - py) - 256;
+      if (fy <= 0)
+        continue;
+      const uint32_t rowA = uint32_t(fy) * L.alpha;
+      uint32_t *row = c.origin + ptrdiff_t(py) * c.stride;
+      int oa, ob;
+      if (!opaque_span(w, py, oa, ob))
+        oa = ob = xb;
+      shade_run(row, L, rowA, sl, sr, xa, std::min(xb, oa));
+      shade_run(row, L, rowA, sl, sr, std::max(xa, ob), xb);
+    }
+  }
+}
+
+// ---- state mutation helpers -------------------------------------------------
 
 void mark_dirty(const Rect &r) {
   if (is_empty(r))
     return;
-  size_t i = 0;
-  while (i < damage_n && !overlaps(damage[i], r))
-    ++i;
-  if (i == damage_n) {
-    if (damage_n < MAX_DAMAGE) {
-      damage[damage_n++] = r;
+  for (size_t i = 0; i < damage_n; ++i)
+    if (contains(damage[i], r))
       return;
-    }
-    i = MAX_DAMAGE - 1;
+  for (size_t i = 0; i < damage_n;) {
+    if (contains(r, damage[i]))
+      damage[i] = damage[--damage_n];
+    else
+      ++i;
   }
-  damage[i] = unite(damage[i], r);
+  if (damage_n < kMaxDamage) {
+    damage[damage_n++] = r;
+    return;
+  }
+  size_t best = 0;
+  int64_t gain = INT64_MAX;
+  for (size_t i = 0; i < damage_n; ++i) {
+    const int64_t g = area(unite(damage[i], r)) - area(damage[i]);
+    if (g < gain) {
+      gain = g;
+      best = i;
+    }
+  }
+  damage[best] = unite(damage[best], r);
 }
 
 void mark_window_dirty(const Window &w) {
-  mark_dirty(bounds(w));
+  mark_dirty(ext(w));
   if (w.placed && (w.sx != w.x || w.sy != w.y))
-    mark_dirty(bounds_at(w.sx, w.sy, w.width, w.height));
+    mark_dirty(ext_at(w.sx, w.sy, w.width, w.height));
 }
 
+// Focus only changes the title's text, lights and rule: repaint the opaque
+// interior of the bar and leave the rounded corners (which show whatever is
+// beneath) alone.
 void mark_title_dirty(const Window &w) {
-  mark_dirty({w.x, w.y, w.x + int(w.width), w.y + TITLE_H});
+  const int rt = top_radius(w), r = w.x + int(w.width);
+  mark_dirty({w.x + rt, w.y, r - rt, w.y + TITLE_H});
+  mark_dirty({w.x, w.y + rt, w.x + rt, w.y + TITLE_H});
+  mark_dirty({r - rt, w.y + rt, r, w.y + TITLE_H});
 }
 
 // ---- window table (compositor thread only) --------------------------------
@@ -229,11 +499,17 @@ void focus_window(size_t idx) {
   const Window &w = windows[idx];
   mark_title_dirty(windows[*(end - 1)]);
   mark_title_dirty(w);
-  const Rect wb = bounds(w);
+  // Only pixels where the stacking order of two windows flips change:
+  // a's shadow over w's body and a's body over w's shadow. Shadow-over-shadow
+  // is commutative and body pixels of w that nobody covers keep their client.
+  const Rect wb = body(w), we = ext(w);
   for (size_t *j = it + 1; j != end; ++j) {
-    const Rect ab = bounds(windows[*j]);
-    if (overlaps(ab, wb))
-      mark_dirty(inter(ab, wb));
+    const Window &a = windows[*j];
+    const Rect ab = body(a), ae = ext(a);
+    if (overlaps(ae, wb))
+      mark_dirty(inter(ae, wb));
+    if (overlaps(ab, we))
+      mark_dirty(inter(ab, we));
   }
   std::rotate(it, it + 1, end);
 }
@@ -269,7 +545,7 @@ void unlink_window(size_t idx) {
 }
 
 void release_slot(Window &w) {
-  w.ring.tail = w.ring.head; // discard anything still queued
+  w.ring.tail = ld(w.ring.head); // discard anything still queued
   w.exposed = 0;
   w.thread_id = 0;
   w.known = false;
@@ -335,142 +611,174 @@ inline int cursor_shape(int dx, int dy) {
   return 0;
 }
 
+inline Rect cursor_box() {
+  return {cur_x - CURSOR_R, cur_y - CURSOR_R, cur_x + CURSOR_R + 1,
+          cur_y + CURSOR_R + 1};
+}
+
 void cursor_hide() {
   if (!cursor_on)
     return;
-  for (size_t i = 0; i < ncells; ++i) {
-    const int x = cur_x + cells[i].dx, y = cur_y + cells[i].dy;
-    if (unsigned(x) < screen_w && unsigned(y) < screen_h)
-      fb_row(y)[x] = under[i];
+  for (size_t i = 0; i < nspans; ++i) {
+    const CursorSpan &s = cursor_spans[i];
+    const int y = cur_y + s.dy;
+    if (unsigned(y) >= screen_h)
+      continue;
+    const int ox = cur_x + s.x0;
+    const int x0 = std::max(0, ox);
+    const int x1 = std::min(int(screen_w), cur_x + int(s.x1) + 1);
+    if (x0 >= x1)
+      continue;
+    memcpy(fb_row(y) + x0, under + s.offset + size_t(x0 - ox),
+           size_t(x1 - x0) * 4);
   }
   cursor_on = false;
 }
 
 void cursor_show(int cx, int cy) {
-  for (size_t i = 0; i < ncells; ++i) {
-    const int x = cx + cells[i].dx, y = cy + cells[i].dy;
-    if (unsigned(x) < screen_w && unsigned(y) < screen_h) {
-      uint32_t &p = fb_row(y)[x];
-      under[i] = p;
-      p = cells[i].color;
-    }
+  for (size_t i = 0; i < nspans; ++i) {
+    const CursorSpan &s = cursor_spans[i];
+    const int y = cy + s.dy;
+    if (unsigned(y) >= screen_h)
+      continue;
+    const int ox = cx + s.x0;
+    const int x0 = std::max(0, ox);
+    const int x1 = std::min(int(screen_w), cx + int(s.x1) + 1);
+    if (x0 >= x1)
+      continue;
+    uint32_t *row = fb_row(y) + x0;
+    uint32_t *save = under + s.offset + size_t(x0 - ox);
+    const size_t n = size_t(x1 - x0);
+    memcpy(save, row, n * 4);
+    for (size_t j = 0; j < n; ++j)
+      row[j] = s.color;
   }
   cur_x = cx;
   cur_y = cy;
   cursor_on = true;
 }
 
-// ---- chrome painting ------------------------------------------------------
+// ---- chrome painting (onto any canvas: tile scratch, never the screen) ----
 
-void paint_shadow(const Canvas &c, const Window &w) {
-  const int x = w.x, y = w.y, ww = int(w.width);
-  const int full_h = TITLE_H + int(w.height), wh = full_h + 2;
-  const int top[3] = {y + 2, y - 2, y - 3};
-  const int bot[3] = {y + 2 + wh + 18, y - 2 + wh + 12, y - 3 + wh + 7};
-  const int edge[6] = {x - 8, x - 5, x - 2, x + ww + 2, x + ww + 5, x + ww + 8};
-  constexpr unsigned zone[5] = {1, 3, 7, 3, 1};
+inline void fill_span(const Canvas &c, int py, int a, int b, uint32_t color) {
+  a = std::max(a, c.l);
+  b = std::min(b, c.r);
+  if (py < c.t || py >= c.b || a >= b)
+    return;
+  uint32_t *row = c.origin + ptrdiff_t(py) * c.stride;
+  for (int px = a; px < b; ++px)
+    row[px] = color;
+}
 
-  for (int py = std::max(c.t, y - 3), pe = std::min(c.b, bot[0]); py < pe;
-       ++py) {
-    unsigned rm = 0;
-    for (int k = 0; k < 3; ++k)
-      rm |= (py >= top[k] && py < bot[k]) ? 1u << k : 0;
-    if (!rm)
+// Anti-aliased pixels of one corner row (both sides), blended over whatever is
+// already on the canvas.
+inline void edge_row(const Canvas &c, const Window &w, int py, int R, int k,
+                     uint32_t color) {
+  if (py < c.t || py >= c.b)
+    return;
+  uint32_t *row = c.origin + ptrdiff_t(py) * c.stride;
+  const int ins = g_ins[R][k], rx = w.x + int(w.width) - 1;
+  for (int dx = 0; dx < ins; ++dx) {
+    const uint32_t cov = g_cov[R][k][dx];
+    if (!cov)
       continue;
-    int sl = 0, sr = 0;
-    if (py >= y + WINDOW_RADIUS && py < y + full_h - WINDOW_RADIUS) {
-      sl = x;
-      sr = x + ww;
-    } else if (py >= y && py < y + full_h && ww > 2 * WINDOW_RADIUS) {
-      sl = x + WINDOW_RADIUS;
-      sr = x + ww - WINDOW_RADIUS;
-    }
-    uint32_t *row = c.origin + ptrdiff_t(py) * c.stride;
-    for (int z = 0; z < 5; ++z) {
-      const unsigned m = zone[z] & rm;
-      const int a = std::max(edge[z], c.l), e = std::min(edge[z + 1], c.r);
-      if (!m || a >= e)
-        continue;
-      const uint32_t alpha = g_shadow_alpha[m];
-      auto shade = [&](int from, int to) {
-        for (int px = from; px < to; ++px)
-          row[px] = Raster::blend(SHADOW, row[px], alpha);
-      };
-      if (sl >= sr) {
-        shade(a, e);
-      } else {
-        shade(a, std::min(e, sl));
-        shade(std::max(a, sr), e);
-      }
-    }
+    const uint32_t a = cov + (cov >> 7);
+    const int lx = w.x + dx, mx = rx - dx;
+    if (lx >= c.l && lx < c.r)
+      row[lx] = mix(row[lx], color, a);
+    if (mx >= c.l && mx < c.r)
+      row[mx] = mix(row[mx], color, a);
   }
+}
+
+// Only the anti-aliased corner pixels (used to re-seat a window's silhouette
+// over client pixels that apps just drew underneath it).
+void paint_edges(const Canvas &c, const Window &w) {
+  const int H = TITLE_H + int(w.height), rt = top_radius(w),
+            rb = bottom_radius(w);
+  for (int k = 0; k < rt; ++k)
+    edge_row(c, w, w.y + k, rt, k, TITLE_BG);
+  for (int k = 0; k < rb; ++k)
+    edge_row(c, w, w.y + H - 1 - k, rb, k, BODY);
 }
 
 void paint_title(const Canvas &c, const Window &w, bool focused,
                  TrueTypeFont *font) {
-  const int x = w.x, y = w.y, ww = int(w.width), body_top = y + TITLE_H;
-  if (c.t >= body_top || c.b <= y)
+  const int x = w.x, y = w.y, ww = int(w.width), r = x + ww,
+            body_top = y + TITLE_H;
+  if (c.t >= body_top || c.b <= y || c.l >= r || c.r <= x)
     return;
+  const int rt = top_radius(w);
+  const int y0 = std::max(c.t, y), y1 = std::min(c.b, body_top);
+  for (int py = y0; py < y1; ++py) {
+    const int dy = py - y, ins = dy < rt ? g_ins[rt][dy] : 0;
+    fill_span(c, py, x + ins, r - ins, TITLE_BG);
+    if (dy < rt)
+      edge_row(c, w, py, rt, dy, TITLE_BG);
+  }
+  fill_span(c, body_top - 1, x, r, focused ? LINE_ACTIVE : LINE_INACTIVE);
+
   Canvas t = c;
-  t.b = std::min(c.b, body_top);
-  Raster::fill_rounded_rect(t, x, y, ww, TITLE_H + CORNER, CORNER,
-                            focused ? TITLE_ACTIVE : TITLE_INACTIVE);
-  Raster::fill_rect(t, x, body_top - 1, ww, 1,
-                    focused ? 0xFF40515A : 0xFF35434A);
+  t.t = y0;
+  t.b = y1;
+  const uint32_t tc = focused ? TEXT : TEXT_DIM;
   const int ty = y + 10, tx = x + w.tx_off;
   if (font) {
-    Raster::text(t, *font, tx, ty, 13.0f, w.ctitle, TEXT);
+    Raster::text(t, *font, tx, ty, 13.0f, w.ctitle, tc);
   } else {
     const int limit = x + ww - 12;
     const char *s = w.ctitle;
     for (int cx = tx; *s && cx < limit; ++s, cx += 8)
-      Raster::glyph8(t, cx, ty, *s, TEXT);
+      Raster::glyph8(t, cx, ty, *s, tc);
   }
   for (int k = 0; k < 3; ++k) {
     const int cx = x + 18 + 16 * k, cy = y + TITLE_H / 2;
-    Raster::fill_circle(t, cx, cy, 5, LIGHTS[k][0]);
-    Raster::fill_circle(t, cx, cy, 2, LIGHTS[k][1]);
+    if (cx + 6 <= c.l || cx - 5 >= c.r)
+      continue;
+    Raster::fill_circle(t, cx, cy, 5, focused ? LIGHTS[k][0] : LIGHT_OFF[0]);
+    Raster::fill_circle(t, cx, cy, 2, focused ? LIGHTS[k][1] : LIGHT_OFF[1]);
   }
 }
 
 void paint_body(const Canvas &c, const Window &w) {
-  const int ww = int(w.width), hh = int(w.height), body_top = w.y + TITLE_H;
-  const int rad = std::min(CORNER, std::min(ww, hh) / 2);
-  Canvas b = c;
-  b.t = std::max(c.t, body_top);
-  if (b.t < b.b)
-    Raster::fill_rounded_rect(b, w.x, body_top - rad, ww, hh + rad, rad, BODY);
+  const int x = w.x, r = x + int(w.width), body_top = w.y + TITLE_H,
+            bottom = body_top + int(w.height), rb = bottom_radius(w);
+  const int y0 = std::max(c.t, body_top), y1 = std::min(c.b, bottom);
+  for (int py = y0; py < y1; ++py) {
+    const int rr = bottom - 1 - py, ins = rr < rb ? g_ins[rb][rr] : 0;
+    fill_span(c, py, x + ins, r - ins, BODY);
+    if (rr < rb)
+      edge_row(c, w, py, rb, rr, BODY);
+  }
 }
 
-void paint_piece(const Rect &p, TrueTypeFont *font) {
-  const Canvas c{fb, fb_stride, p.l, p.t, p.r, p.b};
-  Raster::fill_rect(c, p.l, p.t, p.r - p.l, p.b - p.t, DESKTOP);
+// One tile = desktop + every window bottom-up, composed in cache, then pushed
+// to the framebuffer with a single sequential write per row. The screen never
+// shows an intermediate state and the framebuffer is never read.
+void compose_tile(const Rect &T, TrueTypeFont *font) {
+  const int pw = T.r - T.l, ph = T.b - T.t;
+  const Canvas c{scratch - ptrdiff_t(T.t) * pw - T.l, pw, T.l, T.t, T.r, T.b};
+  for (size_t i = 0, n = size_t(pw) * size_t(ph); i < n; ++i)
+    scratch[i] = DESKTOP;
   for (size_t z = 0; z < window_count; ++z) {
     const Window &w = windows[z_order[z]];
-    if (!overlaps(bounds(w), p))
+    if (!overlaps(ext(w), T))
       continue;
     paint_shadow(c, w);
     paint_title(c, w, z == window_count - 1, font);
     paint_body(c, w);
   }
+  for (int y = 0; y < ph; ++y)
+    memcpy(fb_row(T.t + y) + T.l, scratch + size_t(y) * size_t(pw),
+           size_t(pw) * 4);
 }
 
-void move_pixels(const Rect &from, const Rect &to) {
-  const int w = to.r - to.l, h = to.b - to.t;
-  const int dx = to.l - from.l, dy = to.t - from.t;
-  for (int i = 0; i < h; ++i) {
-    const int r = dy > 0 ? h - 1 - i : i;
-    uint32_t *s = fb_row(from.t + r) + from.l;
-    uint32_t *d = fb_row(to.t + r) + to.l;
-    if (dy != 0)
-      memcpy(d, s, size_t(w) * 4);
-    else if (dx < 0)
-      for (int k = 0; k < w; ++k)
-        d[k] = s[k];
-    else
-      for (int k = w; k--;)
-        d[k] = s[k];
-  }
+void compose_piece(const Rect &p, TrueTypeFont *font) {
+  for (int ty = p.t; ty < p.b; ty += kTileH)
+    for (int tx = p.l; tx < p.r; tx += kTileW)
+      compose_tile(
+          {tx, ty, std::min(tx + kTileW, p.r), std::min(ty + kTileH, p.b)},
+          font);
 }
 
 // ---- input ----------------------------------------------------------------
@@ -519,50 +827,65 @@ void mouse_update() {
 // ---- planning -------------------------------------------------------------
 
 struct Plan {
-  RectList<(MAX_DAMAGE + 4) * 4> pieces;
-  bool move = false;
-  Rect from{}, to{};
+  RectList<kMaxPieces> pieces; // pixels to recompose
+  RectList<24> moved;          // destination rects of the top window's blit
+  int dx = 0, dy = 0;
 };
 
 void plan(Plan &p) {
   const Rect screen{0, 0, int(screen_w), int(screen_h)};
-  RectList<MAX_DAMAGE + 4> dirty;
-  for (size_t i = 0; i < damage_n; ++i)
-    dirty.add_or_grow(damage[i]);
 
-  // The top window moves by copying its client pixels. Skipped if damage
-  // touches the source (those pixels are stale).
-  for (size_t z = window_count; z--;) {
-    const Window &w = windows[z_order[z]];
-    if (!w.placed) {
-      dirty.add_or_grow(bounds(w));
-      continue;
-    }
-    if (w.x == w.sx && w.y == w.sy)
-      continue;
-    dirty.add_or_grow(bounds_at(w.sx, w.sy, w.width, w.height));
-    dirty.add_or_grow(bounds(w));
-    if (z != window_count - 1)
-      continue;
-    const int dx = w.x - w.sx, dy = w.y - w.sy;
-    const Rect src = inter(client_at(w.sx, w.sy, w.width, w.height), screen);
-    bool stale = false;
-    for (size_t i = 0; i < damage_n; ++i)
-      stale |= overlaps(damage[i], src);
-    const Rect to =
-        inter({src.l + dx, src.t + dy, src.r + dx, src.b + dy}, screen);
-    if (!stale && !is_empty(to)) {
-      p.move = true;
-      p.to = to;
-      p.from = {to.l - dx, to.t - dy, to.r - dx, to.b - dy};
+  // The top window moves by copying its opaque client pixels row by row.
+  // Skipped if damage touches the source (those pixels are stale).
+  RectList<24> mv;
+  int mdx = 0, mdy = 0;
+  if (window_count) {
+    const Window &w = windows[z_order[window_count - 1]];
+    if (w.placed && (w.x != w.sx || w.y != w.sy)) {
+      mdx = w.x - w.sx;
+      mdy = w.y - w.sy;
+      const Rect reach{mdx, mdy, mdx + int(screen_w), mdy + int(screen_h)};
+      RectList<24> shape;
+      opaque_rects(w, shape, true);
+      bool stale = false;
+      for (size_t i = 0; i < shape.n; ++i) {
+        const Rect m = inter(inter(shape.r[i], screen), reach);
+        if (is_empty(m))
+          continue;
+        const Rect src{m.l - mdx, m.t - mdy, m.r - mdx, m.b - mdy};
+        for (size_t k = 0; k < damage_n; ++k)
+          stale = stale || overlaps(damage[k], src);
+        mv.add(m);
+      }
+      if (stale || mv.ovf)
+        mv.n = 0;
     }
   }
 
-  for (size_t i = 0; i < dirty.n; ++i)
-    p.pieces.add(inter(dirty.r[i], screen));
-  if (p.move)
-    p.pieces.subtract(p.to);
+  for (size_t z = 0; z < window_count; ++z) {
+    const Window &w = windows[z_order[z]];
+    if (!w.placed) {
+      mark_dirty(ext(w));
+    } else if (w.x != w.sx || w.y != w.sy) {
+      mark_dirty(ext_at(w.sx, w.sy, w.width, w.height));
+      mark_dirty(ext(w));
+    }
+  }
+
+  for (size_t i = 0; i < damage_n; ++i)
+    p.pieces.add(inter(damage[i], screen));
   damage_n = 0;
+  if (mv.n) {
+    RectList<kMaxPieces> t = p.pieces;
+    for (size_t i = 0; i < mv.n; ++i)
+      t.subtract(mv.r[i]);
+    if (!t.ovf && !p.pieces.ovf) {
+      p.pieces = t;
+      p.moved = mv;
+      p.dx = mdx;
+      p.dy = mdy;
+    }
+  }
 
   Rect all{INT32_MAX, INT32_MAX, INT32_MIN, INT32_MIN};
   for (size_t i = 0; i < p.pieces.n; ++i)
@@ -572,68 +895,228 @@ void plan(Plan &p) {
     w.placed = true;
     w.sx = w.x;
     w.sy = w.y;
-    if (is_empty(all) || !overlaps(bounds(w), all))
+    if (is_empty(all) || !overlaps(body(w), all))
       continue;
-    const Rect cl = client(w);
-    for (size_t i = 0; i < p.pieces.n; ++i)
-      if (overlaps(cl, p.pieces.r[i])) {
-        st(w.exposed, 1u);
-        break;
-      }
+    // Expose only when a piece really wipes opaque client pixels.
+    RectList<24> shape;
+    opaque_rects(w, shape, true);
+    bool hit = false;
+    for (size_t i = 0; i < shape.n && !hit; ++i)
+      for (size_t k = 0; k < p.pieces.n; ++k)
+        if (overlaps(shape.r[i], p.pieces.r[k])) {
+          hit = true;
+          break;
+        }
+    if (hit)
+      st(w.exposed, 1u);
+  }
+}
+
+void move_pixels(const Plan &p) {
+  if (!p.moved.n)
+    return;
+  int ymin = INT32_MAX, ymax = INT32_MIN;
+  for (size_t i = 0; i < p.moved.n; ++i) {
+    ymin = std::min(ymin, p.moved.r[i].t);
+    ymax = std::max(ymax, p.moved.r[i].b);
+  }
+  const int rows = ymax - ymin;
+  for (int i = 0; i < rows; ++i) {
+    const int y = p.dy > 0 ? ymax - 1 - i : ymin + i;
+    for (size_t k = 0; k < p.moved.n; ++k) {
+      const Rect &m = p.moved.r[k];
+      if (y < m.t || y >= m.b)
+        continue;
+      const int w = m.r - m.l;
+      uint32_t *s = fb_row(y - p.dy) + (m.l - p.dx);
+      uint32_t *d = fb_row(y) + m.l;
+      if (p.dy != 0)
+        memcpy(d, s, size_t(w) * 4);
+      else if (p.dx < 0)
+        for (int q = 0; q < w; ++q)
+          d[q] = s[q];
+      else
+        for (int q = w; q--;)
+          d[q] = s[q];
+    }
   }
 }
 
 // ---- command execution ----------------------------------------------------
 
-// Canvases covering the visible part of window z's client area.
-size_t visible(size_t z, Canvas *out) {
-  const Window &w = windows[z_order[z]];
-  const Rect cl = client(w);
-  RectList<kMaxClip> clip;
-  clip.add(inter(cl, {0, 0, int(screen_w), int(screen_h)}));
-  for (size_t j = z + 1; j < window_count && clip.n; ++j) {
-    const Rect ab = bounds(windows[z_order[j]]);
-    if (overlaps(ab, cl))
-      clip.subtract(ab);
+template <class F>
+inline void for_records(const Cmd::Ring &q, uint32_t t, uint32_t h, F &&f) {
+  while (t != h) {
+    const uint32_t *rec = q.buf + (t & Cmd::kMask);
+    if ((rec[0] & 0xFFu) != Cmd::kPad)
+      f(rec);
+    t += rec[0] >> 8;
   }
-  uint32_t *origin = fb + ptrdiff_t(cl.t) * fb_stride + cl.l;
-  for (size_t i = 0; i < clip.n; ++i)
-    out[i] = {origin,
-              fb_stride,
-              clip.r[i].l - cl.l,
-              clip.r[i].t - cl.t,
-              clip.r[i].r - cl.l,
-              clip.r[i].b - cl.t};
-  return clip.n;
 }
 
-bool rings_pending() {
-  for (size_t z = 0; z < window_count; ++z) {
-    const Cmd::Ring &q = windows[z_order[z]].ring;
-    if (q.tail != ld(q.head))
-      return true;
+// Exact visible shape of window z's client (rounded corners, minus the opaque
+// pixels of everything above), split into
+//   open   - nobody else's shadow/edge touches it: draw straight to the screen
+//   fringe - inside another window's shadow reach: draw, then re-apply the
+//            shadows/edges of the windows above, only on pixels that changed.
+void build_clips(size_t z, RectList<kMaxClip> &open,
+                 RectList<kMaxClip> &fringe) {
+  const Window &w = windows[z_order[z]];
+  const Rect screen{0, 0, int(screen_w), int(screen_h)};
+  const Rect cl = client(w);
+  {
+    RectList<24> shape;
+    opaque_rects(w, shape, true);
+    for (size_t i = 0; i < shape.n; ++i)
+      open.add(inter(shape.r[i], screen));
   }
-  return false;
+  for (size_t j = z + 1; j < window_count && open.n; ++j) {
+    const Window &a = windows[z_order[j]];
+    if (!overlaps(body(a), cl))
+      continue;
+    RectList<24> ar;
+    opaque_rects(a, ar, false);
+    for (size_t i = 0; i < ar.n; ++i)
+      if (overlaps(ar.r[i], cl))
+        open.subtract(ar.r[i]);
+  }
+  for (size_t j = z + 1; j < window_count && open.n; ++j) {
+    const Rect e = ext(windows[z_order[j]]);
+    if (!overlaps(e, cl))
+      continue;
+    for (size_t i = 0; i < open.n; ++i)
+      if (overlaps(open.r[i], e))
+        fringe.add(inter(open.r[i], e));
+    open.subtract(e);
+  }
+}
+
+void run_fringe_tile(size_t z, const Window &w, const Rect &T,
+                     const Cmd::Ring &q, uint32_t t0, uint32_t h) {
+  const int pw = T.r - T.l, ph = T.b - T.t;
+  for (int y = 0; y < ph; ++y)
+    memcpy(scratch + size_t(y) * size_t(pw), fb_row(T.t + y) + T.l,
+           size_t(pw) * 4);
+
+  const int cl_l = w.x, cl_t = w.y + TITLE_H;
+  const Canvas cs{scratch + ptrdiff_t(cl_t - T.t) * pw + (cl_l - T.l),
+                  pw,
+                  T.l - cl_l,
+                  T.t - cl_t,
+                  T.r - cl_l,
+                  T.b - cl_t};
+  for_records(q, t0, h, [&](const uint32_t *rec) { Raster::execute(cs, rec); });
+
+  size_t n_changed = 0;
+  for (int y = 0; y < ph; ++y) {
+    const uint32_t *s = scratch + size_t(y) * size_t(pw);
+    const uint32_t *f = fb_row(T.t + y) + T.l;
+    uint8_t *m = changed + size_t(y) * size_t(pw);
+    for (int x = 0; x < pw; ++x) {
+      m[x] = s[x] != f[x];
+      n_changed += m[x];
+    }
+  }
+  if (!n_changed)
+    return;
+
+  const Canvas ca{scratch - ptrdiff_t(T.t) * pw - T.l, pw, T.l, T.t, T.r, T.b};
+  for (size_t j = z + 1; j < window_count; ++j) {
+    const Window &a = windows[z_order[j]];
+    if (!overlaps(ext(a), T))
+      continue;
+    paint_shadow(ca, a);
+    paint_edges(ca, a);
+  }
+
+  for (int y = 0; y < ph; ++y) {
+    const uint32_t *s = scratch + size_t(y) * size_t(pw);
+    const uint8_t *m = changed + size_t(y) * size_t(pw);
+    uint32_t *d = fb_row(T.t + y) + T.l;
+    for (int x = 0; x < pw;) {
+      if (!m[x]) {
+        ++x;
+        continue;
+      }
+      int e = x + 1;
+      while (e < pw && m[e])
+        ++e;
+      memcpy(d + x, s + x, size_t(e - x) * 4);
+      x = e;
+    }
+  }
+}
+
+bool snapshot_rings() {
+  bool any = false;
+  for (size_t z = 0; z < window_count; ++z) {
+    const size_t idx = z_order[z];
+    g_heads[idx] = ld(windows[idx].ring.head);
+    any = any || windows[idx].ring.tail != g_heads[idx];
+  }
+  return any;
 }
 
 void drain_all() {
-  Canvas cv[kMaxClip];
   for (size_t z = 0; z < window_count; ++z) {
-    Cmd::Ring &q = windows[z_order[z]].ring;
-    uint32_t t = q.tail;
-    const uint32_t h = ld(q.head);
+    const size_t idx = z_order[z];
+    Window &w = windows[idx];
+    Cmd::Ring &q = w.ring;
+    const uint32_t t = q.tail, h = g_heads[idx];
     if (t == h)
       continue;
-    const size_t n = visible(z, cv);
-    while (t != h) {
-      const uint32_t *rec = q.buf + (t & Cmd::kMask);
-      if ((rec[0] & 0xFFu) != Cmd::kPad)
+
+    RectList<kMaxClip> open, fringe;
+    build_clips(z, open, fringe);
+
+    if (open.n) {
+      Canvas cv[kMaxClip];
+      const Rect cl = client(w);
+      uint32_t *origin = fb + ptrdiff_t(cl.t) * fb_stride + cl.l;
+      for (size_t i = 0; i < open.n; ++i)
+        cv[i] = {origin,
+                 fb_stride,
+                 open.r[i].l - cl.l,
+                 open.r[i].t - cl.t,
+                 open.r[i].r - cl.l,
+                 open.r[i].b - cl.t};
+      const size_t n = open.n;
+      for_records(q, t, h, [&](const uint32_t *rec) {
         for (size_t i = 0; i < n; ++i)
           Raster::execute(cv[i], rec);
-      t += rec[0] >> 8;
+      });
     }
-    st(q.tail, t);
+    for (size_t i = 0; i < fringe.n; ++i) {
+      const Rect &p = fringe.r[i];
+      for (int ty = p.t; ty < p.b; ty += kTileH)
+        for (int tx = p.l; tx < p.r; tx += kTileW)
+          run_fringe_tile(
+              z, w,
+              {tx, ty, std::min(tx + kTileW, p.r), std::min(ty + kTileH, p.b)},
+              q, t, h);
+    }
+    st(q.tail, h);
   }
+}
+
+// Would this frame write a pixel the cursor is sitting on?
+bool frame_touches(const Rect &cb, const Plan &p) {
+  for (size_t i = 0; i < p.pieces.n; ++i)
+    if (overlaps(cb, p.pieces.r[i]))
+      return true;
+  for (size_t i = 0; i < p.moved.n; ++i) {
+    const Rect &m = p.moved.r[i];
+    const Rect src{m.l - p.dx, m.t - p.dy, m.r - p.dx, m.b - p.dy};
+    if (overlaps(cb, m) || overlaps(cb, src))
+      return true;
+  }
+  for (size_t z = 0; z < window_count; ++z) {
+    const size_t idx = z_order[z];
+    if (windows[idx].ring.tail != g_heads[idx] &&
+        overlaps(cb, client(windows[idx])))
+      return true;
+  }
+  return false;
 }
 
 bool tick() {
@@ -643,18 +1126,22 @@ bool tick() {
 
   Plan p;
   plan(p);
+  const bool pending = snapshot_rings();
   const bool moved = !cursor_on || cursor_x != cur_x || cursor_y != cur_y;
-  if (!p.pieces.n && !p.move && !moved && !rings_pending())
+  if (!p.pieces.n && !p.moved.n && !moved && !pending)
     return false;
 
-  cursor_hide();
-  if (p.move)
-    move_pixels(p.from, p.to);
+  // The cursor is only lifted when it moved or this frame writes under it.
+  if (cursor_on && (moved || frame_touches(cursor_box(), p)))
+    cursor_hide();
+
+  move_pixels(p);
   TrueTypeFont *font = Raster::default_font();
   for (size_t i = 0; i < p.pieces.n; ++i)
-    paint_piece(p.pieces.r[i], font);
+    compose_piece(p.pieces.r[i], font);
   drain_all();
-  cursor_show(cursor_x, cursor_y);
+  if (!cursor_on)
+    cursor_show(cursor_x, cursor_y);
   return true;
 }
 
@@ -683,18 +1170,31 @@ bool __init initialize() {
     return false;
 
   Raster::default_font();
-  for (unsigned m = 0; m < 8; ++m) {
-    unsigned inv = 255;
-    for (int k = 0; k < 3; ++k)
-      if (m & (1u << k))
-        inv = inv * (255 - SHADOW_LAYER_ALPHA[k]) / 255;
-    g_shadow_alpha[m] = uint8_t(255 - inv);
+  init_corners();
+  init_shadows();
+  nspans = ncells = 0;
+  for (int dy = -CURSOR_R; dy <= CURSOR_R; ++dy) {
+    int dx = -CURSOR_R;
+    while (dx <= CURSOR_R) {
+      int sh = cursor_shape(dx, dy);
+      if (!sh) {
+        ++dx;
+        continue;
+      }
+      const uint32_t color = sh == 1 ? BLACK : TEXT;
+      const int x0 = dx;
+      do {
+        ++dx;
+        if (dx > CURSOR_R)
+          break;
+        sh = cursor_shape(dx, dy);
+      } while (sh && (sh == 1 ? BLACK : TEXT) == color);
+      const int x1 = dx - 1;
+      cursor_spans[nspans++] = {int8_t(dy), int8_t(x0), int8_t(x1), color,
+                                ncells};
+      ncells += size_t(x1 - x0 + 1);
+    }
   }
-  ncells = 0;
-  for (int dy = -CURSOR_R; dy <= CURSOR_R; ++dy)
-    for (int dx = -CURSOR_R; dx <= CURSOR_R; ++dx)
-      if (const int sh = cursor_shape(dx, dy))
-        cells[ncells++] = {int8_t(dx), int8_t(dy), sh == 1 ? BLACK : TEXT};
   return true;
 }
 

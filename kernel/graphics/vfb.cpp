@@ -58,12 +58,17 @@ inline uint32_t *row_ptr(const Canvas &c, int32_t y) {
 }
 
 inline void fill32(uint32_t *p, uint32_t v, size_t n) {
-  if (n < 16) {
+  if (n < 8) {
     while (n--)
       *p++ = v;
     return;
   }
-  asm volatile("rep stosl" : "+D"(p), "+c"(n) : "a"(v) : "memory");
+  const uint64_t v64 = uint64_t(v) | (uint64_t(v) << 32);
+  size_t n64 = n / 2;
+  if (n64)
+    asm volatile("rep stosq" : "+D"(p), "+c"(n64) : "a"(v64) : "memory");
+  if (n & 1)
+    *p = v;
 }
 
 // Exact per-channel (fg*a + bg*(255-a)) / 255 with rounding; R and B share
@@ -88,10 +93,23 @@ inline void put_cov(const Canvas &c, int32_t x, int32_t y, uint32_t color,
 }
 
 inline void span_fill(uint32_t *p, int64_t n, uint32_t color, uint32_t alpha) {
+  if (n <= 0 || alpha == 0)
+    return;
   if (alpha >= 255)
     return fill32(p, color, size_t(n));
-  for (int64_t i = 0; i < n; ++i)
-    p[i] = mix(color, p[i], alpha);
+
+  const uint32_t ia = 255 - alpha;
+  const uint32_t fg_rb = (color & 0x00FF00FFu) * alpha + 0x00800080u;
+  const uint32_t fg_g = ((color >> 8) & 255) * alpha + 128;
+
+  for (int64_t i = 0; i < n; ++i) {
+    const uint32_t bg = p[i];
+    uint32_t rb = fg_rb + (bg & 0x00FF00FFu) * ia;
+    rb = ((rb + ((rb >> 8) & 0x00FF00FFu)) >> 8) & 0x00FF00FFu;
+    uint32_t g = fg_g + ((bg >> 8) & 255) * ia;
+    g = (g + (g >> 8)) >> 8;
+    p[i] = 0xFF000000u | rb | (g << 8);
+  }
 }
 
 // ---- 8x8 bitmap text ------------------------------------------------------
@@ -156,16 +174,7 @@ struct Iv2 {
 inline int64_t isqrt(int64_t v) {
   if (v < 2)
     return v;
-  int64_t r = 0, bit = int64_t(1) << (62 - (__builtin_clzll(v) & ~1));
-  for (; bit; bit >>= 2) {
-    if (v >= r + bit) {
-      v -= r + bit;
-      r = (r >> 1) + bit;
-    } else {
-      r >>= 1;
-    }
-  }
-  return r;
+  return static_cast<int64_t>(__builtin_sqrt(static_cast<double>(v)));
 }
 
 inline int64_t floordiv(int64_t a, int64_t b) {
@@ -221,16 +230,28 @@ void cover_row(const Canvas &c, int32_t y, int32_t xl, int32_t xr,
   }
 
   uint32_t *row = row_ptr(c, y);
-  for (int64_t x = a; x <= z; ++x) {
-    if (x >= fa && x <= fz) {
-      const int64_t e = std::min(fz, z);
-      span_fill(row + x, e - x + 1, color, alpha);
-      x = e;
-    } else if (x >= ha && x <= hz) {
-      x = std::min(hz, z);
-    } else {
+  const bool has_solid = (fa <= fz);
+  const bool has_hole = (ha <= hz);
+
+  if (has_solid) {
+    const int64_t s_start = std::max(a, fa);
+    const int64_t s_end = std::min(z, fz);
+    for (int64_t x = a; x < s_start; ++x)
       put_cov(c, int32_t(x), y, color, samples_at(int32_t(x), s), alpha);
-    }
+    if (s_start <= s_end)
+      span_fill(row + s_start, s_end - s_start + 1, color, alpha);
+    for (int64_t x = std::max(a, s_end + 1); x <= z; ++x)
+      put_cov(c, int32_t(x), y, color, samples_at(int32_t(x), s), alpha);
+  } else if (has_hole) {
+    const int64_t h_start = std::max(a, ha);
+    const int64_t h_end = std::min(z, hz);
+    for (int64_t x = a; x < h_start; ++x)
+      put_cov(c, int32_t(x), y, color, samples_at(int32_t(x), s), alpha);
+    for (int64_t x = std::max(a, h_end + 1); x <= z; ++x)
+      put_cov(c, int32_t(x), y, color, samples_at(int32_t(x), s), alpha);
+  } else {
+    for (int64_t x = a; x <= z; ++x)
+      put_cov(c, int32_t(x), y, color, samples_at(int32_t(x), s), alpha);
   }
 }
 
@@ -455,15 +476,21 @@ void line(const Canvas &c, int32_t x0, int32_t y0, int32_t x1, int32_t y1,
 template <typename Draw>
 void walk_arc(int32_t xc, int32_t yc, int32_t r, int32_t start, int32_t end,
               Draw draw) {
-  int32_t px = 0, py = 0;
-  for (int32_t deg = start; deg <= end; ++deg) {
+  if (r <= 0 || start >= end)
+    return;
+  const int32_t step = (r < 15) ? 6 : (r < 30) ? 3 : (r < 60) ? 2 : 1;
+  int32_t px = xc + r * Kernel::Lib::Math::fixed_cos(start) / 1024;
+  int32_t py = yc + r * Kernel::Lib::Math::fixed_sin(start) / 1024;
+  for (int32_t deg = start + step; deg < end; deg += step) {
     const int32_t x = xc + r * Kernel::Lib::Math::fixed_cos(deg) / 1024;
     const int32_t y = yc + r * Kernel::Lib::Math::fixed_sin(deg) / 1024;
-    if (deg != start)
-      draw(px, py, x, y);
+    draw(px, py, x, y);
     px = x;
     py = y;
   }
+  const int32_t x = xc + r * Kernel::Lib::Math::fixed_cos(end) / 1024;
+  const int32_t y = yc + r * Kernel::Lib::Math::fixed_sin(end) / 1024;
+  draw(px, py, x, y);
 }
 
 void rect_outline(const Canvas &c, int32_t x, int32_t y, int32_t w, int32_t h,
@@ -511,19 +538,45 @@ void blit_any(const Canvas &c, int64_t bx, int64_t by, uint32_t bw,
   const uint8_t *srow = reinterpret_cast<const uint8_t *>(src) +
                         size_t(b.t - by) * sp + size_t(b.l - bx) * 4;
   const int32_t n = b.r - b.l;
-  for (int32_t y = b.t; y < b.b; ++y, srow += sp) {
-    const auto *s = reinterpret_cast<const uint32_t *>(srow);
-    uint32_t *d = row_ptr(c, y) + b.l;
-    if (mode == BlitOpaque)
-      memcpy(d, s, size_t(n) * 4);
-    else if (mode == BlitKey)
+  if (mode == BlitOpaque) {
+    for (int32_t y = b.t; y < b.b; ++y, srow += sp) {
+      uint32_t *d = row_ptr(c, y) + b.l;
+      memcpy(d, srow, size_t(n) * 4);
+    }
+  } else if (mode == BlitKey) {
+    for (int32_t y = b.t; y < b.b; ++y, srow += sp) {
+      const auto *s = reinterpret_cast<const uint32_t *>(srow);
+      uint32_t *d = row_ptr(c, y) + b.l;
       for (int32_t x = 0; x < n; ++x) {
         if (s[x] != param)
           d[x] = s[x];
       }
-    else
-      for (int32_t x = 0; x < n; ++x)
-        d[x] = Raster::blend(s[x], d[x], param);
+    }
+  } else { // BlitAlpha
+    const uint32_t alpha = param;
+    if (alpha == 0)
+      return;
+    if (alpha >= 255) {
+      for (int32_t y = b.t; y < b.b; ++y, srow += sp) {
+        uint32_t *d = row_ptr(c, y) + b.l;
+        memcpy(d, srow, size_t(n) * 4);
+      }
+      return;
+    }
+    const uint32_t ia = 255 - alpha;
+    for (int32_t y = b.t; y < b.b; ++y, srow += sp) {
+      const auto *s = reinterpret_cast<const uint32_t *>(srow);
+      uint32_t *d = row_ptr(c, y) + b.l;
+      for (int32_t x = 0; x < n; ++x) {
+        const uint32_t fg = s[x];
+        const uint32_t bg = d[x];
+        uint32_t rb = (fg & 0x00FF00FFu) * alpha + (bg & 0x00FF00FFu) * ia + 0x00800080u;
+        rb = ((rb + ((rb >> 8) & 0x00FF00FFu)) >> 8) & 0x00FF00FFu;
+        uint32_t g = ((fg >> 8) & 255) * alpha + ((bg >> 8) & 255) * ia + 128;
+        g = (g + (g >> 8)) >> 8;
+        d[x] = 0xFF000000u | rb | (g << 8);
+      }
+    }
   }
 }
 
@@ -832,6 +885,68 @@ void execute(const Canvas &c, const uint32_t *r) {
     break;
   default:
     break;
+  }
+}
+
+bool get_record_bounds(const uint32_t *r, int32_t &l, int32_t &t, int32_t &rr,
+                       int32_t &b) {
+  const int32_t *a = reinterpret_cast<const int32_t *>(r) + 1;
+  const uint32_t *u = r + 1;
+  switch (r[0] & 0xFFu) {
+  case OpPixel: {
+    l = int16_t(u[0]);
+    t = int16_t(u[0] >> 16);
+    rr = l + 1;
+    b = t + 1;
+    return true;
+  }
+  case OpFillRect:
+  case OpRect:
+  case OpFillRectA:
+  case OpRRect:
+  case OpFillRRect:
+    l = a[0];
+    t = a[1];
+    rr = l + a[2];
+    b = t + a[3];
+    return true;
+  case OpLine:
+    l = std::min(a[0], a[2]);
+    t = std::min(a[1], a[3]);
+    rr = std::max(a[0], a[2]) + 1;
+    b = std::max(a[1], a[3]) + 1;
+    return true;
+  case OpCircle:
+  case OpFillCircle:
+  case OpFillCircleA:
+  case OpArc:
+  case OpSector:
+    l = a[0] - a[2] - 1;
+    t = a[1] - a[2] - 1;
+    rr = a[0] + a[2] + 2;
+    b = a[1] + a[2] + 2;
+    return true;
+  case OpGlyph:
+  case OpGlyphBg:
+    l = a[0];
+    t = a[1];
+    rr = l + 16;
+    b = t + 18;
+    return true;
+  case OpBlit:
+    l = a[0];
+    t = a[1];
+    rr = l + int32_t(u[2]);
+    b = t + int32_t(u[3]);
+    return true;
+  case OpFillTri:
+    l = std::min({a[0], a[2], a[4]});
+    t = std::min({a[1], a[3], a[5]});
+    rr = std::max({a[0], a[2], a[4]}) + 1;
+    b = std::max({a[1], a[3], a[5]}) + 1;
+    return true;
+  default:
+    return false;
   }
 }
 

@@ -23,7 +23,7 @@ else
 LTO_FLAGS = -flto=full
 endif
 
-COMMON_FLAGS = -march=x86-64-v3 -ffast-math \
+COMMON_FLAGS = -march=x86-64-v3 -mavx2 -msse2 -msse -ffast-math \
   -ffreestanding -Wall -Wextra -w $(RED_ZONE_FLAG) -m64 \
   -fno-exceptions -fno-stack-protector -fno-rtti \
   -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fvisibility=hidden\
@@ -67,16 +67,6 @@ LDFLAGS = -static -ffreestanding -nostdlib $(LTO_FLAGS) $(LINKER_FLAGS) \
 -Wl,-z,max-page-size=0x1000 \
 -Wl,-T,arch/linker.ld
 #-Wl,--icf=all
-
-GCC_TUNED_SRCS = kernel/memory/heap.cpp kernel/drivers/mouse.cpp \
-  kernel/drivers/pci.cpp kernel/fs/laziofs.cpp
-GCC_TUNED_OBJS = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(GCC_TUNED_SRCS))
-GCC_TUNED_FLAGS = -march=x86-64-v3 -ffast-math -ffreestanding -Wall -Wextra -w \
-  $(RED_ZONE_FLAG) -m64 -fno-exceptions -fno-stack-protector -fno-rtti \
-  -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident \
-  -fvisibility=hidden -ffunction-sections -fdata-sections \
-  -fmerge-all-constants -funroll-loops -fno-lto $(INCLUDES) -Ofast \
-  -ftree-loop-vectorize -ftree-vectorize -fallow-store-data-races $(CPP_STD)
 
 ASM_SRCS = $(shell find arch kernel -name '*.asm' $(EXCLUDE))
 GAS_SRCS = $(shell find arch kernel -name '*.S' $(EXCLUDE))
