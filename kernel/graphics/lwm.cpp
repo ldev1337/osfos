@@ -161,37 +161,57 @@ inline Rect client_at(int x, int y, uint32_t w, uint32_t h) {
 // Only the compositor moves CLOSING/LIVE -> FREE.
 enum : uint32_t { S_FREE, S_CLAIMED, S_LIVE, S_CLOSING };
 
-struct Window {
-  Cmd::Ring ring;
-  // written by the registering thread before state = LIVE
-  uint64_t thread_id;
-  char title[32];
-  // app -> compositor mailboxes
-  uint32_t state, raise_req;
-  uint64_t req_size; // width << 32 | height
-  // compositor -> app
-  uint32_t exposed;
+// Slot shared with app threads, split by who touches which cache line so a
+// write from one side never invalidates a line the other side is spinning on:
+//   line 0  polled by the compositor every tick (sync_table): app-written
+//           mailboxes plus the rarely-changing size/known flag
+//   line 1  compositor -> app results (written by publish/plan)
+//   line 2+ cold: spawn position and titles, touched on adopt/resize/paint
+//   last    the command ring, on its own line(s), never shared with the rest
+struct alignas(64) Window {
+  // --- line 0 ---------------------------------------------------------------
+  uint32_t state;     // S_* life cycle (CAS by apps, reset by compositor)
+  uint32_t raise_req; // app -> compositor
+  uint64_t req_size;  // width << 32 | height, app -> compositor
+  uint64_t thread_id; // written by the registering thread before state = LIVE
+  uint32_t width, height; // size last applied (compared against req_size)
+  bool known;             // linked into zg[]
+  // --- line 1 ---------------------------------------------------------------
+  alignas(64) uint32_t exposed;
   int32_t pos_x, pos_y;
-  // compositor-private after adoption
-  uint32_t width, height;
-  int x, y;   // where the window should be
-  int sx, sy; // where its pixels currently are (valid if `placed`)
-  int tx_off;
-  bool known, placed;
+  // --- cold -----------------------------------------------------------------
+  alignas(64) int init_x, init_y; // spawn position, consumed by adopt()
+  char title[32];
   char ctitle[32];
+  // --- ring -----------------------------------------------------------------
+  alignas(64) Cmd::Ring ring;
 };
 
-Window windows[MAX_WINDOWS]; // zero-initialised: all FREE
-size_t z_order[MAX_WINDOWS]; // bottom..top, last = focused
+// Hot, compositor-private geometry. Packed in z-order (bottom..top, last =
+// focused) so every z walk is a linear scan of 32-byte records, two per cache
+// line, and never touches the app-written Window lines (no false sharing).
+struct alignas(32) Geo {
+  int x, y;   // where the window should be
+  int sx, sy; // where its pixels currently are (valid if `placed`)
+  uint32_t width, height;
+  int tx_off;
+  uint8_t slot; // index into windows[]
+  bool placed;
+};
+static_assert(sizeof(Geo) == 32, "Geo must stay two per cache line");
+
+alignas(64) Window windows[MAX_WINDOWS]; // zero-initialised: all FREE
+alignas(64) Geo zg[MAX_WINDOWS];         // bottom..top, last = focused
 size_t window_count = 0;
-uint32_t g_heads[MAX_WINDOWS]; // ring heads snapshotted once per tick
+alignas(
+    64) uint32_t g_heads[MAX_WINDOWS]; // ring heads snapshotted once per tick
 
 uint32_t screen_w = 0, screen_h = 0;
 uint32_t *fb = nullptr;
 ptrdiff_t fb_stride = 0;
 int drag_x = 0, drag_y = 0, cursor_x = -1, cursor_y = -1;
 bool dragging = false, old_left = false;
-Rect damage[kMaxDamage];
+alignas(64) Rect damage[kMaxDamage];
 size_t damage_n = 0;
 uint64_t g_focus_tid = 0;
 
@@ -206,15 +226,13 @@ size_t nspans = 0, ncells = 0;
 bool cursor_on = false;
 int cur_x = 0, cur_y = 0;
 
-uint32_t scratch[kTilePx];
-uint8_t changed[kTilePx];
+alignas(64) uint32_t scratch[kTilePx];
+alignas(64) uint8_t changed[kTilePx];
 
 inline uint32_t *fb_row(int y) { return fb + ptrdiff_t(y) * fb_stride; }
-inline Rect body(const Window &w) {
-  return body_at(w.x, w.y, w.width, w.height);
-}
-inline Rect ext(const Window &w) { return ext_at(w.x, w.y, w.width, w.height); }
-inline Rect client(const Window &w) {
+inline Rect body(const Geo &w) { return body_at(w.x, w.y, w.width, w.height); }
+inline Rect ext(const Geo &w) { return ext_at(w.x, w.y, w.width, w.height); }
+inline Rect client(const Geo &w) {
   return client_at(w.x, w.y, w.width, w.height);
 }
 inline uint64_t pack(uint32_t w, uint32_t h) { return uint64_t(w) << 32 | h; }
@@ -267,15 +285,15 @@ void init_corners() {
     }
 }
 
-inline int top_radius(const Window &w) {
+inline int top_radius(const Geo &w) {
   return std::min(CORNER, int(w.width) / 2);
 }
-inline int bottom_radius(const Window &w) {
+inline int bottom_radius(const Geo &w) {
   return std::min(CORNER, int(std::min(w.width, w.height)) / 2);
 }
 
 // Fully opaque span of window row `py` (title bar + client, rounded corners).
-inline bool opaque_span(const Window &w, int py, int &a, int &b) {
+inline bool opaque_span(const Geo &w, int py, int &a, int &b) {
   const int H = TITLE_H + int(w.height), dy = py - w.y;
   if (dy < 0 || dy >= H)
     return false;
@@ -293,7 +311,7 @@ inline bool opaque_span(const Window &w, int py, int &a, int &b) {
 // Fully opaque pixels as a handful of row-merged rects. client_only: skip the
 // title bar (what applications may draw into).
 template <size_t N>
-void opaque_rects(const Window &w, RectList<N> &out, bool client_only) {
+void opaque_rects(const Geo &w, RectList<N> &out, bool client_only) {
   const int x = w.x, r = x + int(w.width), H = TITLE_H + int(w.height);
   const int rt = top_radius(w), rb = bottom_radius(w);
   const int first = client_only ? TITLE_H : 0;
@@ -402,7 +420,7 @@ void shade_run(uint32_t *row, const ShadowLayer &L, uint32_t rowA, int sl,
 }
 
 // Darkens canvas pixels around (never under) the opaque window shape.
-void paint_shadow(const Canvas &c, const Window &w) {
+void paint_shadow(const Canvas &c, const Geo &w) {
   const int H = TITLE_H + int(w.height);
   for (const ShadowLayer &L : g_layers) {
     const int sl = w.x + L.inset, sr = w.x + int(w.width) - L.inset;
@@ -458,7 +476,7 @@ void mark_dirty(const Rect &r) {
   damage[best] = unite(damage[best], r);
 }
 
-void mark_window_dirty(const Window &w) {
+void mark_window_dirty(const Geo &w) {
   mark_dirty(ext(w));
   if (w.placed && (w.sx != w.x || w.sy != w.y))
     mark_dirty(ext_at(w.sx, w.sy, w.width, w.height));
@@ -467,7 +485,7 @@ void mark_window_dirty(const Window &w) {
 // Focus only changes the title's text, lights and rule: repaint the opaque
 // interior of the bar and leave the rounded corners (which show whatever is
 // beneath) alone.
-void mark_title_dirty(const Window &w) {
+void mark_title_dirty(const Geo &w) {
   const int rt = top_radius(w), r = w.x + int(w.width);
   mark_dirty({w.x + rt, w.y, r - rt, w.y + TITLE_H});
   mark_dirty({w.x, w.y + rt, w.x + rt, w.y + TITLE_H});
@@ -483,7 +501,7 @@ void copy_name(char *dst, const char *src) {
   dst[i] = '\0';
 }
 
-void layout_title(Window &w) {
+void layout_title(Window &w, Geo &g) {
   TrueTypeFont *font = Raster::default_font();
   copy_name(w.ctitle, w.title);
   auto tw = [&] {
@@ -491,26 +509,34 @@ void layout_title(Window &w) {
                 : int(strlen(w.ctitle) * 8);
   };
   int mw = tw();
-  for (size_t len = strlen(w.ctitle); len && mw > int(w.width) - 78; mw = tw())
+  for (size_t len = strlen(w.ctitle); len && mw > int(g.width) - 78; mw = tw())
     w.ctitle[--len] = '\0';
-  w.tx_off = std::max(62, (int(w.width) - mw) / 2);
+  g.tx_off = std::max(62, (int(g.width) - mw) / 2);
+}
+
+// z position of a slot (compositor thread only; <= 32 entries).
+inline Geo *geo_of(size_t slot) {
+  for (size_t z = 0; z < window_count; ++z)
+    if (zg[z].slot == slot)
+      return &zg[z];
+  return nullptr;
 }
 
 void focus_window(size_t idx) {
-  size_t *const end = z_order + window_count;
-  size_t *const it = std::find(z_order, end, idx);
+  Geo *const end = zg + window_count;
+  Geo *it = zg;
+  while (it != end && it->slot != idx)
+    ++it;
   if (it == end || it + 1 == end)
     return;
-  const Window &w = windows[idx];
-  mark_title_dirty(windows[*(end - 1)]);
-  mark_title_dirty(w);
+  mark_title_dirty(*(end - 1));
+  mark_title_dirty(*it);
   // Only pixels where the stacking order of two windows flips change:
   // a's shadow over w's body and a's body over w's shadow. Shadow-over-shadow
   // is commutative and body pixels of w that nobody covers keep their client.
-  const Rect wb = body(w), we = ext(w);
-  for (size_t *j = it + 1; j != end; ++j) {
-    const Window &a = windows[*j];
-    const Rect ab = body(a), ae = ext(a);
+  const Rect wb = body(*it), we = ext(*it);
+  for (Geo *j = it + 1; j != end; ++j) {
+    const Rect ab = body(*j), ae = ext(*j);
     if (overlaps(ae, wb))
       mark_dirty(inter(ae, wb));
     if (overlaps(ab, we))
@@ -522,31 +548,37 @@ void focus_window(size_t idx) {
 void adopt(size_t idx) {
   Window &w = windows[idx];
   if (window_count)
-    mark_title_dirty(windows[z_order[window_count - 1]]);
+    mark_title_dirty(zg[window_count - 1]);
   w.known = true;
-  w.placed = false;
-  w.sx = w.x;
-  w.sy = w.y;
-  layout_title(w);
-  z_order[window_count++] = idx;
+  Geo &g = zg[window_count++];
+  g = Geo{};
+  g.x = g.sx = w.init_x;
+  g.y = g.sy = w.init_y;
+  g.width = w.width;
+  g.height = w.height;
+  g.slot = uint8_t(idx);
+  g.placed = false;
+  layout_title(w, g);
   dragging = false;
-  mark_window_dirty(w);
+  mark_window_dirty(g);
 }
 
 void unlink_window(size_t idx) {
   Window &w = windows[idx];
-  mark_window_dirty(w);
-  size_t *const end = z_order + window_count;
-  size_t *const it = std::find(z_order, end, idx);
+  Geo *const end = zg + window_count;
+  Geo *it = zg;
+  while (it != end && it->slot != idx)
+    ++it;
   if (it == end)
     return;
+  mark_window_dirty(*it);
   if (it + 1 == end)
     dragging = false;
   std::rotate(it, it + 1, end);
   --window_count;
   w.known = false;
   if (window_count)
-    mark_title_dirty(windows[z_order[window_count - 1]]);
+    mark_title_dirty(zg[window_count - 1]);
 }
 
 void release_slot(Window &w) {
@@ -557,18 +589,18 @@ void release_slot(Window &w) {
   st(w.state, uint32_t(S_FREE));
 }
 
-void apply_resize(Window &w, uint32_t rw, uint32_t rh) {
-  mark_window_dirty(w);
-  w.width = rw;
-  w.height = rh;
-  w.placed = false;
+void apply_resize(Window &w, Geo &g, uint32_t rw, uint32_t rh) {
+  mark_window_dirty(g);
+  w.width = g.width = rw;
+  w.height = g.height = rh;
+  g.placed = false;
   st(w.exposed, 1u);
-  w.x = screen_w > rw ? int((screen_w - rw) / 2) : 0;
-  w.y = screen_h > rh + TITLE_H + 30
+  g.x = screen_w > rw ? int((screen_w - rw) / 2) : 0;
+  g.y = screen_h > rh + TITLE_H + 30
             ? 30 + int((screen_h - 30 - TITLE_H - rh) / 2)
             : 30;
-  layout_title(w);
-  mark_window_dirty(w);
+  layout_title(w, g);
+  mark_window_dirty(g);
 }
 
 void sync_table() {
@@ -584,7 +616,8 @@ void sync_table() {
         focus_window(i);
       const uint64_t rs = ld(w.req_size);
       if (uint32_t(rs >> 32) != w.width || uint32_t(rs) != w.height)
-        apply_resize(w, uint32_t(rs >> 32), uint32_t(rs));
+        if (Geo *g = geo_of(i))
+          apply_resize(w, *g, uint32_t(rs >> 32), uint32_t(rs));
     } else if (s == S_CLOSING) {
       if (w.known)
         unlink_window(i);
@@ -595,12 +628,18 @@ void sync_table() {
 
 void publish() {
   for (size_t z = 0; z < window_count; ++z) {
-    Window &w = windows[z_order[z]];
-    __atomic_store_n(&w.pos_x, int32_t(w.x), __ATOMIC_RELAXED);
-    __atomic_store_n(&w.pos_y, int32_t(w.y + TITLE_H), __ATOMIC_RELAXED);
+    const Geo &g = zg[z];
+    Window &w = windows[g.slot];
+    // Only write when changed: an idle window's line stays Shared in the
+    // app's cache instead of bouncing every tick.
+    const int32_t px = int32_t(g.x), py = int32_t(g.y + TITLE_H);
+    if (__atomic_load_n(&w.pos_x, __ATOMIC_RELAXED) != px)
+      __atomic_store_n(&w.pos_x, px, __ATOMIC_RELAXED);
+    if (__atomic_load_n(&w.pos_y, __ATOMIC_RELAXED) != py)
+      __atomic_store_n(&w.pos_y, py, __ATOMIC_RELAXED);
   }
   __atomic_store_n(&g_focus_tid,
-                   window_count ? windows[z_order[window_count - 1]].thread_id
+                   window_count ? windows[zg[window_count - 1].slot].thread_id
                                 : uint64_t(0),
                    __ATOMIC_RELAXED);
 }
@@ -677,7 +716,7 @@ inline void fill_span(const Canvas &c, int py, int a, int b, uint32_t color) {
 
 // Anti-aliased pixels of one corner row (both sides), blended over whatever is
 // already on the canvas.
-inline void edge_row(const Canvas &c, const Window &w, int py, int R, int k,
+inline void edge_row(const Canvas &c, const Geo &w, int py, int R, int k,
                      uint32_t color) {
   if (py < c.t || py >= c.b)
     return;
@@ -698,7 +737,7 @@ inline void edge_row(const Canvas &c, const Window &w, int py, int R, int k,
 
 // Only the anti-aliased corner pixels (used to re-seat a window's silhouette
 // over client pixels that apps just drew underneath it).
-void paint_edges(const Canvas &c, const Window &w) {
+void paint_edges(const Canvas &c, const Geo &w) {
   const int H = TITLE_H + int(w.height), rt = top_radius(w),
             rb = bottom_radius(w);
   for (int k = 0; k < rt; ++k)
@@ -707,8 +746,8 @@ void paint_edges(const Canvas &c, const Window &w) {
     edge_row(c, w, w.y + H - 1 - k, rb, k, BODY);
 }
 
-void paint_title(const Canvas &c, const Window &w, bool focused,
-                 TrueTypeFont *font) {
+void paint_title(const Canvas &c, const Geo &w, const char *ctitle,
+                 bool focused, TrueTypeFont *font) {
   const int x = w.x, y = w.y, ww = int(w.width), r = x + ww,
             body_top = y + TITLE_H;
   if (c.t >= body_top || c.b <= y || c.l >= r || c.r <= x)
@@ -729,10 +768,10 @@ void paint_title(const Canvas &c, const Window &w, bool focused,
   const uint32_t tc = focused ? TEXT : TEXT_DIM;
   const int ty = y + 7, tx = x + w.tx_off;
   if (font) {
-    Raster::text(t, *font, tx, ty, 14.0f, w.ctitle, tc);
+    Raster::text(t, *font, tx, ty, 14.0f, ctitle, tc);
   } else {
     const int limit = x + ww - 12;
-    const char *s = w.ctitle;
+    const char *s = ctitle;
     for (int cx = tx; *s && cx < limit; ++s, cx += 8)
       Raster::glyph8(t, cx, ty, *s, tc);
   }
@@ -745,7 +784,7 @@ void paint_title(const Canvas &c, const Window &w, bool focused,
   }
 }
 
-void paint_body(const Canvas &c, const Window &w) {
+void paint_body(const Canvas &c, const Geo &w) {
   const int x = w.x, r = x + int(w.width), body_top = w.y + TITLE_H,
             bottom = body_top + int(w.height), rb = bottom_radius(w);
   const int y0 = std::max(c.t, body_top), y1 = std::min(c.b, bottom);
@@ -766,11 +805,11 @@ void compose_tile(const Rect &T, TrueTypeFont *font) {
   for (size_t i = 0, n = size_t(pw) * size_t(ph); i < n; ++i)
     scratch[i] = DESKTOP;
   for (size_t z = 0; z < window_count; ++z) {
-    const Window &w = windows[z_order[z]];
+    const Geo &w = zg[z];
     if (!overlaps(ext(w), T))
       continue;
     paint_shadow(c, w);
-    paint_title(c, w, z == window_count - 1, font);
+    paint_title(c, w, windows[w.slot].ctitle, z == window_count - 1, font);
     paint_body(c, w);
   }
   for (int y = 0; y < ph; ++y)
@@ -795,23 +834,26 @@ void mouse_update() {
 
   if (left && !old_left) {
     for (size_t n = window_count; n--;) {
-      const size_t idx = z_order[n];
-      Window &w = windows[idx];
+      Geo &w = zg[n];
+      const size_t idx = w.slot;
       if (mx < w.x - 1 || mx >= w.x + int(w.width) + 1 || my < w.y - 1 ||
           my >= w.y + TITLE_H + int(w.height) + 1)
         continue;
       if (my >= w.y + 5 && my < w.y + TITLE_H - 5 && mx >= w.x + 7 &&
           mx < w.x + 29) {
-        const uint64_t tid = w.thread_id;
+        const uint64_t tid = windows[idx].thread_id;
         unlink_window(idx);
         Kernel::Scheduler::terminate_thread(tid);
-        release_slot(w);
+        release_slot(windows[idx]);
       } else {
         focus_window(idx);
-        if (my < w.y + TITLE_H) {
+        // focus_window() rotated zg: `w` may now alias another window, and
+        // the clicked one is guaranteed to be on top.
+        const Geo &top = zg[window_count - 1];
+        if (my < top.y + TITLE_H) {
           dragging = true;
-          drag_x = mx - w.x;
-          drag_y = my - w.y;
+          drag_x = mx - top.x;
+          drag_y = my - top.y;
         }
       }
       break;
@@ -819,7 +861,7 @@ void mouse_update() {
   }
 
   if (left && dragging && window_count) {
-    Window &w = windows[z_order[window_count - 1]];
+    Geo &w = zg[window_count - 1];
     w.x = std::clamp(mx - drag_x, -int(w.width) + 32, int(screen_w) - 32);
     w.y = std::clamp(my - drag_y, 0, int(screen_h) - TITLE_H);
   }
@@ -845,7 +887,7 @@ void plan(Plan &p) {
   RectList<24> mv;
   int mdx = 0, mdy = 0;
   if (window_count) {
-    const Window &w = windows[z_order[window_count - 1]];
+    const Geo &w = zg[window_count - 1];
     if (w.placed && (w.x != w.sx || w.y != w.sy)) {
       mdx = w.x - w.sx;
       mdy = w.y - w.sy;
@@ -868,7 +910,7 @@ void plan(Plan &p) {
   }
 
   for (size_t z = 0; z < window_count; ++z) {
-    const Window &w = windows[z_order[z]];
+    const Geo &w = zg[z];
     if (!w.placed) {
       mark_dirty(ext(w));
     } else if (w.x != w.sx || w.y != w.sy) {
@@ -896,7 +938,7 @@ void plan(Plan &p) {
   for (size_t i = 0; i < p.pieces.n; ++i)
     all = unite(all, p.pieces.r[i]);
   for (size_t z = 0; z < window_count; ++z) {
-    Window &w = windows[z_order[z]];
+    Geo &w = zg[z];
     w.placed = true;
     w.sx = w.x;
     w.sy = w.y;
@@ -913,7 +955,7 @@ void plan(Plan &p) {
           break;
         }
     if (hit)
-      st(w.exposed, 1u);
+      st(windows[w.slot].exposed, 1u);
   }
 }
 
@@ -966,7 +1008,7 @@ inline void for_records(const Cmd::Ring &q, uint32_t t, uint32_t h, F &&f) {
 //            shadows/edges of the windows above, only on pixels that changed.
 void build_clips(size_t z, RectList<kMaxClip> &open,
                  RectList<kMaxClip> &fringe) {
-  const Window &w = windows[z_order[z]];
+  const Geo &w = zg[z];
   const Rect screen{0, 0, int(screen_w), int(screen_h)};
   const Rect cl = client(w);
   {
@@ -976,7 +1018,7 @@ void build_clips(size_t z, RectList<kMaxClip> &open,
       open.add(inter(shape.r[i], screen));
   }
   for (size_t j = z + 1; j < window_count && open.n; ++j) {
-    const Window &a = windows[z_order[j]];
+    const Geo &a = zg[j];
     if (!overlaps(body(a), cl))
       continue;
     RectList<24> ar;
@@ -986,7 +1028,7 @@ void build_clips(size_t z, RectList<kMaxClip> &open,
         open.subtract(ar.r[i]);
   }
   for (size_t j = z + 1; j < window_count && open.n; ++j) {
-    const Rect e = ext(windows[z_order[j]]);
+    const Rect e = ext(zg[j]);
     if (!overlaps(e, cl))
       continue;
     for (size_t i = 0; i < open.n; ++i)
@@ -996,8 +1038,8 @@ void build_clips(size_t z, RectList<kMaxClip> &open,
   }
 }
 
-void run_fringe_tile(size_t z, const Window &w, const Rect &T,
-                     const Cmd::Ring &q, uint32_t t0, uint32_t h) {
+void run_fringe_tile(size_t z, const Geo &w, const Rect &T, const Cmd::Ring &q,
+                     uint32_t t0, uint32_t h) {
   const int pw = T.r - T.l, ph = T.b - T.t;
   for (int y = 0; y < ph; ++y)
     memcpy(scratch + size_t(y) * size_t(pw), fb_row(T.t + y) + T.l,
@@ -1027,7 +1069,7 @@ void run_fringe_tile(size_t z, const Window &w, const Rect &T,
 
   const Canvas ca{scratch - ptrdiff_t(T.t) * pw - T.l, pw, T.l, T.t, T.r, T.b};
   for (size_t j = z + 1; j < window_count; ++j) {
-    const Window &a = windows[z_order[j]];
+    const Geo &a = zg[j];
     if (!overlaps(ext(a), T))
       continue;
     paint_shadow(ca, a);
@@ -1055,7 +1097,7 @@ void run_fringe_tile(size_t z, const Window &w, const Rect &T,
 bool snapshot_rings() {
   bool any = false;
   for (size_t z = 0; z < window_count; ++z) {
-    const size_t idx = z_order[z];
+    const size_t idx = zg[z].slot;
     g_heads[idx] = ld(windows[idx].ring.head);
     any = any || windows[idx].ring.tail != g_heads[idx];
   }
@@ -1064,9 +1106,9 @@ bool snapshot_rings() {
 
 void drain_all() {
   for (size_t z = 0; z < window_count; ++z) {
-    const size_t idx = z_order[z];
-    Window &w = windows[idx];
-    Cmd::Ring &q = w.ring;
+    const Geo &w = zg[z];
+    const size_t idx = w.slot;
+    Cmd::Ring &q = windows[idx].ring;
     const uint32_t t = q.tail, h = g_heads[idx];
     if (t == h)
       continue;
@@ -1116,9 +1158,8 @@ bool frame_touches(const Rect &cb, const Plan &p) {
       return true;
   }
   for (size_t z = 0; z < window_count; ++z) {
-    const size_t idx = z_order[z];
-    if (windows[idx].ring.tail != g_heads[idx] &&
-        overlaps(cb, client(windows[idx])))
+    const size_t idx = zg[z].slot;
+    if (windows[idx].ring.tail != g_heads[idx] && overlaps(cb, client(zg[z])))
       return true;
   }
   return false;
@@ -1235,14 +1276,14 @@ int register_window(uint64_t thread_id, const char *title, bool launcher,
     copy_name(w.title, title);
     w.width = width;
     w.height = height;
-    w.x = w.sx = x;
-    w.y = w.sy = y;
+    w.init_x = x;
+    w.init_y = y;
     w.req_size = pack(width, height);
     w.raise_req = 0;
     w.exposed = 1;
     w.pos_x = x;
     w.pos_y = y + TITLE_H;
-    w.known = w.placed = false;
+    w.known = false;
     st(w.state, uint32_t(S_LIVE));
     return int(slot);
   }
