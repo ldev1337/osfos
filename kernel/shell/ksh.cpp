@@ -228,18 +228,18 @@ namespace {
 // --- Command Implementations ---
 void show_debug_info() {
   const auto memory = Kernel::Memory::g_kheap.get_system_memory_info();
-  kernel_printf("Debug status: heap %u/%u bytes used; PMM %u/%u bytes used\n",
+  kprintf("Debug status: heap %u/%u bytes used; PMM %u/%u bytes used\n",
                 static_cast<unsigned>(memory.heap_used_size),
                 static_cast<unsigned>(memory.heap_total_size),
                 static_cast<unsigned>(memory.pmm_used_memory),
                 static_cast<unsigned>(memory.pmm_total_memory));
-  kernel_printf("Heap integrity: %s; recent log entries:\n",
+  kprintf("Heap integrity: %s; recent log entries:\n",
                 Kernel::Memory::g_kheap.validate() ? "OK" : "FAILED");
   const size_t count = Kernel::Debug::log_count();
   for (size_t i = 0; i < count; ++i) {
     Kernel::Debug::LogEntry entry{};
     if (Kernel::Debug::read_log(i, &entry))
-      kernel_printf("  [%u] %s\n", static_cast<unsigned>(i), entry.message);
+      kprintf("  [%u] %s\n", static_cast<unsigned>(i), entry.message);
   }
 }
 
@@ -250,120 +250,120 @@ void prompt() {
 }
 
 void help() {
-  kernel_printf("Available commands:\n");
-  kernel_printf("  help                  Show this list\n");
-  kernel_printf("  clear                 Clear the terminal\n");
-  kernel_printf("  echo <text>           Print text\n");
-  kernel_printf("  ping <host>           Send ICMP echo requests\n");
-  kernel_printf("  netup                 Acquire network settings with DHCP\n");
-  kernel_printf("  netinfo               Show network interface settings\n");
-  kernel_printf("  fetch <url>           Fetch a bounded HTTP or verified "
+  kprintf("Available commands:\n");
+  kprintf("  help                  Show this list\n");
+  kprintf("  clear                 Clear the terminal\n");
+  kprintf("  echo <text>           Print text\n");
+  kprintf("  ping <host>           Send ICMP echo requests\n");
+  kprintf("  netup                 Acquire network settings with DHCP\n");
+  kprintf("  netinfo               Show network interface settings\n");
+  kprintf("  fetch <url>           Fetch a bounded HTTP or verified "
                 "HTTPS response\n");
-  kernel_printf(
+  kprintf(
       "  tcp-echo <host> <port> <text>  Send text to a TCP echo service\n");
-  kernel_printf("  about                 Kernel shell information\n");
-  kernel_printf("  debug                 Show allocator health and recent kernel log\n");
-  kernel_printf("  smpinfo               Show detected and online CPUs\n");
-  kernel_printf("  mem                   Memory-manager test commands\n");
-  kernel_printf("  taskman               List running apps and task stats\n");
-  kernel_printf(
+  kprintf("  about                 Kernel shell information\n");
+  kprintf("  debug                 Show allocator health and recent kernel log\n");
+  kprintf("  smpinfo               Show detected and online CPUs\n");
+  kprintf("  mem                   Memory-manager test commands\n");
+  kprintf("  taskman               List running apps and task stats\n");
+  kprintf(
       "  heap-test [bytes]     Allocate/free a heap block (default 64)\n");
-  kernel_printf(
+  kprintf(
       "  pmm-test [pages]      Allocate/free physical pages (default 1)\n");
-  kernel_printf("  disk-init             Initialize LazIOfs disk\n");
-  kernel_printf(
+  kprintf("  disk-init             Initialize LazIOfs disk\n");
+  kprintf(
       "  xhci-init             Probe and initialize a USB xHCI controller\n");
-  kernel_printf("  disk-check <file>     Check if a file exists on disk and "
+  kprintf("  disk-check <file>     Check if a file exists on disk and "
                 "print info\n");
-  kernel_printf("  spong                 Play Shitty Pong\n");
-  kernel_printf("  doom1                 Launch Doom I\n");
-  kernel_printf("  doom2                 Launch Doom II\n");
-  kernel_printf("  tetris                The Tetrominoes\n");
-  kernel_printf("  pacman                Play Pac-Man\n");
-  kernel_printf("  breakout              Play Breakout\n");
-  kernel_printf("  gtest                 Run Graphic test app suite\n");
-  kernel_printf("  stress                Run the stress test\n");
-  kernel_printf("  bench                 Run the system benchmark suite\n");
-  kernel_printf("  shitcell              Run The Shitty Excel spreadsheet\n");
-  kernel_printf("  shitpad               Run The Shitpad Editor\n");
-  kernel_printf("  pain                  Run THE PAIN PNG Image Viewer and "
+  kprintf("  spong                 Play Shitty Pong\n");
+  kprintf("  doom1                 Launch Doom I\n");
+  kprintf("  doom2                 Launch Doom II\n");
+  kprintf("  tetris                The Tetrominoes\n");
+  kprintf("  pacman                Play Pac-Man\n");
+  kprintf("  breakout              Play Breakout\n");
+  kprintf("  gtest                 Run Graphic test app suite\n");
+  kprintf("  stress                Run the stress test\n");
+  kprintf("  bench                 Run the system benchmark suite\n");
+  kprintf("  shitcell              Run The Shitty Excel spreadsheet\n");
+  kprintf("  shitpad               Run The Shitpad Editor\n");
+  kprintf("  pain                  Run THE PAIN PNG Image Viewer and "
                 "Paint shits\n");
-  kernel_printf("  c3d                   Run the 3D showoff\n");
-  kernel_printf("  calc                  Use your brain, a pen and a paper "
+  kprintf("  c3d                   Run the 3D showoff\n");
+  kprintf("  calc                  Use your brain, a pen and a paper "
                 "before this\n");
-  kernel_printf("  fontview              Open the TrueType font viewer/check app\n");
-  kernel_printf("  fileview              Browse and read files on the disk\n");
-  kernel_printf("  fontcheck             List available TTF files and font status\n");
-  kernel_printf("  exit                  Explain how to leave the shell\n");
+  kprintf("  fontview              Open the TrueType font viewer/check app\n");
+  kprintf("  fileview              Browse and read files on the disk\n");
+  kprintf("  fontcheck             List available TTF files and font status\n");
+  kprintf("  exit                  Explain how to leave the shell\n");
 }
 
 void run_heap_test(const char *args) {
   size_t bytes = 64;
   if (*args && (!parse_size(args, bytes) || bytes > 4u * 1024u * 1024u)) {
-    kernel_printf("usage: heap-test [bytes], range: 1..4194304\n");
+    kprintf("usage: heap-test [bytes], range: 1..4194304\n");
     return;
   }
   void *block = kmalloc(bytes);
   if (!block) {
-    kernel_printf("heap-test: allocation failed\n");
+    kprintf("heap-test: allocation failed\n");
     return;
   }
   kfree(block);
-  kernel_printf("heap-test: allocated and freed %u bytes\n",
+  kprintf("heap-test: allocated and freed %u bytes\n",
                 static_cast<unsigned int>(bytes));
 }
 
 void run_pmm_test(const char *args) {
   size_t pages = 1;
   if (*args && (!parse_size(args, pages) || pages > 1024)) {
-    kernel_printf("usage: pmm-test [pages], range: 1..1024\n");
+    kprintf("usage: pmm-test [pages], range: 1..1024\n");
     return;
   }
   void *block = Kernel::Memory::g_pmm.allocate_page_block(pages);
   if (!block) {
-    kernel_printf("pmm-test: page allocation failed\n");
+    kprintf("pmm-test: page allocation failed\n");
     return;
   }
   Kernel::Memory::g_pmm.free_page_block(block, pages);
-  kernel_printf("pmm-test: allocated and freed %u page(s)\n",
+  kprintf("pmm-test: allocated and freed %u page(s)\n",
                 static_cast<unsigned int>(pages));
 }
 
 void run_disk_init(const char *) {
   Kernel::FS::VFS::init();
   if (!Kernel::FS::VFS::is_mounted()) {
-    kernel_printf("disk-init: VFS mount failed.\n");
+    kprintf("disk-init: VFS mount failed.\n");
     return;
   }
-  kernel_printf("disk-init: VFS mounted successfully.\n");
+  kprintf("disk-init: VFS mounted successfully.\n");
 }
 
 void run_disk_check(const char *args) {
   while (*args == ' ')
     args++;
   if (!*args) {
-    kernel_printf("usage: disk-check <filename>\n");
+    kprintf("usage: disk-check <filename>\n");
     return;
   }
   Kernel::FS::VFSFile file;
   if (Kernel::FS::VFS::find_file(args, &file)) {
-    kernel_printf("File found: %s\n  Size: %u bytes\n  Start LBA: %u\n",
+    kprintf("File found: %s\n  Size: %u bytes\n  Start LBA: %u\n",
                   file.name, file.size, file.start_lba);
   } else {
-    kernel_printf("disk-check: file '%s' not found on disk.\n", args);
+    kprintf("disk-check: file '%s' not found on disk.\n", args);
   }
 }
 
 void run_ls(const char *) {
   if (!Kernel::FS::VFS::is_mounted()) {
-    kernel_printf("ls: VFS not mounted\n");
+    kprintf("ls: VFS not mounted\n");
     return;
   }
-  kernel_printf("TYPE   SIZE     PATH\n");
+  kprintf("TYPE   SIZE     PATH\n");
   for (uint32_t i = 0; i < FS::VFS_MAX_INODES; ++i) {
     Kernel::FS::VFSFile file;
     if (Kernel::FS::VFS::get_file_at(i, &file) && file.exists) {
-      kernel_printf("%s  %u     %s\n", file.is_directory ? "DIR " : "FILE",
+      kprintf("%s  %u     %s\n", file.is_directory ? "DIR " : "FILE",
                     file.size, file.name);
     }
   }
@@ -373,21 +373,21 @@ void run_cat(const char *args) {
   while (*args == ' ')
     args++;
   if (!*args) {
-    kernel_printf("usage: cat <filename>\n");
+    kprintf("usage: cat <filename>\n");
     return;
   }
   void *stream = Kernel::FS::VFS::vfs_open(args, "r");
   if (!stream) {
-    kernel_printf("cat: %s: No such file or directory\n", args);
+    kprintf("cat: %s: No such file or directory\n", args);
     return;
   }
   char buf[128];
   size_t n;
   while ((n = Kernel::FS::VFS::vfs_read(buf, 1, sizeof(buf) - 1, stream)) > 0) {
     buf[n] = '\0';
-    kernel_printf("%s", buf);
+    kprintf("%s", buf);
   }
-  kernel_printf("\n");
+  kprintf("\n");
   Kernel::FS::VFS::vfs_close(stream);
 }
 
@@ -410,7 +410,7 @@ void run_xhci_init(const char *) {
               (pci_read_config(bus, slot, func, 0x10) & 0xFFFFFFF0u);
           Kernel::Drivers::USB::XHCIController xhci(mmio_base);
           if (!xhci.initialize())
-            kernel_printf("xhci-init: controller initialization failed\n");
+            kprintf("xhci-init: controller initialization failed\n");
         }
       }
     }
@@ -418,23 +418,23 @@ void run_xhci_init(const char *) {
 }
 
 void print_ipv4(uint32_t address) {
-  kernel_printf("%u.%u.%u.%u", (address >> 24) & 255, (address >> 16) & 255,
+  kprintf("%u.%u.%u.%u", (address >> 24) & 255, (address >> 16) & 255,
                 (address >> 8) & 255, address & 255);
 }
 
 void run_netup(const char *) {
   const int result = Kernel::Net::configure(8000);
   if (result != 0) {
-    kernel_printf("netup: DHCP failed (%d)\n", result);
+    kprintf("netup: DHCP failed (%d)\n", result);
     return;
   }
-  kernel_printf("Network configured.\n");
+  kprintf("Network configured.\n");
 }
 
 void run_netinfo(const char *) {
   Kernel::Net::Info info{};
   if (Kernel::Net::get_info(&info) != 0) {
-    kernel_printf("netinfo: network stack unavailable\n");
+    kprintf("netinfo: network stack unavailable\n");
     return;
   }
   const auto *device = Kernel::Drivers::Net::active_device();
@@ -445,41 +445,41 @@ void run_netinfo(const char *) {
     else
       driver = device->name;
   }
-  kernel_printf("Driver: %s\n", driver);
-  kernel_printf("MAC %02X:%02X:%02X:%02X:%02X:%02X\n", info.mac[0], info.mac[1],
+  kprintf("Driver: %s\n", driver);
+  kprintf("MAC %02X:%02X:%02X:%02X:%02X:%02X\n", info.mac[0], info.mac[1],
                 info.mac[2], info.mac[3], info.mac[4], info.mac[5]);
   if (!info.configured) {
-    kernel_printf("IPv4: not configured (run netup)\n");
+    kprintf("IPv4: not configured (run netup)\n");
     return;
   }
-  kernel_printf("IPv4: ");
+  kprintf("IPv4: ");
   print_ipv4(info.ipv4);
-  kernel_printf("/%u\nGateway: ", info.prefix_len);
+  kprintf("/%u\nGateway: ", info.prefix_len);
   print_ipv4(info.gateway);
-  kernel_printf("\nDNS: ");
+  kprintf("\nDNS: ");
   print_ipv4(info.dns);
-  kernel_printf("\n");
+  kprintf("\n");
 }
 
 void run_ping(const char *host) {
   if (!*host) {
-    kernel_printf("usage: ping <host>\n");
+    kprintf("usage: ping <host>\n");
     return;
   }
   Kernel::Net::PingStats stats{};
   const int result = Kernel::Net::ping(host, &stats);
   if (result != 0) {
-    kernel_printf("ping: failed (%d)\n", result);
+    kprintf("ping: failed (%d)\n", result);
     return;
   }
   for (uint32_t sequence = 0; sequence < 4; ++sequence) {
     if (stats.received_mask & (1u << sequence))
-      kernel_printf("reply from %s: seq=%u time=%u ms\n", host, sequence + 1,
+      kprintf("reply from %s: seq=%u time=%u ms\n", host, sequence + 1,
                     stats.rtt_ms[sequence]);
     else
-      kernel_printf("request timed out (seq=%u)\n", sequence + 1);
+      kprintf("request timed out (seq=%u)\n", sequence + 1);
   }
-  kernel_printf("%u/%u replies received\n", stats.received, stats.sent);
+  kprintf("%u/%u replies received\n", stats.received, stats.sent);
 }
 
 void run_tcp_echo(char *args) {
@@ -487,7 +487,7 @@ void run_tcp_echo(char *args) {
   while (*args && *args != ' ')
     ++args;
   if (!*args) {
-    kernel_printf("usage: tcp-echo <host> <port> <text>\n");
+    kprintf("usage: tcp-echo <host> <port> <text>\n");
     return;
   }
   *args++ = '\0';
@@ -497,7 +497,7 @@ void run_tcp_echo(char *args) {
   while (*args && *args != ' ')
     ++args;
   if (!*args) {
-    kernel_printf("usage: tcp-echo <host> <port> <text>\n");
+    kprintf("usage: tcp-echo <host> <port> <text>\n");
     return;
   }
   *args++ = '\0';
@@ -505,7 +505,7 @@ void run_tcp_echo(char *args) {
     ++args;
   size_t port = 0;
   if (!*args || !parse_size(port_text, port) || port > 65535) {
-    kernel_printf("usage: tcp-echo <host> <port> <text>\n");
+    kprintf("usage: tcp-echo <host> <port> <text>\n");
     return;
   }
 
@@ -514,22 +514,22 @@ void run_tcp_echo(char *args) {
       Kernel::Net::tcp_echo(host, static_cast<uint16_t>(port), args, response,
                             sizeof(response) - 1, 5000);
   if (length < 0) {
-    kernel_printf("tcp-echo: failed (%d)\n", length);
+    kprintf("tcp-echo: failed (%d)\n", length);
     return;
   }
   response[length] = '\0';
-  kernel_printf("received %d bytes: %s\n", length, response);
+  kprintf("received %d bytes: %s\n", length, response);
 }
 
 void run_fontcheck(const char *) {
-  kernel_printf("TrueType font availability:\n");
+  kprintf("TrueType font availability:\n");
 
   Kernel::Graphics::TrueTypeFont embedded_font;
   const bool embedded_ok = Kernel::Graphics::OpenFont::load_embedded(embedded_font);
-  kernel_printf("  embedded fallback: %s\n", embedded_ok ? "READY" : "MISSING");
+  kprintf("  embedded fallback: %s\n", embedded_ok ? "READY" : "MISSING");
 
   if (!Kernel::FS::VFS::is_mounted()) {
-    kernel_printf("  VFS font directory: unavailable\n");
+    kprintf("  VFS font directory: unavailable\n");
     return;
   }
 
@@ -554,35 +554,35 @@ void run_fontcheck(const char *) {
     found_any = true;
     Kernel::Graphics::TrueTypeFont font;
     const bool ok = Kernel::Graphics::OpenFont::load(font, file.name);
-    kernel_printf("  %s: %s\n", file.name, ok ? "loadable" : "unavailable");
+    kprintf("  %s: %s\n", file.name, ok ? "loadable" : "unavailable");
   }
 
   if (!found_any)
-    kernel_printf("  no .ttf files found in the mounted VFS\n");
+    kprintf("  no .ttf files found in the mounted VFS\n");
 }
 
 void run_fetch(const char *url) {
   if (!*url) {
-    kernel_printf("usage: fetch <http[s]://host[:port]/path>\n");
+    kprintf("usage: fetch <http[s]://host[:port]/path>\n");
     return;
   }
   char response[2048]{};
   const int length = Kernel::Net::fetch(url, response, sizeof(response));
   if (length == -8) {
-    kernel_printf("fetch: invalid URL; use http:// or https://\n");
+    kprintf("fetch: invalid URL; use http:// or https://\n");
     return;
   }
   if (length == -4) {
-    kernel_printf("fetch: hardware RDRAND entropy unavailable\n");
+    kprintf("fetch: hardware RDRAND entropy unavailable\n");
     return;
   }
   if (length == -5) {
-    kernel_printf(
+    kprintf(
         "fetch: RTC time unavailable; HTTPS certificate checks refused\n");
     return;
   }
   if (length == -6) {
-    kernel_printf(
+    kprintf(
         "fetch: HTTPS handshake or certificate verification failed\n");
     return;
   }
@@ -592,55 +592,55 @@ void run_fetch(const char *url) {
       const int failure = (detail - 1000) / 100;
       const int tls_error = (detail - 1000) % 100;
       if (failure == 1)
-        kernel_printf("fetch: TCP receive timed out during TLS (BearSSL %d)\n",
+        kprintf("fetch: TCP receive timed out during TLS (BearSSL %d)\n",
                       tls_error);
       else if (failure == 2)
-        kernel_printf("fetch: peer closed TCP during TLS (BearSSL %d)\n",
+        kprintf("fetch: peer closed TCP during TLS (BearSSL %d)\n",
                       tls_error);
       else
-        kernel_printf("fetch: TCP send failed during TLS (BearSSL %d)\n",
+        kprintf("fetch: TCP send failed during TLS (BearSSL %d)\n",
                       tls_error);
       return;
     }
     const int tls_error = detail;
     switch (tls_error) {
     case 3:
-      kernel_printf("fetch: peer does not support TLS 1.2\n");
+      kprintf("fetch: peer does not support TLS 1.2\n");
       break;
     case 8:
-      kernel_printf("fetch: BearSSL could not seed its random generator\n");
+      kprintf("fetch: BearSSL could not seed its random generator\n");
       break;
     case 31:
-      kernel_printf("fetch: TCP transport failed during TLS\n");
+      kprintf("fetch: TCP transport failed during TLS\n");
       break;
     case 53:
-      kernel_printf("fetch: certificate time was not available\n");
+      kprintf("fetch: certificate time was not available\n");
       break;
     case 54:
-      kernel_printf("fetch: server certificate is expired or not yet valid\n");
+      kprintf("fetch: server certificate is expired or not yet valid\n");
       break;
     case 56:
-      kernel_printf("fetch: server certificate hostname mismatch\n");
+      kprintf("fetch: server certificate hostname mismatch\n");
       break;
     case 62:
-      kernel_printf("fetch: server certificate chain is not trusted\n");
+      kprintf("fetch: server certificate chain is not trusted\n");
       break;
     default:
-      kernel_printf("fetch: BearSSL error %d\n", tls_error);
+      kprintf("fetch: BearSSL error %d\n", tls_error);
       break;
     }
     return;
   }
   if (length < 0) {
-    kernel_printf("fetch: request failed (%d)\n", length);
+    kprintf("fetch: request failed (%d)\n", length);
     return;
   }
-  kernel_printf("%s", response);
+  kprintf("%s", response);
   if (length == static_cast<int>(sizeof(response) - 1))
-    kernel_printf("\n[response truncated at %u bytes]\n",
+    kprintf("\n[response truncated at %u bytes]\n",
                   static_cast<unsigned int>(sizeof(response) - 1));
   else
-    kernel_printf("\n");
+    kprintf("\n");
 }
 
 void execute(char *line) {
@@ -664,7 +664,7 @@ void execute(char *line) {
     Kernel::Programs::Terminal::clear();
     Kernel::Programs::Terminal::flush();
   } else if (equals(line, "echo"))
-    kernel_printf("%s\n", args);
+    kprintf("%s\n", args);
   else if (equals(line, "ping"))
     run_ping(args);
   else if (equals(line, "netup"))
@@ -679,32 +679,32 @@ void execute(char *line) {
     run_fontcheck(args);
   else if (equals(line, "fontview")) {
     if (!launch_app("Font Viewer", Apps::font_viewer_run))
-      kernel_printf("Could not launch Font Viewer.\n");
+      kprintf("Could not launch Font Viewer.\n");
   } else if (equals(line, "fileview")) {
     if (!launch_app("File Viewer", Apps::file_viewer_run))
-      kernel_printf("Could not launch File Viewer.\n");
+      kprintf("Could not launch File Viewer.\n");
   } else if (equals(line, "about"))
-    kernel_printf("OSFOS kernel shell\nFramebuffer text UI with Virtual "
+    kprintf("OSFOS kernel shell\nFramebuffer text UI with Virtual "
                   "Framebuffer abstraction.\n");
   else if (equals(line, "smpinfo"))
-    kernel_printf("Online processors: %u\n",
+    kprintf("Online processors: %u\n",
                   static_cast<unsigned>(Kernel::SMP::online_cpu_count()));
   else if (equals(line, "debug"))
     show_debug_info();
   else if (equals(line, "mem"))
-    kernel_printf(
+    kprintf(
         "Memory APIs available in this build:\n  KernelHeap::kmalloc/kfree\n  "
         "PMM::allocate_page_block/free_page_block\n");
   else if (equals(line, "taskman")) {
     if (!launch_app("Task Manager", Apps::task_manager_run))
-      kernel_printf("Could not launch Task Manager.\n");
+      kprintf("Could not launch Task Manager.\n");
   } else if (equals(line, "heap-test"))
     run_heap_test(args);
   else if (equals(line, "pmm-test"))
     run_pmm_test(args);
   else if (equals(line, "mema")) {
     if (!launch_app("Memoery Analyzer", Apps::memory_analyzer_run))
-      kernel_printf("Could not launch graphics test.\n");
+      kprintf("Could not launch graphics test.\n");
   } else if (equals(line, "disk-init"))
     run_disk_init(args);
   else if (equals(line, "xhci-init"))
@@ -716,52 +716,52 @@ void execute(char *line) {
   else if (equals(line, "cat"))
     run_cat(args);
   else if (equals(line, "exit"))
-    kernel_printf("The kernel shell runs in ring 0; there is no userspace "
+    kprintf("The kernel shell runs in ring 0; there is no userspace "
                   "process to exit.\n");
   else if (equals(line, "spong")) {
     if (!launch_app("Spong", run_spong))
-      kernel_printf("Could not launch Spong.\n");
+      kprintf("Could not launch Spong.\n");
   } else if (equals(line, "breakout")) {
     if (!launch_app("Breakout", run_breakout))
-      kernel_printf("Could not launch Breakout.\n");
+      kprintf("Could not launch Breakout.\n");
   } else if (equals(line, "doom1")) {
     if (!launch_app("Doom I", run_doom1))
-      kernel_printf("Could not launch Doom I.\n");
+      kprintf("Could not launch Doom I.\n");
   } else if (equals(line, "doom2")) {
     if (!launch_app("Doom II", run_doom2))
-      kernel_printf("Could not launch Doom II.\n");
+      kprintf("Could not launch Doom II.\n");
   } else if (equals(line, "tetris")) {
     if (!launch_app("Tetris", run_tetris))
-      kernel_printf("Could not launch Tetris.\n");
+      kprintf("Could not launch Tetris.\n");
   } else if (equals(line, "pacman")) {
     if (!launch_app("Pac-Man", run_pacman))
-      kernel_printf("Could not launch Pac-Man.\n");
+      kprintf("Could not launch Pac-Man.\n");
   } else if (equals(line, "gtest")) {
     if (!launch_app("Graphics test", run_graphic_test))
-      kernel_printf("Could not launch graphics test.\n");
+      kprintf("Could not launch graphics test.\n");
   } else if (equals(line, "stress")) {
     if (!launch_app("Stress test", run_stress_test))
-      kernel_printf("Could not launch stress test.\n");
+      kprintf("Could not launch stress test.\n");
   } else if (equals(line, "bench")) {
     if (!launch_app("System benchmark", run_benchmark))
-      kernel_printf("Could not launch system benchmark.\n");
+      kprintf("Could not launch system benchmark.\n");
   } else if (equals(line, "shitcell")) {
     if (!launch_app("Shitcell", run_shitty_excel))
-      kernel_printf("Could not launch Shitcell.\n");
+      kprintf("Could not launch Shitcell.\n");
   } else if (equals(line, "pain")) {
     if (!launch_app("Pain", run_pain))
-      kernel_printf("Could not launch Pain.\n");
+      kprintf("Could not launch Pain.\n");
   } else if (equals(line, "calc")) {
     if (!launch_app("Calculator", run_calc))
-      kernel_printf("Could not launch calculator.\n");
+      kprintf("Could not launch calculator.\n");
   } else if (equals(line, "shitpad")) {
     if (!launch_app("Shitpad Editor", run_shitpad))
-      kernel_printf("Could not launch calculator.\n");
+      kprintf("Could not launch calculator.\n");
   } else if (equals(line, "c3d")) {
     if (!launch_app("Cube3D", run_c3d))
-      kernel_printf("Could not launch calculator.\n");
+      kprintf("Could not launch calculator.\n");
   } else
-    kernel_printf("command not found: %s\nType 'help' to list commands.\n",
+    kprintf("command not found: %s\nType 'help' to list commands.\n",
                   line);
 }
 
@@ -774,13 +774,13 @@ void run() {
     return;
 
   if (Kernel::Debug::g_kernel_debug_info.init_reclaimed) {
-    kernel_printf("Reclaimed %zu bytes (%zu pages) of init memory.\n",
+    kprintf("Reclaimed %zu bytes (%zu pages) of init memory.\n",
                   Kernel::Debug::g_kernel_debug_info.reclaimed_init_bytes,
                   Kernel::Debug::g_kernel_debug_info.reclaimed_init_pages);
   }
   size_t size = 0;
-  kernel_printf("Embedded font size: %u bytes\n", size);
-  kernel_printf("OSFOS kernel shell ready.\nType 'help' to get started.\n");
+  kprintf("Embedded font size: %u bytes\n", size);
+  kprintf("OSFOS kernel shell ready.\nType 'help' to get started.\n");
 
   char input[INPUT_SIZE];
   size_t length = 0;
@@ -821,7 +821,7 @@ void run() {
 } // namespace Kernel::Shell
 
 extern "C" {
-void kernel_printf(const char *fmt, ...) {
+void kprintf(const char *fmt, ...) {
   va_list args;
   va_start(args, fmt);
 

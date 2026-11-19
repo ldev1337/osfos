@@ -2,7 +2,7 @@
 #include <kernel/drivers/usb/xhci.h>
 #include <kernel/memory/pmm.h>
 
-extern "C" void kernel_printf(const char *fmt, ...);
+extern "C" void kprintf(const char *fmt, ...);
 
 namespace Kernel::Drivers::USB {
 
@@ -17,7 +17,7 @@ XHCIController::XHCIController(uintptr_t mmio_base)
 bool XHCIController::allocate_dma_structures() {
   void *dcbaa_phys = Kernel::Memory::g_pmm.allocate_page_block(1);
   if (!dcbaa_phys) {
-    kernel_printf("[xHCI] Failed to allocate PMM block for DCBAA\n");
+    kprintf("[xHCI] Failed to allocate PMM block for DCBAA\n");
     return false;
   }
   dcbaa_virtual_ = reinterpret_cast<uint64_t *>(dcbaa_phys);
@@ -27,7 +27,7 @@ bool XHCIController::allocate_dma_structures() {
   size_t ring_pages = (ring_bytes + 4095) / 4096;
   void *ring_phys = Kernel::Memory::g_pmm.allocate_page_block(ring_pages);
   if (!ring_phys) {
-    kernel_printf("[xHCI] Failed to allocate PMM block for Command Ring\n");
+    kprintf("[xHCI] Failed to allocate PMM block for Command Ring\n");
     return false;
   }
   command_ring_virtual_ = reinterpret_cast<TRB *>(ring_phys);
@@ -37,7 +37,7 @@ bool XHCIController::allocate_dma_structures() {
 }
 
 bool XHCIController::initialize() {
-  kernel_printf("[xHCI] Initializing Controller at MMIO: 0x%lX\n", base_);
+  kprintf("[xHCI] Initializing Controller at MMIO: 0x%lX\n", base_);
 
   uint8_t cap_length = *reinterpret_cast<volatile uint8_t *>(base_);
   op_base_ = base_ + cap_length;
@@ -53,7 +53,7 @@ bool XHCIController::initialize() {
   while ((*usbsts_ & (1 << 11)) && --timeout > 0)
     ;
   if (timeout <= 0) {
-    kernel_printf(
+    kprintf(
         "[xHCI] Error: Controller timed out waiting for CNR clear.\n");
     return false;
   }
@@ -85,7 +85,7 @@ bool XHCIController::initialize() {
   while (*usbsts_ & (1 << 0))
     ;
 
-  kernel_printf("[xHCI] Controller successfully started and running!\n");
+  kprintf("[xHCI] Controller successfully started and running!\n");
   return true;
 }
 

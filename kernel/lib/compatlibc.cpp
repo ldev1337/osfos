@@ -263,7 +263,7 @@ int printf(const char *fmt, ...) {
   char buf[512];
   int ret = vsnprintf(buf, sizeof(buf), fmt, args);
   va_end(args);
-  kernel_printf("%s", buf);
+  kprintf("%s", buf);
   return ret;
 }
 
@@ -271,7 +271,7 @@ int vfprintf(FILE *stream, const char *fmt, va_list ap) {
   char buf[512];
   int ret = vsnprintf(buf, sizeof(buf), fmt, ap);
   if (!stream || stream->is_stdout || stream->is_stderr) {
-    kernel_printf("%s", buf);
+    kprintf("%s", buf);
   } else if (stream->stream) {
     Kernel::FS::VFS::vfs_write(buf, 1, ret, stream->stream);
   }
@@ -287,13 +287,13 @@ int fprintf(FILE *stream, const char *fmt, ...) {
 }
 
 int puts(const char *s) {
-  kernel_printf("%s\n", s ? s : "(null)");
+  kprintf("%s\n", s ? s : "(null)");
   return 0;
 }
 
 int putchar(int c) {
   char buf[2] = {static_cast<char>(c), '\0'};
-  kernel_printf("%s", buf);
+  kprintf("%s", buf);
   return c;
 }
 
@@ -452,7 +452,7 @@ double strtod(const char *nptr, char **endptr) {
 void exit(int status) {
   if (Kernel::Scheduler::is_current_thread_application())
     Kernel::AppCommon::exit(status);
-  kernel_printf("\nProcess exited with status %d\n", status);
+  kprintf("\nProcess exited with status %d\n", status);
   for (;;) {
     __asm__ volatile("cli; hlt");
   }

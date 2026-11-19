@@ -74,7 +74,7 @@ extern "C" void main(unsigned long multiboot_info_addr) {
           multiboot_info_addr, framebuffer_phys, fb_info.pitch,
           fb_info.height)) {
     Kernel::Debug::log("FATAL: PMM initialization failed");
-    kernel_printf("PMM initialization failed: no usable RAM.\n");
+    kprintf("PMM initialization failed: no usable RAM.\n");
     for (;;) {
       __asm__ volatile("cli; hlt");
     };
@@ -124,7 +124,7 @@ extern "C" void main(unsigned long multiboot_info_addr) {
     Kernel::Debug::log(net_device ? net_device->name : "network device ready");
     if (!Kernel::Drivers::Net::start()) {
       Kernel::Debug::log("ERROR: network device start failed");
-      kernel_printf("Network device initialization failed.\n");
+      kprintf("Network device initialization failed.\n");
     }
     uint8_t mac[6];
     Kernel::Drivers::Net::get_mac_address(mac);
@@ -135,7 +135,7 @@ extern "C" void main(unsigned long multiboot_info_addr) {
     }
     if (Kernel::Net::initialize(mac, seed) != 0) {
       Kernel::Debug::log("ERROR: network stack initialization failed");
-      kernel_printf("Network stack initialization failed.\n");
+      kprintf("Network stack initialization failed.\n");
     } else {
       Kernel::Debug::log("network stack ready");
     }
@@ -146,12 +146,12 @@ extern "C" void main(unsigned long multiboot_info_addr) {
   if (have_cpu_topology) {
     const size_t ap_count = Kernel::SMP::launch_application_processors(
         firmware_cpus, firmware_cpu_count);
-    kernel_printf("SMP: %u/%u application processor(s) online.\n",
+    kprintf("SMP: %u/%u application processor(s) online.\n",
                   static_cast<unsigned>(ap_count),
                   static_cast<unsigned>(firmware_cpu_count - 1));
     Kernel::Debug::log_dec("application_processors_online", ap_count);
   } else {
-    kernel_printf(
+    kprintf(
         "SMP: no usable ACPI processor topology; continuing on BSP.\n");
   }
   Kernel::Debug::log("boot initialization complete; showing welcome screen");

@@ -320,11 +320,11 @@ void __init ATADriver::init() {
     outb(ATA_CONTROL, 0);
     const uint8_t slave_mask = inb(0xA1);
     outb(0xA1, slave_mask & ~(1 << 6));
-    kernel_printf("[ATA] Bus-master DMA enabled (IRQ14)\n");
+    kprintf("[ATA] Bus-master DMA enabled (IRQ14)\n");
   } else {
     bus_master_base = 0;
     outb(ATA_CONTROL, 1 << 2);
-    kernel_printf("[ATA] DMA unavailable; using PIO\n");
+    kprintf("[ATA] DMA unavailable; using PIO\n");
   }
 }
 
@@ -355,7 +355,7 @@ bool ATADriver::read_sectors(uint32_t lba, uint8_t sector_count, void *buf) {
   }
 
   if (!ata_wait_not_busy()) {
-    kernel_printf("[ATA] Read timeout: BSY stuck high before command\n");
+    kprintf("[ATA] Read timeout: BSY stuck high before command\n");
     return false;
   }
 
@@ -374,22 +374,22 @@ bool ATADriver::read_sectors(uint32_t lba, uint8_t sector_count, void *buf) {
     ata_delay();
 
     if (!ata_wait_not_busy()) {
-      kernel_printf("[ATA] Read timeout: BSY stuck high during sector %d\n", s);
+      kprintf("[ATA] Read timeout: BSY stuck high during sector %d\n", s);
       return false;
     }
 
     uint8_t status = inb(ATA_STATUS);
     if (status & ATA_SR_ERR) {
-      kernel_printf("[ATA] Read error: ERR set (status=0x%x)\n", status);
+      kprintf("[ATA] Read error: ERR set (status=0x%x)\n", status);
       return false;
     }
     if (status & ATA_SR_DF) {
-      kernel_printf("[ATA] Read error: Drive Fault\n");
+      kprintf("[ATA] Read error: Drive Fault\n");
       return false;
     }
 
     if (!ata_wait_drq()) {
-      kernel_printf("[ATA] Read timeout: DRQ never set or error occurred\n");
+      kprintf("[ATA] Read timeout: DRQ never set or error occurred\n");
       return false;
     }
 
@@ -414,7 +414,7 @@ bool ATADriver::write_sectors(uint32_t lba, uint8_t sector_count,
   }
 
   if (!ata_wait_not_busy()) {
-    kernel_printf("[ATA] Write timeout: BSY stuck high before command\n");
+    kprintf("[ATA] Write timeout: BSY stuck high before command\n");
     return false;
   }
 
@@ -434,13 +434,13 @@ bool ATADriver::write_sectors(uint32_t lba, uint8_t sector_count,
     ata_delay();
 
     if (!ata_wait_not_busy()) {
-      kernel_printf("[ATA] Write timeout: BSY stuck high during sector %d\n",
+      kprintf("[ATA] Write timeout: BSY stuck high during sector %d\n",
                     s);
       return false;
     }
 
     if (!ata_wait_drq()) {
-      kernel_printf("[ATA] Write timeout: DRQ never set or error occurred\n");
+      kprintf("[ATA] Write timeout: DRQ never set or error occurred\n");
       return false;
     }
 
