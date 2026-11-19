@@ -1,7 +1,5 @@
 #include <arch/x86_64/string.h>
-#include <arch/x86_64/spinlock.h>
 #include <kernel/drivers/ata.h>
-#include <kernel/drivers/framebuffer.h>
 #include <kernel/drivers/keyboard.h>
 #include <kernel/drivers/net/device.h>
 #include <kernel/drivers/pci.h>
@@ -10,13 +8,13 @@
 #include <kernel/fs/laziofs.h>
 #include <kernel/graphics/lwm.h>
 #include <kernel/graphics/open_font.h>
-#include <kernel/graphics/vfb.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/memory/heap.h>
 #include <kernel/memory/pmm.h>
 #include <kernel/net/smoltcp_bridge.h>
 #include <kernel/scheduler.h>
 #include <kernel/smp.h>
+#include <kernel/programs/terminal.h>
 #include <kernel/shell/shell.h>
 
 #include <cstdarg>
@@ -60,7 +58,6 @@ void memory_analyzer_run();
 void task_manager_run();
 void font_viewer_run();
 void file_viewer_run();
-void nano_run(const char *path);
 namespace Pain {
 void run();
 }
@@ -75,28 +72,12 @@ void run();
 namespace Kernel::Shell {
 
 // --- Constants & Theme ---
-constexpr uint32_t BG = 0x1B1111;
 constexpr uint32_t FG = 0xF4D6CD;
-constexpr uint32_t MUTED = 0xC8ADA6;
 constexpr uint32_t BLUE = 0xFAB489;
 constexpr uint32_t GREEN = 0xA1E3A6;
-constexpr uint32_t RED = 0xA88BF3;
-constexpr uint32_t YELLOW = 0xAFE2F9;
-
-constexpr uint32_t CELL_W = 7;
-constexpr uint32_t LINE_H = 12;
-constexpr size_t MAX_COLS = 256;
-constexpr size_t MAX_ROWS = 64;
 constexpr size_t INPUT_SIZE = 256;
 
 namespace {
-Kernel::Graphics::VirtualFramebuffer term_vfb;
-Spinlock shell_output_lock;
-char screen[MAX_ROWS][MAX_COLS];
-uint32_t screen_fg[MAX_ROWS][MAX_COLS];
-size_t cols = 0, rows = 0, col = 0, row = 0;
-uint32_t screen_w = 0, screen_h = 0;
-
 struct AppLaunch {
   void (*entry)();
   char title[32];
@@ -165,72 +146,6 @@ void run_c3d() { Kernel::Apps::Cube3D::run(); }
 void run_pain() { Kernel::Apps::Pain::run(); }
 void run_calc() { Kernel::Apps::Calc::run(); }
 
-namespace {
-
-Kernel::Graphics::TrueTypeFont &shell_mono_font() {
-  static Kernel::Graphics::TrueTypeFont font;
-  static bool initialized = false;
-  if (!initialized) {
-    initialized = Kernel::Graphics::OpenFont::load_preferred(font, "GeistMono.ttf",
-                                                            "Geist.ttf");
-  }
-  return font;
-}
-
-} // namespace
-
-inline void draw_glyph(uint32_t x, uint32_t y, char ch, uint32_t fg) {
-  auto &font = shell_mono_font();
-  if (font.is_valid()) {
-    char text[2] = {ch, '\0'};
-    term_vfb.draw_string(static_cast<int32_t>(x), static_cast<int32_t>(y),
-                         14.0f, text, fg);
-    return;
-  }
-  term_vfb.draw_glyph_bg(static_cast<int32_t>(x), static_cast<int32_t>(y), ch,
-                         fg, BG);
-}
-
-void draw_cell(size_t cell_col, size_t cell_row, char ch, uint32_t color) {
-  const uint32_t x = static_cast<uint32_t>(cell_col) * CELL_W;
-  const uint32_t y = static_cast<uint32_t>(cell_row) * LINE_H;
-  term_vfb.fill_rect(x, y, CELL_W, LINE_H, BG);
-  if (ch != ' ')
-    draw_glyph(x, y, ch, color);
-}
-
-void clear_row(size_t r) {
-  for (size_t c = 0; c < cols; ++c) {
-    screen[r][c] = ' ';
-    screen_fg[r][c] = FG;
-  }
-}
-
-void redraw_terminal() {
-  for (size_t r = 0; r < rows; ++r)
-    for (size_t c = 0; c < cols; ++c)
-      draw_cell(c, r, screen[r][c], screen_fg[r][c]);
-}
-
-void scroll_one_line() {
-  if (rows == 0)
-    return;
-  memmove(&screen[0][0], &screen[1][0], (rows - 1) * MAX_COLS * sizeof(char));
-  memmove(&screen_fg[0][0], &screen_fg[1][0],
-          (rows - 1) * MAX_COLS * sizeof(uint32_t));
-  clear_row(rows - 1);
-  row = rows - 1;
-  redraw_terminal();
-}
-
-void next_line() {
-  col = 0;
-  if (row + 1 >= rows)
-    scroll_one_line();
-  else
-    ++row;
-}
-
 bool equals(const char *a, const char *b) {
   while (*a && *b && *a == *b) {
     ++a;
@@ -255,92 +170,14 @@ bool parse_size(const char *s, size_t &value) {
 }
 } // namespace
 
-// --- Output Functions ---
-static void put_char_unlocked(char ch, uint32_t color) {
-  if (!cols || !rows)
-    return;
-  if (ch == '\n') {
-    next_line();
-    return;
-  }
-  if (ch == '\r') {
-    col = 0;
-    return;
-  }
-  if (ch == '\t') {
-    for (int i = 0; i < 4; ++i) {
-      screen[row][col] = ' ';
-      screen_fg[row][col] = color;
-      draw_cell(col, row, ' ', color);
-      if (++col >= cols)
-        next_line();
-    }
-    return;
-  }
-  if (ch == '\b') {
-    if (col > 0)
-      --col;
-    else if (row > 0) {
-      --row;
-      col = cols - 1;
-    } else
-      return;
-    screen[row][col] = ' ';
-    screen_fg[row][col] = FG;
-    draw_cell(col, row, ' ', FG);
-    return;
-  }
-  if (static_cast<unsigned char>(ch) < 32 ||
-      static_cast<unsigned char>(ch) > 126)
-    return;
-  screen[row][col] = ch;
-  screen_fg[row][col] = color;
-  draw_cell(col, row, ch, color);
-  if (++col >= cols)
-    next_line();
-}
-
 void put_char(char ch, uint32_t color) {
-  SpinlockGuard guard(shell_output_lock);
-  put_char_unlocked(ch, color);
+  Kernel::Programs::Terminal::write_char(ch, color);
 }
 
 void print(const char *s, uint32_t color) {
-  SpinlockGuard guard(shell_output_lock);
   while (*s)
-    put_char_unlocked(*s++, color);
-  term_vfb.flush();
-}
-
-size_t terminal_columns() { return cols; }
-size_t terminal_rows() { return rows; }
-
-void terminal_clear() {
-  SpinlockGuard guard(shell_output_lock);
-  for (size_t screen_row = 0; screen_row < rows; ++screen_row)
-    clear_row(screen_row);
-  row = col = 0;
-  term_vfb.clear(BG);
-}
-
-void terminal_write_at(size_t column, size_t screen_row, const char *text,
-                       uint32_t color) {
-  if (!text || screen_row >= rows || column >= cols)
-    return;
-  SpinlockGuard guard(shell_output_lock);
-  while (*text && column < cols) {
-    const unsigned char value = static_cast<unsigned char>(*text++);
-    screen[screen_row][column] =
-        value >= 32 && value <= 126 ? static_cast<char>(value) : ' ';
-    screen_fg[screen_row][column] = color;
-    ++column;
-  }
-}
-
-void terminal_present() {
-  SpinlockGuard guard(shell_output_lock);
-  redraw_terminal();
-  term_vfb.flush();
+    put_char(*s++, color);
+  Kernel::Programs::Terminal::flush();
 }
 
 void print_int(long long value, int base, bool uppercase, bool signed_val,
@@ -456,7 +293,6 @@ void help() {
                 "before this\n");
   kernel_printf("  fontview              Open the TrueType font viewer/check app\n");
   kernel_printf("  fileview              Browse and read files on the disk\n");
-  kernel_printf("  nano [file]           Edit a text file in this terminal\n");
   kernel_printf("  fontcheck             List available TTF files and font status\n");
   kernel_printf("  exit                  Explain how to leave the shell\n");
 }
@@ -807,12 +643,6 @@ void run_fetch(const char *url) {
     kernel_printf("\n");
 }
 
-void reset_terminal_view() {
-  term_vfb.clear(BG);
-  redraw_terminal();
-  term_vfb.flush();
-}
-
 void execute(char *line) {
   while (*line == ' ')
     ++line;
@@ -831,12 +661,8 @@ void execute(char *line) {
   if (equals(line, "help"))
     help();
   else if (equals(line, "clear")) {
-    SpinlockGuard guard(shell_output_lock);
-    term_vfb.clear(BG);
-    for (size_t r = 0; r < rows; ++r)
-      clear_row(r);
-    row = col = 0;
-    term_vfb.flush();
+    Kernel::Programs::Terminal::clear();
+    Kernel::Programs::Terminal::flush();
   } else if (equals(line, "echo"))
     kernel_printf("%s\n", args);
   else if (equals(line, "ping"))
@@ -857,8 +683,6 @@ void execute(char *line) {
   } else if (equals(line, "fileview")) {
     if (!launch_app("File Viewer", Apps::file_viewer_run))
       kernel_printf("Could not launch File Viewer.\n");
-  } else if (equals(line, "nano")) {
-    Apps::nano_run(*args ? args : nullptr);
   } else if (equals(line, "about"))
     kernel_printf("OSFOS kernel shell\nFramebuffer text UI with Virtual "
                   "Framebuffer abstraction.\n");
@@ -941,83 +765,45 @@ void execute(char *line) {
                   line);
 }
 
-void initialize_screen() {
-  screen_w = Kernel::Drivers::Framebuffer::width();
-  screen_h = Kernel::Drivers::Framebuffer::height();
-  const bool has_window = Kernel::Graphics::WindowManager::has_window(
-      Kernel::Scheduler::current_thread_id());
-  if (has_window) {
-    if (!term_vfb.open_window(screen_w > 48 ? screen_w - 48 : screen_w,
-                              screen_h > 100 ? screen_h - 100 : screen_h,
-                              CELL_W, LINE_H))
-      return;
-    screen_w = term_vfb.width();
-    screen_h = term_vfb.height();
-  } else if (!term_vfb.init(0, 0, screen_w, screen_h))
-    return;
-  if (screen_w == 0 || screen_h < LINE_H)
+} // namespace
+
+void run() {
+  Kernel::Graphics::WindowManager::register_window(
+      Kernel::Scheduler::current_thread_id(), "Shell", true);
+  if (!Kernel::Programs::Terminal::initialize())
     return;
 
-  cols = screen_w / CELL_W;
-  rows = screen_h / LINE_H;
-  if (cols > MAX_COLS)
-    cols = MAX_COLS;
-  if (rows > MAX_ROWS)
-    rows = MAX_ROWS;
-  if (cols == 0 || rows == 0)
-    return;
-
-  memset(screen, ' ', sizeof(screen));
-  reset_terminal_view();
-
-  // Print stored kernel debug info from main.cpp once screen is ready
   if (Kernel::Debug::g_kernel_debug_info.init_reclaimed) {
     kernel_printf("Reclaimed %zu bytes (%zu pages) of init memory.\n",
                   Kernel::Debug::g_kernel_debug_info.reclaimed_init_bytes,
                   Kernel::Debug::g_kernel_debug_info.reclaimed_init_pages);
   }
-
   size_t size = 0;
   kernel_printf("Embedded font size: %u bytes\n", size);
-
   kernel_printf("OSFOS kernel shell ready.\nType 'help' to get started.\n");
-}
-} // namespace
-
-void run() {
-  if (!Kernel::Drivers::Framebuffer::valid())
-    return;
-  Kernel::Graphics::WindowManager::register_window(
-      Kernel::Scheduler::current_thread_id(), "Shell", true);
-  initialize_screen();
-  if (!cols || !rows)
-    return;
 
   char input[INPUT_SIZE];
   size_t length = 0;
   prompt();
 
   for (;;) {
-    uint32_t cx = col * CELL_W;
-    uint32_t cy = row * LINE_H;
-    const uint32_t cursor_y = cy + LINE_H - 1;
-    if (cx + CELL_W <= screen_w)
-      term_vfb.fill_rect(cx, cursor_y, CELL_W, 1, BLUE);
-    term_vfb.flush();
+    const size_t cursor_column =
+        Kernel::Programs::Terminal::cursor_column();
+    const size_t cursor_row = Kernel::Programs::Terminal::cursor_row();
+    Kernel::Programs::Terminal::show_cursor(cursor_column, cursor_row, BLUE);
 
-    if (!term_vfb.has_focus()) {
+    if (!Kernel::Programs::Terminal::has_focus()) {
       Kernel::Scheduler::thread_sleep_ms(4);
       continue;
     }
     char ch = Kernel::Drivers::Keyboard::getchar();
-    if (col < cols && row < rows)
-      draw_cell(col, row, screen[row][col], screen_fg[row][col]);
-    term_vfb.flush();
+    Kernel::Programs::Terminal::hide_cursor(cursor_column, cursor_row);
 
     if (ch == '\r' || ch == '\n') {
       put_char('\n', FG);
       input[length] = '\0';
       execute(input);
+      Kernel::Programs::Terminal::flush();
       length = 0;
       prompt();
     } else if (ch == '\b' || static_cast<unsigned char>(ch) == 127) {
@@ -1122,5 +908,6 @@ void kernel_printf(const char *fmt, ...) {
     ++fmt;
   }
   va_end(args);
+  Kernel::Programs::Terminal::flush();
 }
 }
