@@ -17,11 +17,17 @@ INCLUDES = -Iinclude -Ikernel/programs/doomgeneric -Ithird_party/bearssl/inc \
 
 RED_ZONE_FLAG ?= -mred-zone
 
-COMMON_FLAGS = -march=x86-64-v3 -ffast-math \
+ifeq ($(COMPILER),gcc)
+LTO_FLAGS = -flto
+else
+LTO_FLAGS = -flto=full
+endif
+
+COMMON_FLAGS = -march=x86-64-v3 -mavx2 -msse2 -msse -ffast-math \
   -ffreestanding -Wall -Wextra -w $(RED_ZONE_FLAG) -m64 \
   -fno-exceptions -fno-stack-protector -fno-rtti \
   -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fvisibility=hidden\
-  -flto=full -ffunction-sections -fdata-sections -fmerge-all-constants $(INCLUDES)
+  $(LTO_FLAGS) -ffunction-sections -fdata-sections -fmerge-all-constants $(INCLUDES)
 
 ifeq ($(COMPILER),gcc)
 	LESS_EXTR_FLAGS = \
@@ -46,22 +52,21 @@ CFLAGS_CPP_SIZE = $(COMMON_FLAGS) -O1 $(LESS_EXTR_FLAGS) $(CPP_STD)
 CFLAGS_BEARSSL  = $(COMMON_FLAGS) -O2 $(LESS_EXTR_FLAGS) $(C_STD) \
   -DBR_USE_URANDOM=0 -DBR_USE_UNIX_TIME=0 -DBR_USE_WIN32_RAND=0 -DBR_RDRAND=0
 
-LDFLAGS = -static -ffreestanding -nostdlib -flto=full -fuse-ld=lld \
-  -Wl,-O3 -Wl,-n -Wl \
-  -Wl,--gc-sections -Wl,--icf=all \
-  -Wl,--strip-all -Wl,--build-id=none \
-	-Wl,-z,max-page-size=0x1000 \
-  -Wl,-T,arch/linker.ld
+ifeq ($(COMPILER),gcc)
+LTO_FLAGS = -flto
+LINKER_FLAGS = 
+else
+LTO_FLAGS = -flto=full
+LINKER_FLAGS = -fuse-ld=lld
+endif
 
-GCC_TUNED_SRCS = kernel/memory/heap.cpp kernel/drivers/mouse.cpp \
-  kernel/drivers/pci.cpp kernel/fs/laziofs.cpp
-GCC_TUNED_OBJS = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(GCC_TUNED_SRCS))
-GCC_TUNED_FLAGS = -march=x86-64-v3 -ffast-math -ffreestanding -Wall -Wextra -w \
-  $(RED_ZONE_FLAG) -m64 -fno-exceptions -fno-stack-protector -fno-rtti \
-  -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident \
-  -fvisibility=hidden -ffunction-sections -fdata-sections \
-  -fmerge-all-constants -funroll-loops -fno-lto $(INCLUDES) -Ofast \
-  -ftree-loop-vectorize -ftree-vectorize -fallow-store-data-races $(CPP_STD)
+LDFLAGS = -static -ffreestanding -nostdlib $(LTO_FLAGS) $(LINKER_FLAGS) \
+-Wl,-O3 -Wl,-n \
+-Wl,--gc-sections \
+-Wl,--strip-all -Wl,--build-id=none \
+-Wl,-z,max-page-size=0x1000 \
+-Wl,-T,arch/linker.ld
+#-Wl,--icf=all
 
 ASM_SRCS = $(shell find arch kernel -name '*.asm' $(EXCLUDE))
 GAS_SRCS = $(shell find arch kernel -name '*.S' $(EXCLUDE))

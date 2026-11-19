@@ -48,7 +48,7 @@ private:
       cpu_relax();
   }
 
-  [[gnu::noinline, gnu::cold]] void lock_slow() noexcept {
+  __attribute__((noinline)) __attribute__((cold)) void lock_slow() noexcept {
     for (;;) {
       wait_unlocked();
       if (!m_locked.exchange(true, std::memory_order_acquire))
@@ -56,7 +56,7 @@ private:
     }
   }
 
-  [[gnu::noinline, gnu::cold]] auto lock_irqsave_slow(uint64_t flags) noexcept
+  __attribute__((noinline)) __attribute__((cold)) auto lock_irqsave_slow(uint64_t flags) noexcept
       -> uint64_t {
     for (;;) {
       restore_flags(flags);

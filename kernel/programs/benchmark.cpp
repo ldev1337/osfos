@@ -1,24 +1,23 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <kernel/crypto/password.h>
+#include <kernel/debug/debug.h>
 #include <kernel/drivers/keyboard.h>
 #include <kernel/drivers/mouse.h>
 #include <kernel/drivers/pci.h>
 #include <kernel/drivers/tsc_deadline.h>
-#include <kernel/crypto/password.h>
-#include <kernel/debug/debug.h>
-#include <kernel/graphics/vfb.h>
-#include <kernel/lib/uicommon.h>
 #include <kernel/fs/laziofs.h>
+#include <kernel/graphics/vfb.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/lib/math.h>
+#include <kernel/lib/uicommon.h>
 #include <kernel/memory/heap.h>
 #include <kernel/net/smoltcp_bridge.h>
 #include <kernel/scheduler.h>
 
 namespace Kernel::Apps {
 namespace {
-using Kernel::UICommon::text;
 using Kernel::Graphics::VirtualFramebuffer;
 
 constexpr uint32_t BG = 0x171b22;
@@ -30,7 +29,7 @@ constexpr uint32_t GREEN = 0x9fd6a2;
 constexpr uint32_t AMBER = 0xe8bd75;
 constexpr uint32_t RED = 0xe27d72;
 constexpr uint32_t RUN_MS = 1000;
-constexpr size_t TEST_COUNT = 31;
+constexpr size_t TEST_COUNT = 32;
 
 struct Result {
   uint64_t rate = 0;
@@ -105,18 +104,14 @@ void log_result(const char *name, const Result &result) {
   Kernel::Debug::log(message);
 }
 
-void keyboard_probe() {
-  (void)Kernel::Drivers::Keyboard::available();
-}
+void keyboard_probe() { (void)Kernel::Drivers::Keyboard::available(); }
 
 void mouse_probe() {
   (void)Kernel::Drivers::Mouse::get_x();
   (void)Kernel::Drivers::Mouse::get_y();
 }
 
-void pci_probe() {
-  (void)pci_read_config(0, 0, 0, 0);
-}
+void pci_probe() { (void)pci_read_config(0, 0, 0, 0); }
 
 void all_driver_probe() {
   keyboard_probe();
@@ -286,8 +281,8 @@ Result measure_workflow() {
 
   size_t started = 0;
   for (; started < 3; ++started) {
-    if (Kernel::Scheduler::thread_create(
-            workflow_worker, reinterpret_cast<void *>(started)) < 0)
+    if (Kernel::Scheduler::thread_create(workflow_worker,
+                                         reinterpret_cast<void *>(started)) < 0)
       break;
   }
   if (started != 3) {
@@ -367,8 +362,8 @@ Result measure_math() {
          !Kernel::Scheduler::should_stop()) {
     const uint64_t value = 1000000 + (iterations & 0xffff);
     checksum += Kernel::Lib::Math::isqrt_u64(value);
-    checksum += static_cast<uint32_t>(Kernel::Lib::Math::fixed_sin(
-        static_cast<int32_t>(iterations % 360)));
+    checksum += static_cast<uint32_t>(
+        Kernel::Lib::Math::fixed_sin(static_cast<int32_t>(iterations % 360)));
     checksum += static_cast<uint32_t>(Kernel::Lib::Math::fixed_cos(
         static_cast<int32_t>((iterations * 7) % 360)));
     ++iterations;
@@ -395,7 +390,8 @@ Result measure_software_interrupt() {
   return result;
 }
 
-// TSCDeadline::tick is updated by the timer IRQ handler; this measures delivered ticks.
+// TSCDeadline::tick is updated by the timer IRQ handler; this measures
+// delivered ticks.
 Result measure_timer_interrupts() {
   Result result{};
   const uint32_t start = Kernel::Drivers::TSCDeadline::get_ticks();
@@ -435,8 +431,8 @@ Result measure_bearssl_https() {
   Result result{};
   char response[256];
   const uint32_t start = Kernel::Drivers::TSCDeadline::get_ticks();
-  const int fetched = Kernel::Net::fetch("https://example.com/", response,
-                                        sizeof(response));
+  const int fetched =
+      Kernel::Net::fetch("https://example.com/", response, sizeof(response));
   result.elapsed_ms = elapsed_since(start);
   result.rate = fetched >= 0 ? 1000 / result.elapsed_ms : 0;
   result.complete = fetched >= 0;
@@ -459,14 +455,17 @@ Result measure_extended(VirtualFramebuffer &vfb, size_t test_id) {
          !Kernel::Scheduler::should_stop() && valid) {
     switch (test_id) {
     case 8: // sequential memory read
-      for (size_t i = 0; i < 256; ++i) checksum += pixels[i];
+      for (size_t i = 0; i < 256; ++i)
+        checksum += pixels[i];
       operations += 256;
       break;
     case 9: // memory write and readback
-      for (size_t i = 0; i < 256; ++i) pixels[i] = pixels[i] * 33u + 17u;
-      checksum += pixels[operations & 255]; operations += 256;
+      for (size_t i = 0; i < 256; ++i)
+        pixels[i] = pixels[i] * 33u + 17u;
+      checksum += pixels[operations & 255];
+      operations += 256;
       break;
-    case 10: // allocator small-object churn
+    case 10:   // allocator small-object churn
     case 11: { // allocator mixed-size churn
       void *blocks[32]{};
       size_t requested[32]{};
@@ -496,50 +495,95 @@ Result measure_extended(VirtualFramebuffer &vfb, size_t test_id) {
       break;
     }
     case 12: // framebuffer fill bandwidth
-      vfb.fill(static_cast<uint32_t>(operations)); operations += vfb.width() * vfb.height();
+      vfb.fill(static_cast<uint32_t>(operations));
+      operations += vfb.width() * vfb.height();
       break;
     case 13: // clipped rectangle rasterization
-      vfb.fill_rect(-20, 20, static_cast<int32_t>(vfb.width()), 80, CYAN); ++operations;
+      vfb.fill_rect(-20, 20, static_cast<int32_t>(vfb.width()), 80, CYAN);
+      ++operations;
       break;
     case 14: // line rasterization
       vfb.draw_line(0, operations % vfb.height(), vfb.width() - 1,
-                    (operations * 7) % vfb.height(), AMBER); ++operations;
-      break;
-    case 15: // circle rasterization
-      vfb.fill_circle(vfb.width()/2, vfb.height()/2, 60, GREEN); ++operations;
-      break;
-    case 16: // alpha blend rectangle
-      vfb.fill_rect_alpha(30, 30, 300, 180, RED, operations % 256); ++operations;
-      break;
-    case 17: // glyph rendering
-      vfb.draw_glyph(operations % (vfb.width() - 8), 80, 'A' + operations % 26, FG); ++operations;
-      break;
-    case 18: // opaque blit
-      vfb.blit(pixels, 0, 0, 16, 16, 16); operations += 256;
-      break;
-    case 19: // transparent blit
-      vfb.blit_transparent(pixels, 0, 0, 16, 16, 16, 0); operations += 256;
-      break;
-    case 20: // alpha blit
-      vfb.blit_alpha(pixels, 0, 0, 16, 16, 16, 128); operations += 256;
-      break;
-    case 21: // triangle fill
-      vfb.fill_triangle(20, 20, 300, 100, 100, 300, CYAN); ++operations;
-      break;
-    case 22: // rounded rectangles
-      vfb.fill_rounded_rect(20, 20, 240, 120, 24, AMBER); ++operations;
-      break;
-    case 23: // sectors and arcs
-      vfb.fill_sector(200, 150, 100, operations % 180, operations % 180 + 120, GREEN); ++operations;
-      break;
-    case 24: // password hash workload
-      checksum += Kernel::Crypto::hash_password("OSFOS benchmark workload", 24,
-                                                0x9e3779b97f4a7c15ULL + operations);
+                    (operations * 7) % vfb.height(), AMBER);
       ++operations;
       break;
+    case 15: // circle rasterization
+      vfb.fill_circle(vfb.width() / 2, vfb.height() / 2, 60, GREEN);
+      ++operations;
+      break;
+    case 16: // alpha blend rectangle
+      vfb.fill_rect_alpha(30, 30, 300, 180, RED, operations % 256);
+      ++operations;
+      break;
+    case 17: // glyph rendering
+      vfb.draw_glyph(operations % (vfb.width() - 8), 80, 'A' + operations % 26,
+                     FG);
+      ++operations;
+      break;
+    case 18: // opaque blit
+      vfb.blit(pixels, 0, 0, 16, 16, 16);
+      operations += 256;
+      break;
+    case 19: // transparent blit
+      vfb.blit_transparent(pixels, 0, 0, 16, 16, 16, 0);
+      operations += 256;
+      break;
+    case 20: // alpha blit
+      vfb.blit_alpha(pixels, 0, 0, 16, 16, 16, 128);
+      operations += 256;
+      break;
+    case 21: // triangle fill
+      vfb.fill_triangle(20, 20, 300, 100, 100, 300, CYAN);
+      ++operations;
+      break;
+    case 22: // rounded rectangles
+      vfb.fill_rounded_rect(20, 20, 240, 120, 24, AMBER);
+      ++operations;
+      break;
+    case 23: // sectors and arcs
+      vfb.fill_sector(200, 150, 100, operations % 180, operations % 180 + 120,
+                      GREEN);
+      ++operations;
+      break;
+    case 24: // password hash workload
+      checksum += Kernel::Crypto::hash_password(
+          "OSFOS benchmark workload", 24, 0x9e3779b97f4a7c15ULL + operations);
+      ++operations;
+      break;
+    case 31: { // Full Graphic Probe: Overlapping shapes, alpha, and multi-mode
+               // blits
+      const int32_t w = static_cast<int32_t>(vfb.width());
+      const int32_t h = static_cast<int32_t>(vfb.height());
+
+      // 1. Base background fill
+      vfb.fill(BG);
+
+      // 2. Overlapping Alpha Rectangles
+      vfb.fill_rect_alpha(20, 20, 200, 120, CYAN, 180);
+      vfb.fill_rect_alpha(100, 80, 220, 140, AMBER, 128);
+      vfb.fill_rect_alpha(180, 40, 160, 180, RED, 200);
+
+      // 3. Overlapping Alpha Circles & Sectors
+      vfb.fill_circle_alpha(w / 2, h / 2, 70, GREEN, 160);
+      vfb.fill_circle_alpha(w / 2 + 30, h / 2 - 20, 50, CYAN, 140);
+      vfb.fill_sector(w / 2, h / 2, 90, 0, (operations * 15) % 360, AMBER);
+
+      // 4. Triangles & Rounded Rectangles
+      vfb.fill_triangle(40, h - 60, 180, h - 20, 100, h - 140, RED);
+      vfb.fill_rounded_rect(w - 260, 40, 200, 100, 16, GREEN);
+
+      // 5. Multi-mode Blit operations (Opaque, Transparent Key, Alpha Blit)
+      vfb.blit(pixels, 20, h - 100, 16, 16, 16);
+      vfb.blit_transparent(pixels, 50, h - 100, 16, 16, 16, 0);
+      vfb.blit_alpha(pixels, 80, h - 100, 16, 16, 16, 120);
+
+      ++operations;
+      break;
+    }
     default: // integer and fixed-point math mix
       checksum += Kernel::Lib::Math::isqrt_u64(operations * 7919 + 1);
-      checksum += static_cast<uint32_t>(Kernel::Lib::Math::fixed_sin(operations % 360));
+      checksum +=
+          static_cast<uint32_t>(Kernel::Lib::Math::fixed_sin(operations % 360));
       ++operations;
       break;
     }
@@ -560,26 +604,52 @@ void render(VirtualFramebuffer &vfb, size_t app_count) {
   const int32_t height = static_cast<int32_t>(vfb.height());
   vfb.clear(BG);
   Kernel::UICommon::text(vfb, 18, 12, "SYSTEM BENCHMARK", FG);
-  Kernel::UICommon::text(vfb, 18, 28, "OSFOS / LIVE KERNEL MEASUREMENTS", MUTED);
+  Kernel::UICommon::text(vfb, 18, 28, "OSFOS / LIVE KERNEL MEASUREMENTS",
+                         MUTED);
   vfb.fill_rect(18, 44, width - 36, 1, PANEL);
-  Kernel::UICommon::text(vfb, 18, 54, running ? "RUNNING  |  31 TESTS" : "31 TESTS  |  CLICK ROW OR SPACE FOR ALL", running ? AMBER : CYAN);
-  const char *names[TEST_COUNT] = {
-      "01 KEYBOARD DRIVER", "02 MOUSE DRIVER", "03 PCI CONFIG READ",
-      "04 FRAMEBUFFER DRAW + FLUSH", "05 SCHEDULER HANDOFFS",
-      "06 CONCURRENT WORKFLOW", "07 HEAP REALLOC / FREE", "08 INTEGER MATH",
-      "09 SEQUENTIAL MEMORY READ", "10 MEMORY WRITE + READBACK",
-      "11 SMALL ALLOCATOR CHURN", "12 MIXED ALLOCATOR CHURN",
-      "13 FRAMEBUFFER FILL", "14 CLIPPED RECTANGLES", "15 LINE RASTERIZATION",
-      "16 FILLED CIRCLES", "17 ALPHA RECTANGLES", "18 GLYPH RENDERING",
-      "19 OPAQUE BLIT", "20 TRANSPARENT BLIT", "21 ALPHA BLIT",
-      "22 TRIANGLE FILL", "23 ROUNDED RECTANGLES", "24 ARC / SECTOR RASTER",
-      "25 PASSWORD HASH", "26 FIXED-POINT MATH", "27 VFS READ / LOOKUP",
-      "28 SOFTWARE INTERRUPT / SCHEDULER TRAP", "29 PIT TIMER IRQ RATE",
-      "30 SMOLTCP POLL", "31 BEARSSL HTTPS FETCH"};
-  const uint32_t colors[TEST_COUNT] = {
-      CYAN, GREEN, AMBER, GREEN, AMBER, RED, AMBER, CYAN, GREEN, GREEN, AMBER,
-      AMBER, GREEN, CYAN, CYAN, GREEN, RED, FG, CYAN, CYAN, RED, AMBER, AMBER,
-      GREEN, RED, CYAN, AMBER, RED, AMBER, CYAN, GREEN};
+  Kernel::UICommon::text(vfb, 18, 54,
+                         running ? "RUNNING  |  31 TESTS"
+                                 : "32TESTS  |  CLICK ROW OR SPACE FOR ALL",
+                         running ? AMBER : CYAN);
+  const char *names[TEST_COUNT] = {"01 KEYBOARD DRIVER",
+                                   "02 MOUSE DRIVER",
+                                   "03 PCI CONFIG READ",
+                                   "04 FRAMEBUFFER DRAW + FLUSH",
+                                   "05 SCHEDULER HANDOFFS",
+                                   "06 CONCURRENT WORKFLOW",
+                                   "07 HEAP REALLOC / FREE",
+                                   "08 INTEGER MATH",
+                                   "09 SEQUENTIAL MEMORY READ",
+                                   "10 MEMORY WRITE + READBACK",
+                                   "11 SMALL ALLOCATOR CHURN",
+                                   "12 MIXED ALLOCATOR CHURN",
+                                   "13 FRAMEBUFFER FILL",
+                                   "14 CLIPPED RECTANGLES",
+                                   "15 LINE RASTERIZATION",
+                                   "16 FILLED CIRCLES",
+                                   "17 ALPHA RECTANGLES",
+                                   "18 GLYPH RENDERING",
+                                   "19 OPAQUE BLIT",
+                                   "20 TRANSPARENT BLIT",
+                                   "21 ALPHA BLIT",
+                                   "22 TRIANGLE FILL",
+                                   "23 ROUNDED RECTANGLES",
+                                   "24 ARC / SECTOR RASTER",
+                                   "25 PASSWORD HASH",
+                                   "26 FIXED-POINT MATH",
+                                   "27 VFS READ / LOOKUP",
+                                   "28 SOFTWARE INTERRUPT / SCHEDULER TRAP",
+                                   "29 PIT TIMER IRQ RATE",
+                                   "30 SMOLTCP POLL",
+                                   "31 BEARSSL HTTPS FETCH",
+                                   "32 FULL GRAPHIC PROBE"}; //[cite: 3]
+
+  const uint32_t colors[TEST_COUNT] = {CYAN,  GREEN, AMBER, GREEN, AMBER, RED,
+                                       AMBER, CYAN,  GREEN, GREEN, AMBER, AMBER,
+                                       GREEN, CYAN,  CYAN,  GREEN, RED,   FG,
+                                       CYAN,  CYAN,  RED,   AMBER, AMBER, GREEN,
+                                       RED,   CYAN,  AMBER, RED,   AMBER, CYAN,
+                                       GREEN, CYAN}; //[cite: 3]
   uint64_t max_rate = 1;
   for (size_t i = 0; i < TEST_COUNT; ++i) {
     max_rate = std::max(results[i].rate, max_rate);
@@ -594,16 +664,17 @@ void render(VirtualFramebuffer &vfb, size_t app_count) {
       format_rate(results[i].rate, value, sizeof(value));
       const int32_t value_x = width - 72;
       Kernel::UICommon::text(vfb, value_x, row_y, value, colors[i]);
-      const uint64_t scaled = results[i].rate * static_cast<uint64_t>(bar_width) /
-                              max_rate;
-      vfb.fill_rect(18, row_y + 9,
-                    static_cast<int32_t>(scaled ? scaled : 1), 2, colors[i]);
+      const uint64_t scaled =
+          results[i].rate * static_cast<uint64_t>(bar_width) / max_rate;
+      vfb.fill_rect(18, row_y + 9, static_cast<int32_t>(scaled ? scaled : 1), 2,
+                    colors[i]);
     } else {
       Kernel::UICommon::text(vfb, width - 42, row_y, "--", MUTED);
     }
   }
   (void)app_count;
-  Kernel::UICommon::text(vfb, 18, height - 22, "SPACE RUN ALL  R RESET  Q / ESC CLOSE", CYAN);
+  Kernel::UICommon::text(vfb, 18, height - 22,
+                         "SPACE RUN ALL  R RESET  Q / ESC CLOSE", CYAN);
   vfb.flush();
 }
 
@@ -644,12 +715,22 @@ void run_selected(VirtualFramebuffer &vfb, size_t test_id, size_t app_count) {
   else
     results[test_id] = measure_extended(vfb, test_id);
   const char *names[TEST_COUNT] = {
-      "keyboard", "mouse", "pci", "graphics", "scheduler", "workflow",
-      "heap", "math", "mem_read", "mem_rw", "heap_small", "heap_mixed",
-      "fb_fill", "fb_rect", "fb_line", "fb_circle", "fb_alpha", "fb_glyph",
-      "fb_blit", "fb_blit_key", "fb_blit_alpha", "fb_triangle", "fb_round",
-      "fb_sector", "password_hash", "math_fixed", "vfs", "soft_interrupt",
-      "pit_timer_irq", "smoltcp_poll", "bearssl_https"};
+      "keyboard",      "mouse",
+      "pci",           "graphics",
+      "scheduler",     "workflow",
+      "heap",          "math",
+      "mem_read",      "mem_rw",
+      "heap_small",    "heap_mixed",
+      "fb_fill",       "fb_rect",
+      "fb_line",       "fb_circle",
+      "fb_alpha",      "fb_glyph",
+      "fb_blit",       "fb_blit_key",
+      "fb_blit_alpha", "fb_triangle",
+      "fb_round",      "fb_sector",
+      "password_hash", "math_fixed",
+      "vfs",           "soft_interrupt",
+      "pit_timer_irq", "smoltcp_poll",
+      "bearssl_https", "full_graphic_probe"}; //[cite: 3]
   log_result(names[test_id], results[test_id]);
   running = false;
 }
@@ -661,8 +742,8 @@ void run_benchmark() {
 
   bool previous_mouse = false;
   while (!Kernel::Scheduler::should_stop()) {
-    Kernel::Scheduler::ApplicationTaskInfo app_tasks[
-        Kernel::Scheduler::MAX_APPLICATION_TASKS]{};
+    Kernel::Scheduler::ApplicationTaskInfo
+        app_tasks[Kernel::Scheduler::MAX_APPLICATION_TASKS]{};
     const size_t app_count = Kernel::Scheduler::get_application_tasks(
         app_tasks, Kernel::Scheduler::MAX_APPLICATION_TASKS);
     render(vfb, app_count);
@@ -692,7 +773,8 @@ void run_benchmark() {
         const int32_t mouse_x = Kernel::UICommon::mouse_x() - window_x;
         const int32_t mouse_y = Kernel::UICommon::mouse_y() - window_y;
         if (mouse_x >= 18 && mouse_x < static_cast<int32_t>(vfb.width()) - 18 &&
-            mouse_y >= 78 && mouse_y < 78 + static_cast<int32_t>(TEST_COUNT) * 12)
+            mouse_y >= 78 &&
+            mouse_y < 78 + static_cast<int32_t>(TEST_COUNT) * 12)
           selected = (mouse_y - 78) / 12;
       }
     }
@@ -700,8 +782,7 @@ void run_benchmark() {
 
     if (run_all) {
       clear_results();
-      for (size_t i = 0; i < TEST_COUNT &&
-                         !Kernel::Scheduler::should_stop();
+      for (size_t i = 0; i < TEST_COUNT && !Kernel::Scheduler::should_stop();
            ++i) {
         run_selected(vfb, i, app_count);
       }

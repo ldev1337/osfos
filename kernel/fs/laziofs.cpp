@@ -1,10 +1,9 @@
 #include <algorithm>
+#include <arch/x86_64/spinlock.h>
 #include <cstddef>
 #include <cstdint>
-#include <arch/x86_64/spinlock.h>
 #include <kernel/drivers/ata.h>
 #include <kernel/fs/laziofs.h>
-#include <utility>
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Ext-like LazioFS v3 – Extent & Inode Based Lazy-IO Optimized Filesystem
@@ -83,8 +82,7 @@ struct FileStream {
 constexpr uint32_t CACHE_SLOTS = VFS_CACHE_SLOTS;
 constexpr uint32_t CACHE_BUCKETS = CACHE_SLOTS * 2;
 constexpr uint32_t CACHE_INVALID_LBA = 0xFFFFFFFFU;
-constexpr uint32_t CACHE_PREFETCH_SECTORS =
-    CACHE_SLOTS < 8 ? CACHE_SLOTS : 8;
+constexpr uint32_t CACHE_PREFETCH_SECTORS = CACHE_SLOTS < 8 ? CACHE_SLOTS : 8;
 constexpr uint32_t CACHE_FLUSH_BATCH_SECTORS = 16;
 
 struct CacheSlot {
@@ -262,7 +260,8 @@ CacheSlot *cache_evict() {
     CacheSlot &slot = g_cache[i];
     if (slot.abs_lba == CACHE_INVALID_LBA && !slot.reserved)
       return &slot;
-    if (!slot.reserved && !slot.dirty && (!best_clean || slot.age < best_clean->age))
+    if (!slot.reserved && !slot.dirty &&
+        (!best_clean || slot.age < best_clean->age))
       best_clean = &slot;
   }
   if (best_clean) {
@@ -327,8 +326,8 @@ uint8_t *cached_read_sector_ptr(uint32_t rel_lba) {
   CacheSlot *reserved[CACHE_PREFETCH_SECTORS];
   uint8_t batch[CACHE_PREFETCH_SECTORS * VFS_SECTOR_SIZE];
   uint32_t count = 0;
-  const uint32_t limit = std::min(CACHE_PREFETCH_SECTORS,
-                                  g_sb.total_sectors - rel_lba);
+  const uint32_t limit =
+      std::min(CACHE_PREFETCH_SECTORS, g_sb.total_sectors - rel_lba);
   while (count < limit) {
     if (cache_find(abs + count))
       break;
@@ -693,8 +692,8 @@ bool mount_internal() {
   uint8_t table_batch[MOUNT_BATCH_SECTORS * VFS_SECTOR_SIZE];
   uint8_t *inode_bytes = reinterpret_cast<uint8_t *>(g_inodes);
   for (uint32_t sector = 0; sector < g_sb.inode_table_sectors;) {
-    uint32_t count = std::min(MOUNT_BATCH_SECTORS,
-                              g_sb.inode_table_sectors - sector);
+    uint32_t count =
+        std::min(MOUNT_BATCH_SECTORS, g_sb.inode_table_sectors - sector);
     if (!Kernel::Drivers::ATADriver::read_sectors(
             VFS_START_LBA + g_sb.inode_table_start + sector,
             static_cast<uint8_t>(count), table_batch))

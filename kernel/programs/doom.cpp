@@ -125,15 +125,14 @@ static void show_startup_error(bool disk_not_initialized) {
   doom_window->fill_rect(24, 72, 4, 56, 0xFFE05A47);
 
   const char *title = "DOOM COULD NOT START";
-  const char *message = disk_not_initialized
-                            ? "Disk is not initialized."
-                            : "WAD file was not found.";
-    Kernel::UICommon::TextObject title_text(44, 76, title, 0xFFFFC857);
-    Kernel::UICommon::TextObject message_text(44, 100, message, 0xFFE8E8E8);
-    title_text.set_font_size_pixels(16.0f);
-    message_text.set_font_size_pixels(14.0f);
-    title_text.draw(*doom_window);
-    message_text.draw(*doom_window);
+  const char *message = disk_not_initialized ? "Disk is not initialized."
+                                             : "WAD file was not found.";
+  Kernel::UICommon::TextObject title_text(44, 76, title, 0xFFFFC857);
+  Kernel::UICommon::TextObject message_text(44, 100, message, 0xFFE8E8E8);
+  title_text.set_font_size_pixels(16.0f);
+  message_text.set_font_size_pixels(14.0f);
+  title_text.draw(*doom_window);
+  message_text.draw(*doom_window);
 
   doom_window->flush();
 }
@@ -151,9 +150,8 @@ void run(const char *wad) {
     return;
   }
 
-  void *wad_file = wad != nullptr && wad[0] != '\0'
-                       ? kernel_vfs_open(wad, "r")
-                       : nullptr;
+  void *wad_file =
+      wad != nullptr && wad[0] != '\0' ? kernel_vfs_open(wad, "r") : nullptr;
   if (wad_file == nullptr) {
     show_startup_error(false);
     while (!Kernel::Scheduler::should_stop()) {
@@ -164,18 +162,19 @@ void run(const char *wad) {
   }
   kernel_vfs_close(wad_file);
 
-  char *argv[] = {(char *)"doom",
-                  (char *)"-iwad",
-                  const_cast<char *>(wad),
-                  (char *)"-mb",
-                  (char *)"8",
-                  (char *)"-savedir",
-                  (char *)"/bin/doom/saves",};
+  char *argv[] = {
+      (char *)"doom",
+      (char *)"-iwad",
+      const_cast<char *>(wad),
+      (char *)"-mb",
+      (char *)"4",
+      (char *)"-savedir",
+      (char *)"/bin/doom/saves",
+  };
   doom_quit_requested = false;
   doomgeneric_Create(sizeof(argv) / sizeof(argv[0]), argv);
   bool running = true;
-  while (running && !doom_quit_requested &&
-         !Kernel::Scheduler::should_stop()) {
+  while (running && !doom_quit_requested && !Kernel::Scheduler::should_stop()) {
     doomgeneric_Tick();
   }
   I_Quit();
