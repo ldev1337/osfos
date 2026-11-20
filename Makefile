@@ -39,6 +39,7 @@ ifeq ($(COMPILER),gcc)
 else
   LESS_EXTR_FLAGS = -mllvm -enable-gvn-hoist=true \
     -mllvm -enable-gvn-sink=true \
+		-fno-semantic-interposition \
     -mllvm -enable-interleaved-mem-accesses=true
   LTO_LINK_FLAG    = -flto=full -fuse-ld=lld
 endif
@@ -65,8 +66,8 @@ LDFLAGS = -static -ffreestanding -nostdlib $(LTO_FLAGS) $(LINKER_FLAGS) \
 -Wl,--gc-sections \
 -Wl,--strip-all -Wl,--build-id=none \
 -Wl,-z,max-page-size=0x1000 \
--Wl,-T,arch/linker.ld
-#-Wl,--icf=all
+-Wl,-T,arch/linker.ld \
+-Wl,--icf=all
 
 ASM_SRCS = $(shell find arch kernel -name '*.asm' $(EXCLUDE))
 GAS_SRCS = $(shell find arch kernel -name '*.S' $(EXCLUDE))

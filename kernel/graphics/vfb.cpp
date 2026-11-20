@@ -14,8 +14,8 @@
 #include <algorithm>
 #include <arch/x86_64/string.h>
 #include <kernel/drivers/framebuffer.h>
+#include <kernel/graphics/internal.h>
 #include <kernel/graphics/lwm.h>
-#include <kernel/graphics/lwm_draw.h>
 #include <kernel/graphics/open_font.h>
 #include <kernel/graphics/simplefonts.h>
 #include <kernel/graphics/truetype.h>
@@ -32,9 +32,23 @@ namespace {
 
 enum Op : uint32_t {
   OpPad = Cmd::kPad,
-  OpPixel, OpFillRect, OpRect, OpLine, OpCircle, OpFillCircle, OpFillRectA,
-  OpFillCircleA, OpGlyph, OpGlyphBg, OpText, OpBlit, OpArc, OpSector,
-  OpFillTri, OpRRect, OpFillRRect
+  OpPixel,
+  OpFillRect,
+  OpRect,
+  OpLine,
+  OpCircle,
+  OpFillCircle,
+  OpFillRectA,
+  OpFillCircleA,
+  OpGlyph,
+  OpGlyphBg,
+  OpText,
+  OpBlit,
+  OpArc,
+  OpSector,
+  OpFillTri,
+  OpRRect,
+  OpFillRRect
 };
 enum : uint32_t { BlitOpaque, BlitKey, BlitAlpha };
 constexpr uint32_t kMaxText = 1024;
@@ -528,10 +542,8 @@ void rounded_outline(const Canvas &c, int32_t rx, int32_t ry, int32_t w,
   corner(r - radius, b - radius, false, false);
 }
 
-
-void blit_any(const Canvas &c, int64_t bx, int64_t by, uint32_t bw,
-              uint32_t bh, const uint32_t *src, uint32_t sp, uint32_t mode,
-              uint32_t param) {
+void blit_any(const Canvas &c, int64_t bx, int64_t by, uint32_t bw, uint32_t bh,
+              const uint32_t *src, uint32_t sp, uint32_t mode, uint32_t param) {
   Box b;
   if (!box(c, bx, by, bx + bw, by + bh, b))
     return;
@@ -570,7 +582,8 @@ void blit_any(const Canvas &c, int64_t bx, int64_t by, uint32_t bw,
       for (int32_t x = 0; x < n; ++x) {
         const uint32_t fg = s[x];
         const uint32_t bg = d[x];
-        uint32_t rb = (fg & 0x00FF00FFu) * alpha + (bg & 0x00FF00FFu) * ia + 0x00800080u;
+        uint32_t rb =
+            (fg & 0x00FF00FFu) * alpha + (bg & 0x00FF00FFu) * ia + 0x00800080u;
         rb = ((rb + ((rb >> 8) & 0x00FF00FFu)) >> 8) & 0x00FF00FFu;
         uint32_t g = ((fg >> 8) & 255) * alpha + ((bg >> 8) & 255) * ia + 128;
         g = (g + (g >> 8)) >> 8;
@@ -624,8 +637,7 @@ bool direct_canvas(const Target &t, Canvas &c) {
   return c.l < c.r && c.t < c.b;
 }
 
-template <class... A>
-inline void submit(const Target &t, uint32_t op, A... a) {
+template <class... A> inline void submit(const Target &t, uint32_t op, A... a) {
   constexpr uint32_t n = 1 + sizeof...(A);
   uint32_t tmp[n];
   uint32_t *p = tmp;
@@ -646,8 +658,8 @@ inline void submit(const Target &t, uint32_t op, A... a) {
 int submit_text(const Target &t, int32_t x, int32_t y, float size,
                 TrueTypeFont *font, const char *s, uint32_t color) {
   const int gs = std::max(1, int(size + 0.5f));
-  const int end = font ? x + font->get_text_width(size, s)
-                       : x + gs * int(strlen(s));
+  const int end =
+      font ? x + font->get_text_width(size, s) : x + gs * int(strlen(s));
   if (t.q) {
     uint32_t len = uint32_t(strlen(s));
     if (len > kMaxText)
@@ -738,7 +750,9 @@ Canvas screen() {
   if (!s.origin && Kernel::Drivers::Framebuffer::valid()) {
     const auto info = Kernel::Drivers::Framebuffer::get_info();
     s = {reinterpret_cast<uint32_t *>(uintptr_t(info.address)),
-         ptrdiff_t(info.pitch / 4), 0, 0,
+         ptrdiff_t(info.pitch / 4),
+         0,
+         0,
          int32_t(Kernel::Drivers::Framebuffer::width()),
          int32_t(Kernel::Drivers::Framebuffer::height())};
   }
@@ -861,8 +875,7 @@ void execute(const Canvas &c, const uint32_t *r) {
     const uint64_t ptr = uint64_t(r[8]) | uint64_t(r[9]) << 32;
     const uint32_t *src =
         ptr ? reinterpret_cast<const uint32_t *>(uintptr_t(ptr)) : r + 10;
-    blit_any(c, a[0], a[1], u[2], u[3], src, ptr ? u[4] : u[2] * 4, u[5],
-             u[6]);
+    blit_any(c, a[0], a[1], u[2], u[3], src, ptr ? u[4] : u[2] * 4, u[5], u[6]);
     break;
   }
   case OpArc:
@@ -955,7 +968,8 @@ bool get_record_bounds(const uint32_t *r, int32_t &l, int32_t &t, int32_t &rr,
 // ============================================================================
 // VirtualFramebuffer
 // ============================================================================
-#define TGT Target{ring_, buffer_, pitch_, x_, y_, width_, height_}
+#define TGT                                                                    \
+  Target { ring_, buffer_, pitch_, x_, y_, width_, height_ }
 
 VirtualFramebuffer::VirtualFramebuffer(int32_t x, int32_t y, uint32_t width,
                                        uint32_t height) {
@@ -1104,8 +1118,8 @@ int VirtualFramebuffer::draw_string(int32_t x, int32_t y,
 
 int VirtualFramebuffer::draw_text_truetype(int32_t x, int32_t y,
                                            float font_size_pixels,
-                                           TrueTypeFont &font,
-                                           const char *text, uint32_t color) {
+                                           TrueTypeFont &font, const char *text,
+                                           uint32_t color) {
   // The font must outlive the compositor's execution of this record.
   return submit_text(TGT, x, y, font_size_pixels, &font, text, color);
 }

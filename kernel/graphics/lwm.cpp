@@ -23,8 +23,8 @@
 #include <arch/x86_64/string.h>
 #include <kernel/drivers/framebuffer.h>
 #include <kernel/drivers/mouse.h>
+#include <kernel/graphics/internal.h>
 #include <kernel/graphics/lwm.h>
-#include <kernel/graphics/lwm_draw.h>
 #include <kernel/init.h>
 #include <kernel/scheduler.h>
 
