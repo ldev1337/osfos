@@ -1,7 +1,6 @@
 #ifndef KERNEL_LIB_MATH_H
 #define KERNEL_LIB_MATH_H
 
-#include <cstddef>
 #include <cstdint>
 
 namespace Kernel::Lib::Math {

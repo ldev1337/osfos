@@ -7,9 +7,9 @@ section .rodata
 align 16
 
 geist_ttf_start:
-    incbin "assets/fonts/Geist.ttf"
+    incbin "assets/fonts/Geist.ttf.lz4"
 geist_ttf_end:
 
 geistmono_ttf_start:
-    incbin "assets/fonts/GeistMono.ttf"
+    incbin "assets/fonts/GeistMono.ttf.lz4"
 geistmono_ttf_end:

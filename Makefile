@@ -73,7 +73,14 @@ GAS_SRCS = $(shell find arch kernel -name '*.S' $(EXCLUDE))
 C_SRCS   = $(shell find arch kernel -name '*.c' $(EXCLUDE))
 C++_SRCS = $(shell find arch kernel -name '*.cpp' $(EXCLUDE))
 
-BUILD_DIR = build
+# Build intermediates in tmpfs (RAM). Set RAM_BUILD=0 to use the on-disk ./build.
+RAM_BUILD ?= 1
+ifeq ($(RAM_BUILD),1)
+  RAM_BUILD_ROOT ?= /dev/shm
+  BUILD_DIR ?= $(RAM_BUILD_ROOT)/osfos-build-$(shell id -u)
+else
+  BUILD_DIR ?= build
+endif
 OS_ISO ?= os.iso
 DISK_IMAGE ?= disk.img
 RUST_TARGET = x86_64-unknown-none
