@@ -3,7 +3,7 @@
 #include <kernel/graphics/lwm.h>
 #include <kernel/init.h>
 #include <kernel/scheduler.h>
-#include <arch/x86_64/spinlock.h>
+#include <kernel/spinlock.h>
 
 namespace Kernel::Drivers {
 
@@ -192,150 +192,150 @@ void Keyboard::handle_interrupt() {
       Kernel::Graphics::WindowManager::keyboard_focus_thread_id();
   bool wake_waiters = false;
   {
-  SpinlockGuard guard(keyboard_lock);
-  uint8_t status = inb(0x64);
-  if (!(status & 0x01) || (status & 0x20)) {
-    return;
-  }
-
-  uint8_t scancode = inb(0x60);
-  if (scancode == 0xFA || scancode == 0xFE) {
-    return;
-  }
-
-  if (rx_buffer_owner != input_owner) {
-    rx_buffer.clear();
-    rx_buffer_owner = input_owner;
-  }
-
-  if (scancode == SCANCODE_PAUSE1) {
-    pause_state = true;
-    return;
-  }
-  if (pause_state) {
-    pause_state = false;
-    return;
-  }
-
-  if (scancode == SCANCODE_EXTENDED) {
-    extended_code = true;
-    return;
-  }
-
-  bool is_release = (scancode & 0x80) != 0;
-  uint8_t base_scancode = scancode & 0x7F;
-
-  if (extended_code) {
-    if (base_scancode < 128) {
-      extended_key_states[base_scancode] = !is_release;
-    }
-  } else {
-    if (base_scancode < 128) {
-      key_states[base_scancode] = !is_release;
-    }
-  }
-
-  if (extended_code) {
-    if (base_scancode == 0x1D) {
-      right_ctrl_pressed = !is_release;
-      ctrl_pressed = right_ctrl_pressed || ctrl_pressed;
-      extended_code = false;
+    SpinlockGuard guard(keyboard_lock);
+    uint8_t status = inb(0x64);
+    if (!(status & 0x01) || (status & 0x20)) {
       return;
     }
-    if (base_scancode == 0x38) {
-      right_alt_pressed = !is_release;
-      alt_pressed = right_alt_pressed || alt_pressed;
-      extended_code = false;
-      return;
-    }
-  } else {
-    if (base_scancode == SCANCODE_LSHIFT) {
-      shift_pressed = !is_release;
-      extended_code = false;
-      return;
-    }
-    if (base_scancode == SCANCODE_RSHIFT) {
-      right_shift_pressed = !is_release;
-      shift_pressed = right_shift_pressed || shift_pressed;
-      extended_code = false;
-      return;
-    }
-    if (base_scancode == SCANCODE_LCTRL) {
-      ctrl_pressed = !is_release;
-      extended_code = false;
-      return;
-    }
-    if (base_scancode == SCANCODE_LALT) {
-      alt_pressed = !is_release;
-      extended_code = false;
-      return;
-    }
-    if (base_scancode == SCANCODE_CAPSLOCK && !is_release) {
-      caps_lock_active = !caps_lock_active;
-      update_leds();
-      extended_code = false;
-      return;
-    }
-    if (base_scancode == SCANCODE_NUMLOCK && !is_release) {
-      num_lock_active = !num_lock_active;
-      update_leds();
-      extended_code = false;
-      return;
-    }
-    if (base_scancode == SCANCODE_SCROLLLOCK && !is_release) {
-      scroll_lock_active = !scroll_lock_active;
-      update_leds();
-      extended_code = false;
-      return;
-    }
-  }
 
-  if (is_release) {
-    if (!extended_code) {
-      if (base_scancode == SCANCODE_LSHIFT)
-        shift_pressed = false;
-      if (base_scancode == SCANCODE_RSHIFT)
-        right_shift_pressed = false;
-      if (base_scancode == SCANCODE_LCTRL)
-        ctrl_pressed = false;
-      if (base_scancode == SCANCODE_LALT)
-        alt_pressed = false;
-    } else {
-      if (base_scancode == 0x1D)
-        right_ctrl_pressed = false;
-      if (base_scancode == 0x38)
-        right_alt_pressed = false;
+    uint8_t scancode = inb(0x60);
+    if (scancode == 0xFA || scancode == 0xFE) {
+      return;
     }
-    shift_pressed = shift_pressed || right_shift_pressed;
-    ctrl_pressed = ctrl_pressed || right_ctrl_pressed;
-    alt_pressed = alt_pressed || right_alt_pressed;
-    extended_code = false;
-    return;
-  }
 
-  if (base_scancode < 128) {
-    char ascii = 0;
+    if (rx_buffer_owner != input_owner) {
+      rx_buffer.clear();
+      rx_buffer_owner = input_owner;
+    }
+
+    if (scancode == SCANCODE_PAUSE1) {
+      pause_state = true;
+      return;
+    }
+    if (pause_state) {
+      pause_state = false;
+      return;
+    }
+
+    if (scancode == SCANCODE_EXTENDED) {
+      extended_code = true;
+      return;
+    }
+
+    bool is_release = (scancode & 0x80) != 0;
+    uint8_t base_scancode = scancode & 0x7F;
 
     if (extended_code) {
-      ascii = kbd_US_extended[base_scancode];
+      if (base_scancode < 128) {
+        extended_key_states[base_scancode] = !is_release;
+      }
     } else {
-      bool use_shift = shift_pressed;
-      char normal_char = kbd_US[base_scancode];
+      if (base_scancode < 128) {
+        key_states[base_scancode] = !is_release;
+      }
+    }
 
-      if (caps_lock_active && normal_char >= 'a' && normal_char <= 'z') {
-        use_shift = !use_shift;
+    if (extended_code) {
+      if (base_scancode == 0x1D) {
+        right_ctrl_pressed = !is_release;
+        ctrl_pressed = right_ctrl_pressed || ctrl_pressed;
+        extended_code = false;
+        return;
+      }
+      if (base_scancode == 0x38) {
+        right_alt_pressed = !is_release;
+        alt_pressed = right_alt_pressed || alt_pressed;
+        extended_code = false;
+        return;
+      }
+    } else {
+      if (base_scancode == SCANCODE_LSHIFT) {
+        shift_pressed = !is_release;
+        extended_code = false;
+        return;
+      }
+      if (base_scancode == SCANCODE_RSHIFT) {
+        right_shift_pressed = !is_release;
+        shift_pressed = right_shift_pressed || shift_pressed;
+        extended_code = false;
+        return;
+      }
+      if (base_scancode == SCANCODE_LCTRL) {
+        ctrl_pressed = !is_release;
+        extended_code = false;
+        return;
+      }
+      if (base_scancode == SCANCODE_LALT) {
+        alt_pressed = !is_release;
+        extended_code = false;
+        return;
+      }
+      if (base_scancode == SCANCODE_CAPSLOCK && !is_release) {
+        caps_lock_active = !caps_lock_active;
+        update_leds();
+        extended_code = false;
+        return;
+      }
+      if (base_scancode == SCANCODE_NUMLOCK && !is_release) {
+        num_lock_active = !num_lock_active;
+        update_leds();
+        extended_code = false;
+        return;
+      }
+      if (base_scancode == SCANCODE_SCROLLLOCK && !is_release) {
+        scroll_lock_active = !scroll_lock_active;
+        update_leds();
+        extended_code = false;
+        return;
+      }
+    }
+
+    if (is_release) {
+      if (!extended_code) {
+        if (base_scancode == SCANCODE_LSHIFT)
+          shift_pressed = false;
+        if (base_scancode == SCANCODE_RSHIFT)
+          right_shift_pressed = false;
+        if (base_scancode == SCANCODE_LCTRL)
+          ctrl_pressed = false;
+        if (base_scancode == SCANCODE_LALT)
+          alt_pressed = false;
+      } else {
+        if (base_scancode == 0x1D)
+          right_ctrl_pressed = false;
+        if (base_scancode == 0x38)
+          right_alt_pressed = false;
+      }
+      shift_pressed = shift_pressed || right_shift_pressed;
+      ctrl_pressed = ctrl_pressed || right_ctrl_pressed;
+      alt_pressed = alt_pressed || right_alt_pressed;
+      extended_code = false;
+      return;
+    }
+
+    if (base_scancode < 128) {
+      char ascii = 0;
+
+      if (extended_code) {
+        ascii = kbd_US_extended[base_scancode];
+      } else {
+        bool use_shift = shift_pressed;
+        char normal_char = kbd_US[base_scancode];
+
+        if (caps_lock_active && normal_char >= 'a' && normal_char <= 'z') {
+          use_shift = !use_shift;
+        }
+
+        ascii = use_shift ? kbd_US_sft[base_scancode] : normal_char;
       }
 
-      ascii = use_shift ? kbd_US_sft[base_scancode] : normal_char;
+      if (ascii != 0) {
+        rx_buffer.push(ascii);
+        wake_waiters = true;
+      }
     }
 
-    if (ascii != 0) {
-      rx_buffer.push(ascii);
-      wake_waiters = true;
-    }
-  }
-
-  extended_code = false;
+    extended_code = false;
   }
   if (wake_waiters)
     Kernel::Scheduler::unblock_io_threads();

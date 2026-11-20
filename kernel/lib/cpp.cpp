@@ -1,5 +1,5 @@
-#include <arch/x86_64/spinlock.h>
 #include <cstddef>
+#include <kernel/spinlock.h>
 
 struct DestructorEntry {
   void (*destructor)(void *);

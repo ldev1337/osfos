@@ -1,10 +1,10 @@
 #include <algorithm>
-#include <arch/x86_64/spinlock.h>
 #include <arch/x86_64/string.h>
 #include <cstdint>
 #include <kernel/memory/heap.h>
 #include <kernel/memory/pmm.h>
 #include <kernel/scheduler.h>
+#include <kernel/spinlock.h>
 
 namespace Kernel::Memory {
 
@@ -96,8 +96,8 @@ struct HugeAllocHeader {
 };
 
 static SlabPage *slab_page_for_pointer(void *ptr) {
-  SlabPage *page = reinterpret_cast<SlabPage *>(
-      (uintptr_t)ptr & ~(uintptr_t)SLAB_MASK);
+  SlabPage *page =
+      reinterpret_cast<SlabPage *>((uintptr_t)ptr & ~(uintptr_t)SLAB_MASK);
   if (page->magic != SLAB_MAGIC || page->class_index >= CLASS_COUNT)
     return nullptr;
   const AllocHeader *header = static_cast<AllocHeader *>(ptr) - 1;
@@ -473,8 +473,7 @@ void KernelHeap::free_slab_locked(void *ptr, void *raw_header, void *raw_page) {
   if (was_full)
     add_slab_free_page(page);
   if (!page->used_count) {
-    if (slab_empty[page->class_index] &&
-        slab_empty[page->class_index] != page)
+    if (slab_empty[page->class_index] && slab_empty[page->class_index] != page)
       release_slab_page(page);
     else
       slab_empty[page->class_index] = page;

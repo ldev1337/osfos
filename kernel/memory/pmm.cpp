@@ -1,6 +1,6 @@
-#include <arch/x86_64/spinlock.h>
 #include <arch/x86_64/string.h>
 #include <kernel/memory/pmm.h>
+#include <kernel/spinlock.h>
 
 #include <algorithm>
 

@@ -1,9 +1,9 @@
 #include <algorithm>
-#include <arch/x86_64/spinlock.h>
 #include <cstddef>
 #include <cstdint>
 #include <kernel/drivers/ata.h>
 #include <kernel/fs/laziofs.h>
+#include <kernel/spinlock.h>
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Ext-like LazioFS v3 – Extent & Inode Based Lazy-IO Optimized Filesystem

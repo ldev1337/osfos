@@ -1,4 +1,3 @@
-#include <arch/x86_64/spinlock.h>
 #include <arch/x86_64/string.h>
 #include <kernel/drivers/framebuffer.h>
 #include <kernel/graphics/lwm.h>
@@ -6,6 +5,7 @@
 #include <kernel/graphics/vfb.h>
 #include <kernel/programs/terminal.h>
 #include <kernel/scheduler.h>
+#include <kernel/spinlock.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -34,8 +34,8 @@ Graphics::TrueTypeFont &terminal_font() {
   static Graphics::TrueTypeFont font;
   static bool initialized = false;
   if (!initialized)
-    initialized = Graphics::OpenFont::load_preferred(
-        font, "GeistMono.ttf", "Geist.ttf");
+    initialized =
+        Graphics::OpenFont::load_preferred(font, "GeistMono.ttf", "Geist.ttf");
   return font;
 }
 
@@ -144,8 +144,8 @@ bool initialize() {
   SpinlockGuard guard(terminal_lock);
   screen_w = Drivers::Framebuffer::width();
   screen_h = Drivers::Framebuffer::height();
-  const bool has_window = Graphics::WindowManager::has_window(
-      Scheduler::current_thread_id());
+  const bool has_window =
+      Graphics::WindowManager::has_window(Scheduler::current_thread_id());
   if (has_window) {
     if (!term_vfb.open_window(screen_w > 48 ? screen_w - 48 : screen_w,
                               screen_h > 100 ? screen_h - 100 : screen_h,

@@ -1,4 +1,3 @@
-#include <arch/x86_64/spinlock.h>
 #include <kernel/cpu.h>
 #include <kernel/drivers/ata.h>
 #include <kernel/drivers/pci.h>
@@ -6,6 +5,7 @@
 #include <kernel/memory/dma.h>
 #include <kernel/scheduler.h>
 #include <kernel/shell/shell.h>
+#include <kernel/spinlock.h>
 
 #include <algorithm>
 #include <atomic>
@@ -232,9 +232,9 @@ static bool transfer_dma(uint32_t lba, uint8_t sector_count, void *buffer,
   const size_t byte_count = static_cast<size_t>(sector_count) * ATA_SECTOR_SIZE;
   if (!dma_enabled || lba > 0x0FFFFFFF || byte_count > sizeof(dma_buffer) ||
       !Kernel::Memory::dma32_range(reinterpret_cast<uintptr_t>(dma_buffer),
-                   byte_count) ||
+                                   byte_count) ||
       !Kernel::Memory::dma32_range(reinterpret_cast<uintptr_t>(dma_prdt),
-                   sizeof(dma_prdt)) ||
+                                   sizeof(dma_prdt)) ||
       prepare_prdt(byte_count) == 0)
     return false;
 
@@ -306,13 +306,12 @@ static bool transfer_dma(uint32_t lba, uint8_t sector_count, void *buffer,
 
 void __init ATADriver::init() {
   outb(ATA_DEVICE, 0xA0);
-  dma_enabled = find_bus_master_ide(&bus_master_base) &&
-                drive_supports_enabled_dma() &&
-                Kernel::Memory::dma32_range(
-                  reinterpret_cast<uintptr_t>(dma_buffer),
-                  sizeof(dma_buffer)) &&
-                Kernel::Memory::dma32_range(
-                  reinterpret_cast<uintptr_t>(dma_prdt), sizeof(dma_prdt));
+  dma_enabled =
+      find_bus_master_ide(&bus_master_base) && drive_supports_enabled_dma() &&
+      Kernel::Memory::dma32_range(reinterpret_cast<uintptr_t>(dma_buffer),
+                                  sizeof(dma_buffer)) &&
+      Kernel::Memory::dma32_range(reinterpret_cast<uintptr_t>(dma_prdt),
+                                  sizeof(dma_prdt));
 
   if (dma_enabled) {
     outb(bus_master_base + ATA_BM_COMMAND, ATA_BM_INTERRUPT_ENABLE);
@@ -434,8 +433,7 @@ bool ATADriver::write_sectors(uint32_t lba, uint8_t sector_count,
     ata_delay();
 
     if (!ata_wait_not_busy()) {
-      kprintf("[ATA] Write timeout: BSY stuck high during sector %d\n",
-                    s);
+      kprintf("[ATA] Write timeout: BSY stuck high during sector %d\n", s);
       return false;
     }
 
