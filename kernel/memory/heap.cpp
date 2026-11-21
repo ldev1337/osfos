@@ -180,8 +180,25 @@ static_assert(offsetof(Block, free_next) == 16);
 struct HugeAllocHeader {
   uint64_t magic;
   size_t size; // bytes of the whole page run
+  HugeAllocHeader *next; // intrusive list so thread exit can reclaim them
+  HugeAllocHeader *prev;
+  uint64_t owner;
+  uint64_t pad;
 };
-static_assert(sizeof(HugeAllocHeader) == 16);
+static_assert(sizeof(HugeAllocHeader) == 48);
+
+HugeAllocHeader *g_huge_head = nullptr;
+
+// Caller holds heap_lock.
+void huge_unlink(HugeAllocHeader *h) {
+  if (h->prev)
+    h->prev->next = h->next;
+  else
+    g_huge_head = h->next;
+  if (h->next)
+    h->next->prev = h->prev;
+  h->magic = 0;
+}
 
 struct alignas(16) HeapSegment {
   HeapSegment *next;
@@ -723,6 +740,7 @@ void KernelHeap::init(void *heap_start_addr, size_t initial_size) {
   fl_bitmap = 0;
   used_bytes_count = peak_used_size = total_heap_size = 0;
   g_slab_pages = g_slab_used = 0;
+  g_huge_head = nullptr;
   for (unsigned fl = 0; fl < FL_COUNT; ++fl) {
     sl_bitmap[fl] = 0;
     for (unsigned sl = 0; sl < SL_COUNT; ++sl)
@@ -761,6 +779,16 @@ void *KernelHeap::kmalloc_huge(size_t size) {
   auto *h = static_cast<HugeAllocHeader *>(base);
   h->magic = HUGE_MAGIC;
   h->size = pages * PAGE;
+  h->owner = Kernel::Scheduler::current_thread_id();
+  h->pad = 0;
+  {
+    LockGuard guard;
+    h->prev = nullptr;
+    h->next = g_huge_head;
+    if (g_huge_head)
+      g_huge_head->prev = h;
+    g_huge_head = h;
+  }
   return h + 1;
 }
 
@@ -782,7 +810,10 @@ void KernelHeap::kfree(void *ptr) {
   if (__builtin_expect(huge_header(ptr) != nullptr, 0)) {
     HugeAllocHeader *h = huge_header(ptr);
     const size_t pages = h->size / PAGE;
-    h->magic = 0;
+    {
+      LockGuard guard;
+      huge_unlink(h);
+    }
     g_pmm.free_page_block(h, pages);
     return;
   }
@@ -813,6 +844,17 @@ void KernelHeap::free_thread_allocations(uint64_t thread_id) {
       cur += bsize(b);
     }
     seg = next_seg;
+  }
+
+  // Huge allocations.
+  for (HugeAllocHeader *h = g_huge_head; h;) {
+    HugeAllocHeader *next = h->next;
+    if (h->owner == thread_id) {
+      const size_t pages = h->size / PAGE;
+      huge_unlink(h);
+      g_pmm.free_page_block(h, pages);
+    }
+    h = next;
   }
 
   // Slab objects.
@@ -861,6 +903,9 @@ size_t KernelHeap::get_thread_allocated_size(uint64_t thread_id) const {
       cur += bsize(b);
     }
   }
+  for (HugeAllocHeader *h = g_huge_head; h; h = h->next)
+    if (h->owner == thread_id)
+      total += h->size - sizeof(HugeAllocHeader);
   for (SlabPage *page = static_cast<SlabPage *>(slab_pages); page;
        page = page->all_next) {
     const uint32_t *owners = slab_owners(page);
@@ -904,7 +949,18 @@ void *KernelHeap::krealloc(void *ptr, size_t size) {
         return ptr;
       }
     }
-    void *np = size >= HUGE_THRESHOLD ? kmalloc_huge(size) : kmalloc(size);
+    owner = h->owner;
+    void *np;
+    if (size >= HUGE_THRESHOLD) {
+      np = kmalloc_huge(size);
+      if (np) {
+        LockGuard guard;
+        huge_header(np)->owner = owner;
+      }
+    } else {
+      LockGuard guard;
+      np = allocate_locked(size, owner);
+    }
     if (!np)
       return nullptr;
     memcpy(np, ptr, std::min(old_usable, size));
@@ -938,8 +994,13 @@ void *KernelHeap::krealloc(void *ptr, size_t size) {
       np = allocate_locked(size, owner);
   }
 
-  if (size >= HUGE_THRESHOLD)
+  if (size >= HUGE_THRESHOLD) {
     np = kmalloc_huge(size);
+    if (np) {
+      LockGuard guard;
+      huge_header(np)->owner = owner;
+    }
+  }
   if (!np)
     return nullptr; // original block untouched
 

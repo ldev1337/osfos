@@ -522,9 +522,13 @@ void scheduler_ap_init() {
   install_cpu_state(index);
 }
 
-void thread_yield() { __asm__ volatile("int $0x30" ::: "memory"); }
+void thread_yield() {
+  reap_deferred();
+  __asm__ volatile("int $0x30" ::: "memory");
+}
 
 void thread_block() {
+  reap_deferred();
   const uint64_t flags = irq_save();
   CpuSchedulerState &state = cpu_state();
   ThreadControlBlock *current_thread = state.current;
@@ -541,6 +545,7 @@ void thread_block() {
 }
 
 auto thread_block_if(bool (*should_block)()) -> bool {
+  reap_deferred();
   if (!should_block || !should_block())
     return false;
 
@@ -561,6 +566,7 @@ auto thread_block_if(bool (*should_block)()) -> bool {
 }
 
 void thread_sleep_ms(uint32_t milliseconds) {
+  reap_deferred();
   if (milliseconds == 0)
     milliseconds = 1;
   milliseconds = std::min(milliseconds, MAX_SLEEP_MS);

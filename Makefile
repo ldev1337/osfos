@@ -15,7 +15,7 @@ CPP_STD = -std=c++20
 INCLUDES = -Iinclude -Ikernel/programs/doomgeneric -Ithird_party/bearssl/inc \
   -Ithird_party/bearssl/src
 
-RED_ZONE_FLAG ?= -mred-zone
+RED_ZONE_FLAG = -mred-zone
 
 ifeq ($(COMPILER),gcc)
 LTO_FLAGS = -flto
@@ -23,11 +23,22 @@ else
 LTO_FLAGS = -flto=full
 endif
 
+# DEBUG_ELF=1 adds DWARF information and preserves the ELF symbol table.
+# The debug build uses a separate BUILD_DIR, so production objects are untouched.
+DEBUG_ELF ?= 0
+ifeq ($(DEBUG_ELF),1)
+  DEBUG_INFO_FLAGS = -g
+  STRIP_LDFLAG =
+else
+  DEBUG_INFO_FLAGS =
+  STRIP_LDFLAG = -Wl,--strip-all
+endif
+
 COMMON_FLAGS = -march=x86-64-v3 -mavx2 -msse2 -msse -ffast-math \
   -ffreestanding -Wall -Wextra -w $(RED_ZONE_FLAG) -m64 \
   -fno-exceptions -fno-stack-protector -fno-rtti \
-  -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fvisibility=hidden\
-  $(LTO_FLAGS) -ffunction-sections -fdata-sections -fmerge-all-constants $(INCLUDES)
+  -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fvisibility=hidden \
+  $(LTO_FLAGS) -ffunction-sections -fdata-sections -fmerge-all-constants $(INCLUDES) $(DEBUG_INFO_FLAGS)
 
 ifeq ($(COMPILER),gcc)
 	LESS_EXTR_FLAGS = \
@@ -55,7 +66,7 @@ CFLAGS_BEARSSL  = $(COMMON_FLAGS) -O2 $(LESS_EXTR_FLAGS) $(C_STD) \
 
 ifeq ($(COMPILER),gcc)
 LTO_FLAGS = -flto
-LINKER_FLAGS = 
+LINKER_FLAGS =
 else
 LTO_FLAGS = -flto=full
 LINKER_FLAGS = -fuse-ld=lld
@@ -64,7 +75,7 @@ endif
 LDFLAGS = -static -ffreestanding -nostdlib $(LTO_FLAGS) $(LINKER_FLAGS) \
 -Wl,-O3 -Wl,-n \
 -Wl,--gc-sections \
--Wl,--strip-all -Wl,--build-id=none \
+$(STRIP_LDFLAG) -Wl,--build-id=none \
 -Wl,-z,max-page-size=0x1000 \
 -Wl,-T,arch/linker.ld \
 -Wl,--icf=all
@@ -82,6 +93,10 @@ ifeq ($(RAM_BUILD),1)
 else
   BUILD_DIR ?= build
 endif
+
+# Separate location for the debug ELF and all of its intermediate objects.
+DEBUG_BUILD_DIR ?= $(BUILD_DIR)/debug
+
 OS_ISO ?= os.iso
 DISK_IMAGE ?= disk.img
 RUST_TARGET = x86_64-unknown-none
@@ -169,11 +184,11 @@ define PRINT_TUI
   [ $$PAD_LEN -lt 0 ] && PAD_LEN=0; \
   PADDING=$$(printf "%*s" $$PAD_LEN ""); \
   FILE_WIDTH=$(FILE_WIDTH); \
-  printf "\033[1;36m%s\033[0m%s\033[37m%-*s\033[0m   \033[1;32m%10s\033[0m\n" "$$TAG_RAW" "$$PADDING" "$$FILE_WIDTH" "$(2)" "$$SZ_FMT" \
+  printf "\033[1;36m%s\033[0m%s\033[37m%-*s\033[0m   \033[1;32m%10s\033[0m\\n" "$$TAG_RAW" "$$PADDING" "$$FILE_WIDTH" "$(2)" "$$SZ_FMT" \
   '
 endef
 
-.PHONY: all clean simd filesimd compare-redzone compare-compiler
+.PHONY: all clean simd filesimd compare-redzone compare-compiler debug-elf
 
 all: $(OS_ISO) $(DISK_IMAGE)
 
@@ -189,6 +204,13 @@ compare-redzone:
 compare-compiler:
 	@python3 tools/compare-compiler.py --runs "$(RUNS)" --jobs "$(JOBS)" \
 	  --boot-timeout "$(BOOT_TIMEOUT)" --qemu "$(QEMU)"
+
+# Build a fully separate optimized debug ELF; production objects are untouched.
+debug-elf:
+	$(Q)$(MAKE) --no-print-directory \
+		BUILD_DIR="$(DEBUG_BUILD_DIR)" \
+		DEBUG_ELF=1 \
+		"$(DEBUG_BUILD_DIR)/os-debug.elf"
 
 # Locate any .ttf font files in the project asset tree and add them to the disk image.
 FONT_FILES := $(sort $(wildcard *.ttf) $(wildcard fonts/*.ttf) $(wildcard assets/*.ttf) $(wildcard assets/fonts/*.ttf))
@@ -244,7 +266,7 @@ ifeq ($(COMPILER),gcc)
 	@$(CC++) $(CFLAGS_CPP) -c $< -o $@
 else
 	@if [ -n "$(filter $<,$(GCC_TUNED_SRCS))" ]; then \
-	  $(GXX) $(GCC_TUNED_FLAGS) -c $< -o $@; \
+	  $(GXX) $(GCC_TUNED_FLAGS) $(DEBUG_INFO_FLAGS) -c $< -o $@; \
 	else \
 	  $(CC++) $(CFLAGS_CPP) -emit-llvm -c $< -o $(@:.o=.bc) && \
 	  $(CC++) $(CFLAGS_CPP) -c $(@:.o=.bc) -o $@ && \
@@ -263,6 +285,15 @@ $(BUILD_DIR)/os.bin: $(OBJS) $(RUST_NET_LIB) arch/linker.ld
 ifeq ($(V),1)
 else
 	$(Q)$(call PRINT_TUI, [LD    ], $@)
+endif
+
+# Unlike os.bin, this target is never stripped after linking.
+$(BUILD_DIR)/os-debug.elf: $(OBJS) $(RUST_NET_LIB) arch/linker.ld
+	$(Q)mkdir -p $(@D)
+	$(Q)$(CC) $(LDFLAGS) $(OBJS) $(RUST_NET_LIB) -o $@
+ifeq ($(V),1)
+else
+	$(Q)$(call PRINT_TUI, [LD DEBUG], $@)
 endif
 
 $(RUST_NET_LIB): rust/net/Cargo.toml rust/net/Cargo.lock $(RUST_NET_SOURCES) Makefile

@@ -84,6 +84,7 @@ unsigned priority_index(ThreadPriority priority);
 void enqueue(ThreadControlBlock *thread);
 void remove_sleeper(ThreadControlBlock *thread);
 void remove_blocked(ThreadControlBlock *thread);
+void reap_deferred();
 
 inline void register_thread(ThreadControlBlock *thread) {
   thread->registry_prev = nullptr;

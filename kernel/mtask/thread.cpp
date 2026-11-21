@@ -34,7 +34,7 @@ static inline void unlink_thread(ThreadControlBlock *thread) {
   thread->registry_next = nullptr;
 }
 
-static void reap_deferred() {
+void reap_deferred() {
   const uint64_t flags = irq_save();
   ThreadControlBlock *pending = reap_pending;
   if (!pending) {
