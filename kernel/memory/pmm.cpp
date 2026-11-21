@@ -9,13 +9,18 @@ namespace Kernel::Memory {
 alignas(64) PMM g_pmm;
 static Spinlock pmm_lock;
 
-// Two-bit page states:
+// Two-bit page states (bitmap, state_bitmap):
 //
-// bitmap  state_bitmap  Meaning
-//   0          0        Usable and free
-//   1          0        Usable and allocated
-//   0          1        Usable but permanently reserved
-//   1          1        Not yet registered / unavailable
+//   00  usable and free
+//   10  usable and allocated
+//   01  usable but permanently reserved
+//   11  not yet registered / unavailable
+//
+// Accounting invariants (checked by recheck_used_memory()):
+//   total_pages      = #pages in states 00, 01, 10
+//   used_pages_count = #pages in states 01, 10          (== popcount(bm ^ sm))
+//
+// hint_word invariant: every word below hint_word has no free (00) page.
 
 namespace {
 
@@ -32,9 +37,26 @@ struct IrqGuard {
   IrqGuard &operator=(const IrqGuard &) = delete;
 };
 
+// Bits [lo, hi) of a word; requires lo < hi <= 64.
 inline uint64_t range_mask(size_t lo, size_t hi) {
   const uint64_t top = (hi == 64) ? ~0ull : ((1ull << hi) - 1);
   return top & (~0ull << lo);
+}
+
+// Set pages [start, start + count) in `bm`, count >= 1.
+inline void set_range(word_t *bm, size_t start, size_t count) {
+  const size_t end = start + count;
+  const size_t fw = start >> 6;
+  const size_t lw = (end - 1) >> 6;
+  const size_t hi = ((end - 1) & 63) + 1;
+  if (fw == lw) {
+    bm[fw] |= range_mask(start & 63, hi);
+    return;
+  }
+  bm[fw] |= range_mask(start & 63, 64);
+  for (size_t w = fw + 1; w < lw; ++w)
+    bm[w] = ~0ull;
+  bm[lw] |= range_mask(0, hi);
 }
 
 } // namespace
@@ -65,6 +87,8 @@ bool PMM::get_state_bit(size_t page_index) const {
   return (state_bitmap[page_index >> 3] >> (page_index & 7)) & 1;
 }
 
+// `bitmap_buffer` must be 8-byte aligned and hold 2 * words * 8 bytes, where
+// words = ceil(ceil(mem_size / PAGE_SIZE) / 64).
 void PMM::init(void *bitmap_buffer, size_t mem_size) {
   IrqGuard guard;
 
@@ -108,11 +132,15 @@ void PMM::reserve_page(size_t page_index) {
   const bool used = bitmap[byte_index] & mask;
   const bool state = state_bitmap[byte_index] & mask;
 
-  if (used && state)
-    return;
+  if (!used && state)
+    return; // already 01
 
-  if (!used && !state)
+  if (used && state) { // 11 -> 01: becomes a registered, used page
+    ++total_pages;
     ++used_pages_count;
+  } else if (!used) { // 00 -> 01
+    ++used_pages_count;
+  } // 10 -> 01: already counted as used
 
   bitmap[byte_index] &= static_cast<uint8_t>(~mask);
   state_bitmap[byte_index] |= mask;
@@ -154,8 +182,11 @@ void *PMM::allocate_page_block(size_t count) {
     return nullptr;
   }
 
+  // First-fit, lowest address: keeps the low end dense and the high end
+  // available for large runs.
   size_t run = 0;
   size_t start = 0;
+  bool hint_set = false;
 
   for (size_t w = hint_word; w < words; ++w) {
     const uint64_t f = ~(bm[w] | sm[w]);
@@ -165,8 +196,21 @@ void *PMM::allocate_page_block(size_t count) {
       continue;
     }
 
-    size_t pos = 0;
-    while (pos < 64) {
+    if (!hint_set) { // all words in [old hint, w) are fully busy
+      hint_word = w;
+      hint_set = true;
+    }
+
+    if (f == ~0ull) { // whole word free: no bit scanning needed
+      if (run == 0)
+        start = w << 6;
+      run += 64;
+      if (run >= count)
+        goto commit;
+      continue;
+    }
+
+    for (size_t pos = 0; pos < 64;) {
       const uint64_t rest = f >> pos;
       if (rest == 0) {
         run = 0;
@@ -179,29 +223,26 @@ void *PMM::allocate_page_block(size_t count) {
         pos += zeros;
       }
 
+      // f != ~0 here, so ~(f >> pos) is never 0 (no UB).
       const unsigned ones = __builtin_ctzll(~(f >> pos));
       if (run == 0)
         start = (w << 6) + pos;
       run += ones;
       pos += ones;
 
-      if (run >= count) {
-        const size_t end = start + count;
-        size_t first = start >> 6;
-        const size_t last = (end - 1) >> 6;
-        for (; first <= last; ++first) {
-          const size_t lo = (first == (start >> 6)) ? (start & 63) : 0;
-          const size_t hi = (first == last) ? (((end - 1) & 63) + 1) : 64;
-          bm[first] |= range_mask(lo, hi);
-        }
-        used_pages_count += count;
-        return reinterpret_cast<void *>(
-            static_cast<uintptr_t>(start * PAGE_SIZE));
-      }
+      if (run >= count)
+        goto commit;
     }
   }
 
+  if (!hint_set)
+    hint_word = words;
   return nullptr;
+
+commit:
+  set_range(bm, start, count);
+  used_pages_count += count;
+  return reinterpret_cast<void *>(static_cast<uintptr_t>(start * PAGE_SIZE));
 }
 
 void PMM::free_page_block(void *ptr, size_t count) {
@@ -241,7 +282,7 @@ void PMM::free_page_block(void *ptr, size_t count) {
     if (bootstrap_open) {
       const uint64_t f10 = b & ~s & m;
       const uint64_t f11 = b & s & m;
-      bm[w] = b & ~m;
+      bm[w] = b & ~m; // 01 pages have b == 0 and stay reserved
       sm[w] = s & ~f11;
       freed += __builtin_popcountll(f10);
       newly += __builtin_popcountll(f11);
@@ -277,6 +318,8 @@ size_t PMM::recheck_used_memory() const {
   return used_pages * PAGE_SIZE;
 }
 
+// Returns a 2 MiB-aligned, 2 MiB block (alignment holds because the bitmap
+// starts at physical address 0 and a huge page is 8 whole words).
 void *PMM::allocate_huge_page() {
   IrqGuard guard;
 

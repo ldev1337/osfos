@@ -236,7 +236,7 @@ extern "C" void main(unsigned long multiboot_info_addr) {
   Kernel::Debug::log_dec("memory_free_bytes",
                          Kernel::Memory::g_pmm.get_free_memory());
 
-  size_t initial_heap_pages = 16384;
+  size_t initial_heap_pages = 64; // 256 KiB initial heap; expands dynamically
   void *heap_physical_mem =
       Kernel::Memory::g_pmm.allocate_page_block(initial_heap_pages);
 

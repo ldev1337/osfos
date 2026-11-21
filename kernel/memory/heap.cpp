@@ -6,6 +6,23 @@
 #include <kernel/scheduler.h>
 #include <kernel/spinlock.h>
 
+// Design
+// ------
+//  * Small objects (<= 512 B): slab pages taken straight from the PMM, one 4 KiB
+//    page each. No per-object header: ownership lives in a 4-byte-per-slot
+//    side table inside the page, "allocated" in a bitmap. 16 B objects cost
+//    ~20 B instead of 32 B. Slots are handed out by a bump index first, so
+//    fresh pages are never walked or memset.
+//  * Medium objects (<= 128 KiB): TLSF (O(1), 8 second-level bins) over PMM
+//    backed segments. Used blocks have a 16 B header (size|flags, owner); the
+//    boundary tag of a free block lives in its last 8 bytes and is only read
+//    when the PREV_FREE flag is set.
+//  * Large objects (>= 128 KiB): contiguous PMM page runs, rounded to 4 KiB.
+//
+// Slab pages never come out of the TLSF arena, so the arena is not punched
+// full of 4 KiB-aligned holes. Slabs keep partially used pages in a per-class
+// list and hold at most one fully empty page per class in reserve.
+
 namespace Kernel::Memory {
 
 KernelHeap g_kheap;
@@ -13,175 +30,336 @@ static Spinlock heap_lock;
 
 namespace {
 
-constexpr size_t ALIGNMENT = 16;
-constexpr size_t SLAB_SIZE = 4096;
-constexpr size_t SLAB_MASK = SLAB_SIZE - 1;
-constexpr unsigned FL_COUNT = 64;
-constexpr unsigned SL_BITS = 3;
-constexpr unsigned SL_COUNT = 1U << SL_BITS;
-constexpr unsigned CLASS_COUNT = 12;
-constexpr size_t CLASS_SIZE[CLASS_COUNT] = {16,  32,  48,  64,  96,  128,
-                                            192, 256, 384, 512, 768, 1024};
+struct LockGuard {
+  uint64_t flags;
+  LockGuard() : flags(heap_lock.lock_irqsave()) {}
+  ~LockGuard() { heap_lock.unlock_irqrestore(flags); }
+  LockGuard(const LockGuard &) = delete;
+  LockGuard &operator=(const LockGuard &) = delete;
+};
 
-// Compile-time O(1) lookup table for slab class selection up to 1024 bytes
-struct ClassLookupTable {
-  uint8_t table[1025];
-  constexpr ClassLookupTable() : table{} {
-    for (size_t s = 0; s <= 1024; ++s) {
-      unsigned idx = 0;
-      while (idx < CLASS_COUNT && CLASS_SIZE[idx] < s) {
-        ++idx;
+constexpr size_t PAGE = 4096;
+constexpr size_t ALIGNMENT = 16;
+constexpr size_t HDR = 16;       // used-block header
+constexpr size_t MIN_BLOCK = 32; // header + free-list links + footer
+
+constexpr size_t BLOCK_USED = 1;
+constexpr size_t BLOCK_PREV_FREE = 2;
+constexpr size_t BLOCK_SENTINEL = 4;
+constexpr size_t BLOCK_FIRST = 8; // first block of a segment
+constexpr size_t BLOCK_FLAGS = 0xF;
+
+constexpr unsigned FL_COUNT = 64;
+constexpr unsigned SL_SHIFT = 3;
+constexpr unsigned SL_COUNT = 1U << SL_SHIFT;
+
+constexpr size_t SLAB_MAX = 512;
+constexpr size_t HUGE_THRESHOLD = 128 * 1024;
+constexpr size_t INITIAL_EXPAND_PAGES = 64; // 256 KiB
+constexpr size_t MAX_EXPAND_PAGES = 1024;   // 4 MiB per growth step
+
+constexpr uint64_t HUGE_MAGIC = 0x4855474548554745ULL;
+constexpr uintptr_t SLAB_COOKIE = 0x534C41425041474EULL;
+
+// ---------------------------------------------------------------- slab ----
+
+constexpr unsigned CLASS_COUNT = 16;
+constexpr size_t SLAB_FIXED = 88; // sizeof(SlabPage); owners[] follow
+
+struct ClassInfo {
+  uint16_t size;
+  uint16_t cap;  // objects per page
+  uint16_t base; // offset of slot 0
+  uint16_t pad;
+  uint32_t recip; // ceil(2^32 / size): exact offset/size for offsets < 4096
+};
+
+struct ClassTables {
+  ClassInfo info[CLASS_COUNT];
+  uint8_t lookup[SLAB_MAX / 16 + 1];
+  constexpr ClassTables() : info{}, lookup{} {
+    constexpr uint16_t sizes[CLASS_COUNT] = {16,  32,  48,  64,  80,  96,
+                                             112, 128, 160, 192, 224, 256,
+                                             320, 384, 448, 512};
+    for (unsigned c = 0; c < CLASS_COUNT; ++c) {
+      const size_t sz = sizes[c];
+      size_t n = 256; // used-bitmap holds 256 slots
+      size_t base = 0;
+      for (; n > 1; --n) {
+        base = (SLAB_FIXED + 4 * n + 15) & ~static_cast<size_t>(15);
+        if (base + n * sz <= PAGE)
+          break;
       }
-      table[s] = static_cast<uint8_t>(idx);
+      info[c].size = static_cast<uint16_t>(sz);
+      info[c].cap = static_cast<uint16_t>(n);
+      info[c].base = static_cast<uint16_t>(base);
+      info[c].pad = 0;
+      info[c].recip = static_cast<uint32_t>(((1ull << 32) + sz - 1) / sz);
+    }
+    for (size_t i = 0; i <= SLAB_MAX / 16; ++i) {
+      unsigned c = 0;
+      while (c < CLASS_COUNT && info[c].size < i * 16)
+        ++c;
+      lookup[i] = static_cast<uint8_t>(c);
     }
   }
 };
 
-constexpr ClassLookupTable CLASS_LOOKUP_TABLE{};
+constexpr ClassTables TABLES{};
 
-constexpr size_t BLOCK_USED = 1;
-constexpr size_t BLOCK_SLAB = 2;
-constexpr size_t BLOCK_FLAGS = 0xF;
-constexpr size_t MIN_BLOCK_SIZE = 32;
-
-constexpr uint32_t TAG_FREE = 0x46524545U;  // "FREE"
-constexpr uint32_t TAG_LARGE = 0x4C415247U; // "LARG"
-constexpr uint32_t TAG_SLAB = 0x534C0000U;  // "SL.."
-constexpr uint32_t TAG_SLAB_MASK = 0xFFFF0000U;
-constexpr uint64_t SLAB_MAGIC = 0x534C414250414745ULL; // "SLABPAGE"
-constexpr uint64_t HUGE_MAGIC = 0x48554745ULL;         // "HUGE"
-
-struct alignas(16) Block {
-  size_t size_flags;
-  size_t prev_size;
-  union {
-    struct {
-      Block *free_prev;
-      Block *free_next;
-    };
-    struct {
-      uint64_t owner;
-      uint32_t requested;
-      uint32_t tag;
-    } alloc;
-  };
-};
-
-struct AllocHeader {
-  uint64_t owner;
-  uint32_t requested;
-  uint32_t tag;
-};
-
-struct alignas(16) SlabPage {
-  uint64_t magic;
+struct SlabPage {
+  uintptr_t cookie; // (address ^ SLAB_COOKIE); zero when released
   SlabPage *all_next;
   SlabPage *all_prev;
-  SlabPage *free_next;
+  SlabPage *free_next; // partial list (0 < used < capacity)
   SlabPage *free_prev;
-  void *free_head;
-  void *backing;
-  uint32_t stride;
+  void *free_head; // freed slots (intrusive); fresh slots come from `bump`
   uint16_t capacity;
-  uint16_t free_count;
-  uint16_t used_count;
-  uint8_t class_index;
-  uint8_t on_free_list;
-  uint8_t reserved[4];
+  uint16_t used;
+  uint16_t bump; // slots [0, bump) have been handed out at least once
+  uint8_t cls;
+  uint8_t on_list;
+  uint64_t used_bits[4];
 };
+static_assert(sizeof(SlabPage) == SLAB_FIXED);
 
-struct HugeAllocHeader {
-  uint64_t magic;
-  size_t size;
-};
+SlabPage *g_slab_free[CLASS_COUNT];  // partial pages
+SlabPage *g_slab_empty[CLASS_COUNT]; // at most one empty page per class
+size_t g_slab_pages = 0;
+size_t g_slab_used = 0; // sum of class sizes of live slab objects
 
-static SlabPage *slab_page_for_pointer(void *ptr) {
-  SlabPage *page =
-      reinterpret_cast<SlabPage *>((uintptr_t)ptr & ~(uintptr_t)SLAB_MASK);
-  if (page->magic != SLAB_MAGIC || page->class_index >= CLASS_COUNT)
+inline uint32_t *slab_owners(SlabPage *p) {
+  return reinterpret_cast<uint32_t *>(p + 1);
+}
+inline uintptr_t slab_base(const SlabPage *p) {
+  return reinterpret_cast<uintptr_t>(p) + TABLES.info[p->cls].base;
+}
+inline unsigned slab_index_of(const SlabPage *p, const ClassInfo &ci,
+                              uintptr_t addr) {
+  return static_cast<unsigned>(
+      (static_cast<uint64_t>(addr - slab_base(p)) * ci.recip) >> 32);
+}
+
+// Validates that `ptr` is a live-looking slab slot; no false positives for
+// large-block pointers because the cookie is address-dependent.
+SlabPage *slab_lookup(void *ptr, unsigned *idx_out) {
+  const uintptr_t a = reinterpret_cast<uintptr_t>(ptr);
+  auto *page = reinterpret_cast<SlabPage *>(a & ~(PAGE - 1));
+  if (page->cookie != (reinterpret_cast<uintptr_t>(page) ^ SLAB_COOKIE))
     return nullptr;
-  const AllocHeader *header = static_cast<AllocHeader *>(ptr) - 1;
-  if (header->tag != (TAG_SLAB | page->class_index))
+  if (__builtin_expect(page->cls >= CLASS_COUNT, 0))
     return nullptr;
+  const ClassInfo &ci = TABLES.info[page->cls];
+  const uintptr_t base = slab_base(page);
+  if (a < base)
+    return nullptr;
+  const size_t off = a - base;
+  if (off >= static_cast<size_t>(ci.cap) * ci.size)
+    return nullptr;
+  const unsigned idx = static_cast<unsigned>(
+      (static_cast<uint64_t>(off) * ci.recip) >> 32);
+  if (idx * ci.size != off)
+    return nullptr;
+  if (idx_out)
+    *idx_out = idx;
   return page;
 }
 
-static_assert(sizeof(Block) == 32);
-static_assert(sizeof(AllocHeader) == 16);
-static_assert(sizeof(SlabPage) == 80);
+// -------------------------------------------------------------- blocks ----
 
-static inline size_t block_size(const Block *b) {
-  return b->size_flags & ~BLOCK_FLAGS;
+struct Block {
+  size_t size_flags;
+  union {
+    uint64_t owner; // used
+    Block *free_prev; // free
+  };
+  Block *free_next; // free only
+};
+static_assert(offsetof(Block, free_next) == 16);
+
+struct HugeAllocHeader {
+  uint64_t magic;
+  size_t size; // bytes of the whole page run
+};
+static_assert(sizeof(HugeAllocHeader) == 16);
+
+struct alignas(16) HeapSegment {
+  HeapSegment *next;
+  HeapSegment *prev;
+  void *raw_pages;
+  size_t page_count;
+  uintptr_t begin;
+  uintptr_t end;
+};
+static_assert(sizeof(HeapSegment) == 48);
+
+HeapSegment *g_segments_head = nullptr;
+size_t g_next_expand_pages = INITIAL_EXPAND_PAGES;
+
+inline size_t bsize(const Block *b) { return b->size_flags & ~BLOCK_FLAGS; }
+inline bool bused(const Block *b) { return b->size_flags & BLOCK_USED; }
+inline Block *bat(const Block *b, size_t off) {
+  return reinterpret_cast<Block *>(reinterpret_cast<uintptr_t>(b) + off);
+}
+inline size_t &footer(Block *b, size_t size) {
+  return *reinterpret_cast<size_t *>(reinterpret_cast<uintptr_t>(b) + size - 8);
 }
 
-static inline bool block_used(const Block *b) {
-  return (b->size_flags & BLOCK_USED) != 0;
+inline size_t align_up_size(size_t n, size_t a) { return (n + a - 1) & ~(a - 1); }
+inline unsigned msb_index(size_t n) {
+  return 63u - static_cast<unsigned>(__builtin_clzll(n));
+}
+inline size_t block_need(size_t payload) {
+  return std::max(MIN_BLOCK, align_up_size(payload + HDR, ALIGNMENT));
 }
 
-static inline bool block_slab(const Block *b) {
-  return (b->size_flags & BLOCK_SLAB) != 0;
-}
-
-static inline size_t align_up_size(size_t n, size_t a) {
-  return (n + a - 1) & ~(a - 1);
-}
-
-static inline uintptr_t align_up_ptr(uintptr_t n, size_t a) {
-  return (n + a - 1) & ~(uintptr_t)(a - 1);
-}
-
-static inline unsigned msb_index(size_t n) {
-  return 63u - (unsigned)__builtin_clzll(static_cast<unsigned long long>(n));
-}
-
-static bool mapping_insert(size_t size, unsigned &fl, unsigned &sl) {
-  if (__builtin_expect(size < MIN_BLOCK_SIZE, 0))
-    return false;
-  fl = msb_index(size);
-  if (__builtin_expect(fl < SL_BITS || fl >= FL_COUNT, 0))
-    return false;
-  const unsigned shift = fl - SL_BITS;
-  sl = (unsigned)(size >> shift) - SL_COUNT;
-  return sl < SL_COUNT;
-}
-
-static bool mapping_search(size_t size, unsigned &fl, unsigned &sl) {
-  size = std::max(size, MIN_BLOCK_SIZE);
-  const unsigned f = msb_index(size);
-  if (__builtin_expect(f < SL_BITS || f >= FL_COUNT, 0))
-    return false;
-  const size_t step = static_cast<size_t>(1) << (f - SL_BITS);
-  if (__builtin_expect(size > static_cast<size_t>(-1) - (step - 1), 0))
-    return false;
-  const size_t rounded = (size + step - 1) & ~(step - 1);
-  return mapping_insert(rounded, fl, sl);
-}
-
-static inline unsigned class_for_size(size_t size) {
-  if (__builtin_expect(size <= 1024, 1))
-    return CLASS_LOOKUP_TABLE.table[size];
-  unsigned lo = 0, hi = CLASS_COUNT;
-  while (lo < hi) {
-    const unsigned mid = (lo + hi) >> 1;
-    if (CLASS_SIZE[mid] < size)
-      lo = mid + 1;
-    else
-      hi = mid;
+// TLSF mapping in 16-byte units. u < 8: exact bin (fl 0). Else 8 bins per
+// power of two.
+inline void map_insert(size_t size, unsigned &fl, unsigned &sl) {
+  const size_t u = size >> 4;
+  if (u < SL_COUNT) {
+    fl = 0;
+    sl = static_cast<unsigned>(u);
+    return;
   }
-  return lo;
+  const unsigned f = msb_index(u);
+  fl = f - (SL_SHIFT - 1);
+  sl = static_cast<unsigned>(u >> (f - SL_SHIFT)) - SL_COUNT;
+}
+
+// Round up so every block in the found bin is large enough (good-fit).
+inline void map_search(size_t size, unsigned &fl, unsigned &sl) {
+  const size_t u = size >> 4;
+  if (u >= SL_COUNT) {
+    const size_t step = static_cast<size_t>(1) << (msb_index(u) - SL_SHIFT);
+    size = ((u + step - 1) & ~(step - 1)) << 4;
+  }
+  map_insert(size, fl, sl);
+}
+
+HugeAllocHeader *huge_header(void *ptr) {
+  if ((reinterpret_cast<uintptr_t>(ptr) & (PAGE - 1)) != sizeof(HugeAllocHeader))
+    return nullptr;
+  auto *h = reinterpret_cast<HugeAllocHeader *>(
+      reinterpret_cast<uintptr_t>(ptr) - sizeof(HugeAllocHeader));
+  if (h->magic != HUGE_MAGIC || h->size < PAGE || (h->size & (PAGE - 1)))
+    return nullptr;
+  return h;
+}
+
+// Free block of `size` at `b`; caller guarantees its predecessor is used.
+inline void make_free(Block *b, size_t size, size_t keep_flags) {
+  b->size_flags = size | keep_flags;
+  footer(b, size) = size;
+  bat(b, size)->size_flags |= BLOCK_PREV_FREE;
+}
+
+void register_segment(uintptr_t seg_begin, uintptr_t seg_end, void *raw_pages,
+                      size_t page_count, void *&heap_begin, void *&heap_end,
+                      void *&first_block, size_t &total_heap_size,
+                      Block *&out_first) {
+  auto *seg = reinterpret_cast<HeapSegment *>(seg_begin);
+  const uintptr_t first_addr = seg_begin + sizeof(HeapSegment);
+  const uintptr_t sentinel_addr = seg_end - HDR;
+  const size_t usable = sentinel_addr - first_addr;
+
+  seg->raw_pages = raw_pages;
+  seg->page_count = page_count;
+  seg->begin = first_addr;
+  seg->end = seg_end;
+  seg->prev = nullptr;
+  seg->next = g_segments_head;
+  if (g_segments_head)
+    g_segments_head->prev = seg;
+  g_segments_head = seg;
+
+  if (!heap_begin || first_addr < reinterpret_cast<uintptr_t>(heap_begin))
+    heap_begin = reinterpret_cast<void *>(first_addr);
+  if (!heap_end || seg_end > reinterpret_cast<uintptr_t>(heap_end))
+    heap_end = reinterpret_cast<void *>(seg_end);
+  if (!first_block)
+    first_block = reinterpret_cast<void *>(first_addr);
+
+  auto *sentinel = reinterpret_cast<Block *>(sentinel_addr);
+  sentinel->size_flags = HDR | BLOCK_USED | BLOCK_SENTINEL;
+
+  auto *first = reinterpret_cast<Block *>(first_addr);
+  make_free(first, usable, BLOCK_FIRST); // also sets sentinel PREV_FREE
+  first->free_prev = first->free_next = nullptr;
+
+  total_heap_size += usable;
+  out_first = first;
+}
+
+bool expand_heap(size_t min_block, void *&heap_begin, void *&heap_end,
+                 void *&first_block, size_t &total_heap_size,
+                 Block *&out_first) {
+  constexpr size_t kSegMeta = sizeof(HeapSegment) + HDR;
+  if (__builtin_expect(min_block > static_cast<size_t>(-1) / 2, 0))
+    return false;
+
+  const size_t min_pages = (min_block + kSegMeta + PAGE - 1) / PAGE;
+  size_t pages = std::max(g_next_expand_pages, min_pages);
+
+  void *raw = nullptr;
+  for (;;) {
+    raw = g_pmm.allocate_page_block(pages);
+    if (raw || pages == min_pages)
+      break;
+    pages = std::max(min_pages, pages >> 1);
+  }
+  if (__builtin_expect(!raw, 0))
+    return false;
+
+  if (pages >= g_next_expand_pages && g_next_expand_pages < MAX_EXPAND_PAGES)
+    g_next_expand_pages = std::min(MAX_EXPAND_PAGES, pages << 1);
+
+  const uintptr_t base = reinterpret_cast<uintptr_t>(raw);
+  register_segment(base, base + pages * PAGE, raw, pages, heap_begin, heap_end,
+                   first_block, total_heap_size, out_first);
+  return true;
+}
+
+void destroy_segment(HeapSegment *seg, void *&heap_begin, void *&heap_end,
+                     void *&first_block, size_t &total_heap_size) {
+  if (seg->prev)
+    seg->prev->next = seg->next;
+  else
+    g_segments_head = seg->next;
+  if (seg->next)
+    seg->next->prev = seg->prev;
+
+  total_heap_size -= (seg->end - HDR) - seg->begin;
+
+  void *raw = seg->raw_pages;
+  const size_t pages = seg->page_count;
+
+  uintptr_t min_b = static_cast<uintptr_t>(-1), max_e = 0;
+  for (HeapSegment *s = g_segments_head; s; s = s->next) {
+    min_b = std::min(min_b, s->begin);
+    max_e = std::max(max_e, s->end);
+  }
+  heap_begin = g_segments_head ? reinterpret_cast<void *>(min_b) : nullptr;
+  heap_end = g_segments_head ? reinterpret_cast<void *>(max_e) : nullptr;
+  first_block = g_segments_head
+                    ? reinterpret_cast<void *>(g_segments_head->begin)
+                    : nullptr;
+
+  g_pmm.free_page_block(raw, pages);
 }
 
 } // namespace
 
+// ------------------------------------------------------------ TLSF core ----
+
 void KernelHeap::insert_free_block(void *raw) {
-  Block *b = static_cast<Block *>(raw);
+  auto *b = static_cast<Block *>(raw);
   unsigned fl, sl;
-  if (!mapping_insert(block_size(b), fl, sl))
-    return;
-  Block *head = static_cast<Block *>(free_bins[fl][sl]);
+  map_insert(bsize(b), fl, sl);
+  auto *head = static_cast<Block *>(free_bins[fl][sl]);
   b->free_prev = nullptr;
   b->free_next = head;
-  if (__builtin_expect(head != nullptr, 1))
+  if (head)
     head->free_prev = b;
   free_bins[fl][sl] = b;
   sl_bitmap[fl] |= static_cast<uint8_t>(1u << sl);
@@ -189,17 +367,15 @@ void KernelHeap::insert_free_block(void *raw) {
 }
 
 void KernelHeap::remove_free_block(void *raw) {
-  Block *b = static_cast<Block *>(raw);
+  auto *b = static_cast<Block *>(raw);
   unsigned fl, sl;
-  if (!mapping_insert(block_size(b), fl, sl))
-    return;
+  map_insert(bsize(b), fl, sl);
   if (b->free_prev)
     b->free_prev->free_next = b->free_next;
   else
     free_bins[fl][sl] = b->free_next;
   if (b->free_next)
     b->free_next->free_prev = b->free_prev;
-  b->free_prev = b->free_next = nullptr;
   if (!free_bins[fl][sl]) {
     sl_bitmap[fl] &= static_cast<uint8_t>(~(1u << sl));
     if (!sl_bitmap[fl])
@@ -209,162 +385,192 @@ void KernelHeap::remove_free_block(void *raw) {
 
 void *KernelHeap::find_suitable_block(size_t size) {
   unsigned fl, sl;
-  if (!mapping_search(size, fl, sl))
-    return nullptr;
-  uint8_t available = sl_bitmap[fl] & static_cast<uint8_t>(0xFFu << sl);
-  if (available) {
-    sl = static_cast<unsigned>(__builtin_ctz(static_cast<unsigned>(available)));
-    return free_bins[fl][sl];
-  }
-  if (__builtin_expect(fl == FL_COUNT - 1, 0))
+  map_search(size, fl, sl);
+  const unsigned avail = sl_bitmap[fl] & (0xFFu << sl);
+  if (avail)
+    return free_bins[fl][__builtin_ctz(avail)];
+  if (fl + 1 >= FL_COUNT)
     return nullptr;
   const uint64_t higher = fl_bitmap & (~static_cast<uint64_t>(0) << (fl + 1));
   if (!higher)
     return nullptr;
   fl = static_cast<unsigned>(__builtin_ctzll(higher));
-  if (!sl_bitmap[fl])
-    return nullptr;
-  sl = static_cast<unsigned>(
-      __builtin_ctz(static_cast<unsigned>(sl_bitmap[fl])));
-  return free_bins[fl][sl];
+  return free_bins[fl][__builtin_ctz(static_cast<unsigned>(sl_bitmap[fl]))];
 }
 
+// Only ALIGNMENT-aligned payloads are supported (slabs no longer live here).
 void *KernelHeap::allocate_block(size_t payload_size, size_t alignment,
                                  uint32_t flags, void **block_out) {
-  if (__builtin_expect(!first_block || payload_size > (size_t)-1 -
-                                                          sizeof(Block) -
-                                                          (ALIGNMENT - 1),
+  (void)flags;
+  if (__builtin_expect(!first_block || alignment > ALIGNMENT ||
+                           payload_size > static_cast<size_t>(-1) / 2,
                        0))
     return nullptr;
-  alignment = std::max(alignment, ALIGNMENT);
-  if (__builtin_expect((alignment & (alignment - 1)) != 0, 0))
-    return nullptr;
-  size_t needed = align_up_size(sizeof(Block) + payload_size, ALIGNMENT);
-  size_t search_size = needed;
-  if (alignment > ALIGNMENT) {
-    const size_t extra = alignment - ALIGNMENT;
-    if (search_size > static_cast<size_t>(-1) - extra)
+
+  const size_t need = block_need(payload_size);
+  auto *b = static_cast<Block *>(find_suitable_block(need));
+  if (__builtin_expect(!b, 0)) {
+    Block *fresh = nullptr;
+    if (!expand_heap(need, heap_begin, heap_end, first_block, total_heap_size,
+                     fresh))
       return nullptr;
-    search_size += extra;
+    insert_free_block(fresh);
+    b = static_cast<Block *>(find_suitable_block(need));
+    if (__builtin_expect(!b, 0))
+      return nullptr;
   }
-  Block *b = static_cast<Block *>(find_suitable_block(search_size));
-  if (__builtin_expect(!b, 0))
-    return nullptr;
   remove_free_block(b);
-  const size_t original_size = block_size(b);
-  const uintptr_t payload_base = (uintptr_t)b + sizeof(Block);
-  if (__builtin_expect(
-          payload_base > static_cast<uintptr_t>(-1) - (alignment - 1), 0)) {
-    insert_free_block(b);
-    return nullptr;
-  }
-  const uintptr_t aligned_payload = align_up_ptr(payload_base, alignment);
-  const size_t prefix = static_cast<size_t>(aligned_payload - payload_base);
-  const size_t free_prefix = prefix >= MIN_BLOCK_SIZE ? prefix : 0;
-  const size_t inside_prefix = prefix - free_prefix;
-  if (__builtin_expect(needed > original_size - free_prefix ||
-                           inside_prefix > original_size - free_prefix - needed,
-                       0)) {
-    insert_free_block(b);
-    return nullptr;
-  }
-  Block *allocated = b;
-  size_t allocated_needed = needed + inside_prefix;
-  if (free_prefix) {
-    b->size_flags = free_prefix;
-    allocated = reinterpret_cast<Block *>(aligned_payload - sizeof(Block));
-    allocated->prev_size = free_prefix;
-    insert_free_block(b);
-  }
-  size_t suffix = original_size - free_prefix - allocated_needed;
-  size_t allocated_total = allocated_needed;
-  if (suffix >= MIN_BLOCK_SIZE) {
-    Block *tail =
-        reinterpret_cast<Block *>((uintptr_t)allocated + allocated_needed);
-    tail->prev_size = allocated_needed;
-    tail->size_flags = suffix;
-    tail->free_prev = tail->free_next = nullptr;
-    Block *after = reinterpret_cast<Block *>((uintptr_t)tail + suffix);
-    if ((uintptr_t)after < (uintptr_t)heap_end)
-      after->prev_size = suffix;
+
+  const size_t bsz = bsize(b);
+  const size_t keep = b->size_flags & BLOCK_FIRST; // predecessor is used
+  size_t total = bsz;
+  const size_t rem = bsz - need;
+  if (rem >= MIN_BLOCK) {
+    total = need;
+    Block *tail = bat(b, need);
+    tail->size_flags = rem; // successor already has PREV_FREE set
+    footer(tail, rem) = rem;
     insert_free_block(tail);
   } else {
-    allocated_total += suffix;
-    Block *after =
-        reinterpret_cast<Block *>((uintptr_t)allocated + allocated_total);
-    if ((uintptr_t)after < (uintptr_t)heap_end)
-      after->prev_size = allocated_total;
+    bat(b, bsz)->size_flags &= ~BLOCK_PREV_FREE;
   }
-  allocated->size_flags = allocated_total | BLOCK_USED | (flags & BLOCK_SLAB);
-  used_bytes_count += allocated_total;
-  if (used_bytes_count > peak_used_size)
-    peak_used_size = used_bytes_count;
+  b->size_flags = total | BLOCK_USED | keep;
+
+  used_bytes_count += total;
+  const size_t cur = used_bytes_count + g_slab_used;
+  if (cur > peak_used_size)
+    peak_used_size = cur;
   if (block_out)
-    *block_out = allocated;
-  return reinterpret_cast<void *>(aligned_payload);
+    *block_out = b;
+  return reinterpret_cast<char *>(b) + HDR;
 }
 
+// Frees and coalesces. Returns the merged free block, or nullptr when a whole
+// segment was handed back to the PMM.
 void *KernelHeap::release_block(void *raw) {
-  Block *b = static_cast<Block *>(raw);
-  size_t size = block_size(b);
+  auto *b = static_cast<Block *>(raw);
+  size_t size = bsize(b);
   used_bytes_count -= size;
-  b->size_flags = size;
-  uintptr_t next_addr = (uintptr_t)b + size;
-  if (next_addr < (uintptr_t)heap_end) {
-    Block *next = reinterpret_cast<Block *>(next_addr);
-    if (!block_used(next)) {
-      remove_free_block(next);
-      size += block_size(next);
-      b->size_flags = size;
+
+  size_t keep = b->size_flags & BLOCK_FIRST;
+
+  Block *next = bat(b, size);
+  if (!bused(next)) {
+    remove_free_block(next);
+    size += bsize(next);
+  }
+  if (b->size_flags & BLOCK_PREV_FREE) {
+    const size_t psz = *reinterpret_cast<size_t *>(
+        reinterpret_cast<uintptr_t>(b) - 8);
+    Block *prev = bat(b, 0 - psz);
+    remove_free_block(prev);
+    size += psz;
+    keep = prev->size_flags & BLOCK_FIRST;
+    b = prev;
+  }
+
+  Block *after = bat(b, size);
+  if ((keep & BLOCK_FIRST) && (after->size_flags & BLOCK_SENTINEL)) {
+    auto *seg = reinterpret_cast<HeapSegment *>(reinterpret_cast<uintptr_t>(b) -
+                                                sizeof(HeapSegment));
+    if (seg->raw_pages && (seg->prev || seg->next)) {
+      destroy_segment(seg, heap_begin, heap_end, first_block, total_heap_size);
+      return nullptr;
     }
   }
-  if (b->prev_size) {
-    Block *prev = reinterpret_cast<Block *>((uintptr_t)b - b->prev_size);
-    if (!block_used(prev)) {
-      remove_free_block(prev);
-      size += block_size(prev);
-      prev->size_flags = size;
-      b = prev;
-    }
-  }
-  next_addr = (uintptr_t)b + size;
-  if (next_addr < (uintptr_t)heap_end)
-    reinterpret_cast<Block *>(next_addr)->prev_size = size;
+
+  make_free(b, size, keep);
   insert_free_block(b);
   return b;
 }
 
+bool KernelHeap::resize_large_locked(void *raw_block, size_t size) {
+  auto *b = static_cast<Block *>(raw_block);
+  if (__builtin_expect(!size || size >= HUGE_THRESHOLD, 0))
+    return false;
+
+  const size_t needed = block_need(size);
+  const size_t old = bsize(b);
+  // A used block may legitimately have a free predecessor: keep PREV_FREE.
+  const size_t flags =
+      b->size_flags & (BLOCK_USED | BLOCK_FIRST | BLOCK_PREV_FREE);
+
+  if (needed <= old) {
+    const size_t rem = old - needed;
+    if (rem >= MIN_BLOCK) {
+      b->size_flags = needed | flags;
+      Block *tail = bat(b, needed);
+      size_t tsz = rem;
+      Block *nx = bat(tail, rem);
+      if (!bused(nx)) {
+        remove_free_block(nx);
+        tsz += bsize(nx);
+      }
+      make_free(tail, tsz, 0);
+      insert_free_block(tail);
+      used_bytes_count -= rem;
+    }
+    return true;
+  }
+
+  Block *nx = bat(b, old);
+  if (bused(nx))
+    return false;
+  const size_t nsz = bsize(nx);
+  if (old + nsz < needed)
+    return false;
+  remove_free_block(nx);
+
+  const size_t combined = old + nsz;
+  const size_t rem = combined - needed;
+  if (rem >= MIN_BLOCK) {
+    b->size_flags = needed | flags;
+    Block *tail = bat(b, needed);
+    make_free(tail, rem, 0); // successor already PREV_FREE
+    insert_free_block(tail);
+    used_bytes_count += needed - old;
+  } else {
+    b->size_flags = combined | flags;
+    bat(b, combined)->size_flags &= ~BLOCK_PREV_FREE;
+    used_bytes_count += nsz;
+  }
+  const size_t cur = used_bytes_count + g_slab_used;
+  if (cur > peak_used_size)
+    peak_used_size = cur;
+  return true;
+}
+
+// ---------------------------------------------------------------- slabs ----
+
 void KernelHeap::add_slab_free_page(void *raw) {
-  SlabPage *page = static_cast<SlabPage *>(raw);
-  if (page->on_free_list)
+  auto *page = static_cast<SlabPage *>(raw);
+  if (page->on_list)
     return;
-  const unsigned idx = page->class_index;
-  SlabPage *head = static_cast<SlabPage *>(slab_free[idx]);
+  SlabPage *head = g_slab_free[page->cls];
   page->free_prev = nullptr;
   page->free_next = head;
   if (head)
     head->free_prev = page;
-  slab_free[idx] = page;
-  page->on_free_list = 1;
+  g_slab_free[page->cls] = page;
+  page->on_list = 1;
 }
 
 void KernelHeap::remove_slab_free_page(void *raw) {
-  SlabPage *page = static_cast<SlabPage *>(raw);
-  if (!page->on_free_list)
+  auto *page = static_cast<SlabPage *>(raw);
+  if (!page->on_list)
     return;
-  const unsigned idx = page->class_index;
   if (page->free_prev)
     page->free_prev->free_next = page->free_next;
   else
-    slab_free[idx] = page->free_next;
+    g_slab_free[page->cls] = page->free_next;
   if (page->free_next)
     page->free_next->free_prev = page->free_prev;
   page->free_prev = page->free_next = nullptr;
-  page->on_free_list = 0;
+  page->on_list = 0;
 }
 
 void KernelHeap::unlink_slab_page(void *raw) {
-  SlabPage *page = static_cast<SlabPage *>(raw);
+  auto *page = static_cast<SlabPage *>(raw);
   if (page->all_prev)
     page->all_prev->all_next = page->all_next;
   else
@@ -375,367 +581,300 @@ void KernelHeap::unlink_slab_page(void *raw) {
 }
 
 void KernelHeap::release_slab_page(void *raw) {
-  SlabPage *page = static_cast<SlabPage *>(raw);
-  void *backing = page->backing;
-  if (slab_empty[page->class_index] == page)
-    slab_empty[page->class_index] = nullptr;
+  auto *page = static_cast<SlabPage *>(raw);
+  if (g_slab_empty[page->cls] == page)
+    g_slab_empty[page->cls] = nullptr;
   remove_slab_free_page(page);
   unlink_slab_page(page);
-  page->magic = 0;
-  release_block(backing);
+  page->cookie = 0;
+  --g_slab_pages;
+  g_pmm.free_page_block(page, 1);
 }
 
-void *KernelHeap::allocate_slab_locked(unsigned class_index, size_t size,
+void *KernelHeap::allocate_slab_locked(unsigned class_index, size_t,
                                        uint64_t owner) {
-  SlabPage *page = static_cast<SlabPage *>(slab_free[class_index]);
+  const ClassInfo &ci = TABLES.info[class_index];
+
+  SlabPage *page = g_slab_free[class_index];
   if (__builtin_expect(!page, 0)) {
-    void *backing = nullptr;
-    void *memory =
-        allocate_block(SLAB_SIZE, SLAB_SIZE, (uint32_t)BLOCK_SLAB, &backing);
-    if (__builtin_expect(!memory, 0))
-      return nullptr;
-    page = static_cast<SlabPage *>(memory);
-    memset(page, 0, sizeof(SlabPage));
-    page->magic = SLAB_MAGIC;
-    page->backing = backing;
-    page->class_index = (uint8_t)class_index;
-    page->stride = (uint32_t)align_up_size(
-        sizeof(AllocHeader) + CLASS_SIZE[class_index], ALIGNMENT);
-    page->capacity = (uint16_t)((SLAB_SIZE - sizeof(SlabPage)) / page->stride);
-    page->free_count = page->capacity;
-    page->used_count = 0;
-    const size_t slot_base = sizeof(SlabPage);
-    for (unsigned i = 0; i < page->capacity; ++i) {
-      AllocHeader *header = reinterpret_cast<AllocHeader *>(
-          (uintptr_t)page + slot_base + (size_t)i * page->stride);
-      header->owner = 0;
-      header->requested = 0;
-      header->tag = TAG_FREE;
-      void *user = header + 1;
-      *reinterpret_cast<void **>(user) = page->free_head;
-      page->free_head = user;
+    page = g_slab_empty[class_index];
+    if (page) {
+      g_slab_empty[class_index] = nullptr;
+    } else {
+      void *mem = g_pmm.allocate_page_block(1);
+      if (__builtin_expect(!mem, 0))
+        return nullptr;
+      page = static_cast<SlabPage *>(mem);
+      page->cookie = reinterpret_cast<uintptr_t>(page) ^ SLAB_COOKIE;
+      page->free_head = nullptr;
+      page->capacity = ci.cap;
+      page->used = 0;
+      page->bump = 0;
+      page->cls = static_cast<uint8_t>(class_index);
+      page->on_list = 0;
+      page->used_bits[0] = page->used_bits[1] = page->used_bits[2] =
+          page->used_bits[3] = 0;
+      page->free_prev = page->free_next = nullptr;
+      page->all_prev = nullptr;
+      page->all_next = static_cast<SlabPage *>(slab_pages);
+      if (page->all_next)
+        page->all_next->all_prev = page;
+      slab_pages = page;
+      ++g_slab_pages;
     }
-    page->all_next = static_cast<SlabPage *>(slab_pages);
-    page->all_prev = nullptr;
-    if (page->all_next)
-      page->all_next->all_prev = page;
-    slab_pages = page;
     add_slab_free_page(page);
   }
-  if (!page->used_count && slab_empty[class_index] == page)
-    slab_empty[class_index] = nullptr;
-  void *user = page->free_head;
-  page->free_head = *reinterpret_cast<void **>(user);
-  AllocHeader *header = reinterpret_cast<AllocHeader *>(user) - 1;
-  header->owner = owner;
-  header->requested = (uint32_t)size;
-  header->tag = TAG_SLAB | class_index;
-  --page->free_count;
-  ++page->used_count;
-  if (!page->free_count)
+
+  void *user;
+  unsigned idx;
+  if (page->free_head) {
+    user = page->free_head;
+    page->free_head = *static_cast<void **>(user);
+    idx = slab_index_of(page, ci, reinterpret_cast<uintptr_t>(user));
+  } else {
+    idx = page->bump++;
+    user = reinterpret_cast<void *>(slab_base(page) +
+                                    static_cast<size_t>(idx) * ci.size);
+  }
+
+  page->used_bits[idx >> 6] |= 1ull << (idx & 63);
+  slab_owners(page)[idx] = static_cast<uint32_t>(owner);
+  ++page->used;
+  if (page->used == page->capacity)
     remove_slab_free_page(page);
+
+  g_slab_used += ci.size;
+  const size_t cur = used_bytes_count + g_slab_used;
+  if (cur > peak_used_size)
+    peak_used_size = cur;
   return user;
 }
 
-void *KernelHeap::allocate_locked(size_t size, uint64_t owner) {
-  if (__builtin_expect(!size || size > UINT32_MAX, 0))
-    return nullptr;
-  if (size <= CLASS_SIZE[CLASS_COUNT - 1]) {
-    const unsigned idx = class_for_size(size);
-    if (idx < CLASS_COUNT)
-      return allocate_slab_locked(idx, size, owner);
-  }
-  if (__builtin_expect(size > (size_t)-1 - sizeof(Block) - (ALIGNMENT - 1), 0))
-    return nullptr;
-  const size_t rounded = align_up_size(size, ALIGNMENT);
-  void *block_raw = nullptr;
-  void *payload = allocate_block(rounded, ALIGNMENT, 0, &block_raw);
-  if (__builtin_expect(!payload, 0))
-    return nullptr;
-  Block *block = static_cast<Block *>(block_raw);
-  block->alloc.owner = owner;
-  block->alloc.requested = (uint32_t)size;
-  block->alloc.tag = TAG_LARGE;
-  return payload;
-}
+void KernelHeap::free_slab_locked(void *ptr, void *, void *raw_page) {
+  auto *page = static_cast<SlabPage *>(raw_page);
+  const ClassInfo &ci = TABLES.info[page->cls];
+  const unsigned idx =
+      slab_index_of(page, ci, reinterpret_cast<uintptr_t>(ptr));
+  const uint64_t bit = 1ull << (idx & 63);
+  uint64_t &word = page->used_bits[idx >> 6];
+  if (__builtin_expect(!(word & bit), 0))
+    return; // double free
+  word &= ~bit;
 
-void KernelHeap::free_slab_locked(void *ptr, void *raw_header, void *raw_page) {
-  AllocHeader *header = static_cast<AllocHeader *>(raw_header);
-  SlabPage *page = static_cast<SlabPage *>(raw_page);
-  const bool was_full = page->free_count == 0;
-  header->owner = 0;
-  header->requested = 0;
-  header->tag = TAG_FREE;
-  *reinterpret_cast<void **>(ptr) = page->free_head;
-  page->free_head = ptr;
-  ++page->free_count;
-  --page->used_count;
-  if (was_full)
-    add_slab_free_page(page);
-  if (!page->used_count) {
-    if (slab_empty[page->class_index] && slab_empty[page->class_index] != page)
+  g_slab_used -= ci.size;
+  const bool was_full = page->used == page->capacity;
+  --page->used;
+
+  if (page->used == 0) {
+    // Reset to pristine so the page is served by the bump index again.
+    page->free_head = nullptr;
+    page->bump = 0;
+    remove_slab_free_page(page);
+    SlabPage *&cached = g_slab_empty[page->cls];
+    if (cached && cached != page)
       release_slab_page(page);
     else
-      slab_empty[page->class_index] = page;
+      cached = page;
+    return;
   }
+
+  *static_cast<void **>(ptr) = page->free_head;
+  page->free_head = ptr;
+  if (was_full)
+    add_slab_free_page(page);
+}
+
+// ----------------------------------------------------------- allocation ----
+
+void *KernelHeap::allocate_locked(size_t size, uint64_t owner) {
+  if (__builtin_expect(!size, 0))
+    return nullptr;
+  if (size <= SLAB_MAX)
+    return allocate_slab_locked(TABLES.lookup[(size + 15) >> 4], size, owner);
+
+  void *block = nullptr;
+  void *payload = allocate_block(size, ALIGNMENT, 0, &block);
+  if (__builtin_expect(!payload, 0))
+    return nullptr;
+  static_cast<Block *>(block)->owner = owner;
+  return payload;
 }
 
 void KernelHeap::free_locked(void *ptr) {
   if (__builtin_expect(!ptr, 0))
     return;
-  if (SlabPage *page = slab_page_for_pointer(ptr)) {
-    AllocHeader *header = static_cast<AllocHeader *>(ptr) - 1;
-    free_slab_locked(ptr, header, page);
-  } else {
-    Block *block = reinterpret_cast<Block *>(ptr) - 1;
-    if (block->alloc.tag != TAG_LARGE)
-      return;
-    block->alloc.owner = 0;
-    block->alloc.requested = 0;
-    block->alloc.tag = TAG_FREE;
-    release_block(block);
+  if (SlabPage *page = slab_lookup(ptr, nullptr)) {
+    free_slab_locked(ptr, nullptr, page);
+    return;
   }
-}
-
-bool KernelHeap::resize_large_locked(void *raw_block, size_t size) {
-  if (__builtin_expect(!size || size > UINT32_MAX, 0))
-    return false;
-  Block *block = static_cast<Block *>(raw_block);
-  if (__builtin_expect(size > (size_t)-1 - sizeof(Block) - (ALIGNMENT - 1), 0))
-    return false;
-  const size_t needed = sizeof(Block) + align_up_size(size, ALIGNMENT);
-  const size_t old_total = block_size(block);
-  if (needed <= old_total) {
-    const size_t remainder = old_total - needed;
-    if (remainder >= MIN_BLOCK_SIZE) {
-      block->size_flags = needed | BLOCK_USED;
-      Block *tail = reinterpret_cast<Block *>((uintptr_t)block + needed);
-      tail->prev_size = needed;
-      tail->size_flags = remainder;
-      tail->free_prev = tail->free_next = nullptr;
-      used_bytes_count -= remainder;
-      uintptr_t after_addr = (uintptr_t)tail + remainder;
-      if (after_addr < (uintptr_t)heap_end) {
-        Block *after = reinterpret_cast<Block *>(after_addr);
-        if (!block_used(after)) {
-          remove_free_block(after);
-          tail->size_flags = block_size(tail) + block_size(after);
-        }
-      }
-      const size_t tail_size = block_size(tail);
-      after_addr = (uintptr_t)tail + tail_size;
-      if (after_addr < (uintptr_t)heap_end)
-        reinterpret_cast<Block *>(after_addr)->prev_size = tail_size;
-      insert_free_block(tail);
-    }
-    block->alloc.requested = (uint32_t)size;
-    return true;
-  }
-  uintptr_t next_addr = (uintptr_t)block + old_total;
-  if (next_addr < (uintptr_t)heap_end) {
-    Block *next = reinterpret_cast<Block *>(next_addr);
-    if (!block_used(next)) {
-      const size_t next_size = block_size(next);
-      const size_t combined = old_total + next_size;
-      if (combined >= needed) {
-        remove_free_block(next);
-        const size_t remainder = combined - needed;
-        if (remainder >= MIN_BLOCK_SIZE) {
-          block->size_flags = needed | BLOCK_USED;
-          Block *tail = reinterpret_cast<Block *>((uintptr_t)block + needed);
-          tail->prev_size = needed;
-          tail->size_flags = remainder;
-          tail->free_prev = tail->free_next = nullptr;
-          uintptr_t after_addr = (uintptr_t)tail + remainder;
-          if (after_addr < (uintptr_t)heap_end)
-            reinterpret_cast<Block *>(after_addr)->prev_size = remainder;
-          insert_free_block(tail);
-          used_bytes_count += needed - old_total;
-        } else {
-          block->size_flags = combined | BLOCK_USED;
-          uintptr_t after_addr = (uintptr_t)block + combined;
-          if (after_addr < (uintptr_t)heap_end)
-            reinterpret_cast<Block *>(after_addr)->prev_size = combined;
-          used_bytes_count += next_size;
-        }
-        block->alloc.requested = (uint32_t)size;
-        if (used_bytes_count > peak_used_size)
-          peak_used_size = used_bytes_count;
-        return true;
-      }
-    }
-  }
-  return false;
+  if (reinterpret_cast<uintptr_t>(ptr) & (ALIGNMENT - 1))
+    return;
+  auto *b = reinterpret_cast<Block *>(reinterpret_cast<uintptr_t>(ptr) - HDR);
+  if ((b->size_flags & (BLOCK_USED | BLOCK_SENTINEL)) != BLOCK_USED)
+    return; // not a live block (double free / bad pointer)
+  release_block(b);
 }
 
 void KernelHeap::init(void *heap_start_addr, size_t initial_size) {
-  const uint64_t flags = heap_lock.lock_irqsave();
+  LockGuard guard;
   heap_begin = heap_end = first_block = slab_pages = nullptr;
+  g_segments_head = nullptr;
+  g_next_expand_pages = INITIAL_EXPAND_PAGES;
   fl_bitmap = 0;
   used_bytes_count = peak_used_size = total_heap_size = 0;
+  g_slab_pages = g_slab_used = 0;
   for (unsigned fl = 0; fl < FL_COUNT; ++fl) {
     sl_bitmap[fl] = 0;
     for (unsigned sl = 0; sl < SL_COUNT; ++sl)
       free_bins[fl][sl] = nullptr;
   }
   for (unsigned i = 0; i < CLASS_COUNT; ++i)
-    slab_free[i] = slab_empty[i] = nullptr;
-  const uintptr_t raw = (uintptr_t)heap_start_addr;
+    g_slab_free[i] = g_slab_empty[i] = nullptr;
+
+  const uintptr_t raw = reinterpret_cast<uintptr_t>(heap_start_addr);
+  constexpr size_t kSegMeta = sizeof(HeapSegment) + HDR;
   if (heap_start_addr && initial_size &&
-      raw <= (uintptr_t)-1 - (ALIGNMENT - 1) &&
-      initial_size <= (uintptr_t)-1 - raw) {
-    const uintptr_t begin = align_up_ptr(raw, ALIGNMENT);
+      raw <= static_cast<uintptr_t>(-1) - (ALIGNMENT - 1) &&
+      initial_size <= static_cast<uintptr_t>(-1) - raw) {
+    const uintptr_t begin = (raw + ALIGNMENT - 1) & ~(uintptr_t)(ALIGNMENT - 1);
     const uintptr_t end = (raw + initial_size) & ~(uintptr_t)(ALIGNMENT - 1);
-    if (end > begin && end - begin >= MIN_BLOCK_SIZE) {
-      heap_begin = reinterpret_cast<void *>(begin);
-      heap_end = reinterpret_cast<void *>(end);
-      total_heap_size = end - begin;
-      first_block = reinterpret_cast<void *>(begin);
-      Block *first = static_cast<Block *>(first_block);
-      first->size_flags = total_heap_size;
-      first->prev_size = 0;
-      first->free_prev = first->free_next = nullptr;
+    if (end > begin && end - begin >= kSegMeta + MIN_BLOCK) {
+      Block *first = nullptr;
+      register_segment(begin, end, nullptr, 0, heap_begin, heap_end,
+                       first_block, total_heap_size, first);
       insert_free_block(first);
     }
   }
-  heap_lock.unlock_irqrestore(flags);
 }
 
 void *KernelHeap::kmalloc_huge(size_t size) {
-  constexpr size_t HUGE_PAGE_SIZE = 2 * 1024 * 1024; // 2 MiB
-  const size_t total_needed = sizeof(HugeAllocHeader) + size;
-  const size_t num_huge_pages =
-      (total_needed + HUGE_PAGE_SIZE - 1) / HUGE_PAGE_SIZE;
+  if (__builtin_expect(size > static_cast<size_t>(-1) - sizeof(HugeAllocHeader) -
+                                  (PAGE - 1),
+                       0))
+    return nullptr;
+  const size_t pages = (size + sizeof(HugeAllocHeader) + PAGE - 1) / PAGE;
 
-  void *phys_addr = nullptr;
-  for (size_t i = 0; i < num_huge_pages; ++i) {
-    void *p = g_pmm.allocate_huge_page();
-    if (__builtin_expect(!p, 0) != 0) {
-      if (i > 0) {
-        g_pmm.free_page_block(phys_addr, i * 512);
-      }
-      return nullptr;
-    }
-    if (i == 0)
-      phys_addr = p;
-  }
+  void *base = g_pmm.allocate_page_block(pages); // contiguous run
+  if (__builtin_expect(!base, 0))
+    return nullptr;
 
-  const auto virt_addr = reinterpret_cast<uintptr_t>(phys_addr);
-  auto *header = reinterpret_cast<HugeAllocHeader *>(virt_addr);
-  header->magic = HUGE_MAGIC;
-  header->size = num_huge_pages * HUGE_PAGE_SIZE;
-
-  return reinterpret_cast<void *>(header + 1);
+  auto *h = static_cast<HugeAllocHeader *>(base);
+  h->magic = HUGE_MAGIC;
+  h->size = pages * PAGE;
+  return h + 1;
 }
 
 void *KernelHeap::kmalloc(size_t size) {
   if (__builtin_expect(!size, 0))
     return nullptr;
-  if (__builtin_expect(size >= 2 * 1024 * 1024, 0)) {
+  if (__builtin_expect(size >= HUGE_THRESHOLD, 0))
     return kmalloc_huge(size);
-  }
-  const uint64_t flags = heap_lock.lock_irqsave();
-  void *ptr = allocate_locked(size, Kernel::Scheduler::current_thread_id());
-  heap_lock.unlock_irqrestore(flags);
-  return ptr;
+  // Resolve the owner before taking the heap lock: no heap -> scheduler lock
+  // nesting and a shorter IRQ-off window.
+  const uint64_t owner = Kernel::Scheduler::current_thread_id();
+  LockGuard guard;
+  return allocate_locked(size, owner);
 }
 
 void KernelHeap::kfree(void *ptr) {
   if (__builtin_expect(!ptr, 0))
     return;
-  HugeAllocHeader *huge_header = reinterpret_cast<HugeAllocHeader *>(ptr) - 1;
-  if (__builtin_expect(huge_header->magic == HUGE_MAGIC, 0)) {
-    const size_t total_size = huge_header->size;
-    const size_t num_huge_pages = total_size / (2 * 1024 * 1024);
-    void *phys_addr = reinterpret_cast<void *>(huge_header);
-    g_pmm.free_page_block(phys_addr, num_huge_pages * 512);
+  if (__builtin_expect(huge_header(ptr) != nullptr, 0)) {
+    HugeAllocHeader *h = huge_header(ptr);
+    const size_t pages = h->size / PAGE;
+    h->magic = 0;
+    g_pmm.free_page_block(h, pages);
     return;
   }
-  const uint64_t flags = heap_lock.lock_irqsave();
+  LockGuard guard;
   free_locked(ptr);
-  heap_lock.unlock_irqrestore(flags);
 }
 
 void KernelHeap::free_thread_allocations(uint64_t thread_id) {
   if (!thread_id)
     return;
-  const uint64_t flags = heap_lock.lock_irqsave();
-  Block *block = static_cast<Block *>(first_block);
-  while (block && (uintptr_t)block < (uintptr_t)heap_end) {
-    if (!block_used(block)) {
-      block = reinterpret_cast<Block *>((uintptr_t)block + block_size(block));
-      continue;
-    }
-    const size_t old_size = block_size(block);
-    if (!block_slab(block)) {
-      if (block->alloc.tag == TAG_LARGE && block->alloc.owner == thread_id) {
-        block->alloc.owner = 0;
-        block->alloc.requested = 0;
-        block->alloc.tag = TAG_FREE;
-        Block *merged = static_cast<Block *>(release_block(block));
-        block =
-            reinterpret_cast<Block *>((uintptr_t)merged + block_size(merged));
+  const uint32_t tid32 = static_cast<uint32_t>(thread_id);
+  LockGuard guard;
+
+  // Medium blocks: every used block in the arena is a medium allocation.
+  for (HeapSegment *seg = g_segments_head; seg;) {
+    HeapSegment *next_seg = seg->next;
+    const uintptr_t limit = seg->end - HDR;
+    uintptr_t cur = seg->begin;
+    while (cur < limit) {
+      auto *b = reinterpret_cast<Block *>(cur);
+      if (bused(b) && b->owner == thread_id) {
+        auto *merged = static_cast<Block *>(release_block(b));
+        if (!merged)
+          break; // segment returned to the PMM
+        cur = reinterpret_cast<uintptr_t>(merged) + bsize(merged);
         continue;
       }
+      cur += bsize(b);
     }
-    block = reinterpret_cast<Block *>((uintptr_t)block + old_size);
+    seg = next_seg;
   }
-  SlabPage *page = static_cast<SlabPage *>(slab_pages);
-  while (page) {
-    SlabPage *next_page = page->all_next;
-    const unsigned idx = page->class_index;
-    for (unsigned i = 0; i < page->capacity; ++i) {
-      AllocHeader *header = reinterpret_cast<AllocHeader *>(
-          (uintptr_t)page + sizeof(SlabPage) + (size_t)i * page->stride);
-      if (header->tag == (TAG_SLAB | idx) && header->owner == thread_id) {
-        void *user = header + 1;
-        const bool was_full = page->free_count == 0;
-        header->owner = 0;
-        header->requested = 0;
-        header->tag = TAG_FREE;
-        *reinterpret_cast<void **>(user) = page->free_head;
-        page->free_head = user;
-        ++page->free_count;
-        --page->used_count;
-        if (was_full)
-          add_slab_free_page(page);
+
+  // Slab objects.
+  for (SlabPage *page = static_cast<SlabPage *>(slab_pages); page;) {
+    SlabPage *next = page->all_next;
+    if (page->used) {
+      const ClassInfo &ci = TABLES.info[page->cls];
+      const uint32_t *owners = slab_owners(page);
+      const uintptr_t base = slab_base(page);
+      bool gone = false;
+      for (unsigned w = 0; w < 4 && !gone; ++w) {
+        uint64_t bits = page->used_bits[w];
+        while (bits) {
+          const unsigned idx = w * 64 + __builtin_ctzll(bits);
+          bits &= bits - 1;
+          if (owners[idx] != tid32)
+            continue;
+          const bool last = page->used == 1; // page may vanish below
+          free_slab_locked(
+              reinterpret_cast<void *>(base + static_cast<size_t>(idx) * ci.size),
+              nullptr, page);
+          if (last) {
+            gone = true;
+            break;
+          }
+        }
       }
     }
-    if (!page->used_count) {
-      if (slab_empty[idx] && slab_empty[idx] != page)
-        release_slab_page(page);
-      else
-        slab_empty[idx] = page;
-    }
-    page = next_page;
+    page = next;
   }
-  heap_lock.unlock_irqrestore(flags);
 }
 
+// Reports usable bytes (slot / block capacity), not the exact requested size.
 size_t KernelHeap::get_thread_allocated_size(uint64_t thread_id) const {
   if (!thread_id)
     return 0;
-  const uint64_t flags = heap_lock.lock_irqsave();
+  const uint32_t tid32 = static_cast<uint32_t>(thread_id);
+  LockGuard guard;
   size_t total = 0;
-  Block *block = static_cast<Block *>(first_block);
-  while (block && (uintptr_t)block < (uintptr_t)heap_end) {
-    if (block_used(block) && !block_slab(block)) {
-      if (block->alloc.tag == TAG_LARGE && block->alloc.owner == thread_id)
-        total += block->alloc.requested;
+  for (HeapSegment *seg = g_segments_head; seg; seg = seg->next) {
+    const uintptr_t limit = seg->end - HDR;
+    for (uintptr_t cur = seg->begin; cur < limit;) {
+      auto *b = reinterpret_cast<Block *>(cur);
+      if (bused(b) && b->owner == thread_id)
+        total += bsize(b) - HDR;
+      cur += bsize(b);
     }
-    block = reinterpret_cast<Block *>((uintptr_t)block + block_size(block));
   }
   for (SlabPage *page = static_cast<SlabPage *>(slab_pages); page;
        page = page->all_next) {
-    for (unsigned i = 0; i < page->capacity; ++i) {
-      AllocHeader *header = reinterpret_cast<AllocHeader *>(
-          (uintptr_t)page + sizeof(SlabPage) + (size_t)i * page->stride);
-      if (header->tag == (TAG_SLAB | page->class_index) &&
-          header->owner == thread_id)
-        total += header->requested;
+    const uint32_t *owners = slab_owners(page);
+    const size_t sz = TABLES.info[page->cls].size;
+    for (unsigned w = 0; w < 4; ++w) {
+      uint64_t bits = page->used_bits[w];
+      while (bits) {
+        const unsigned idx = w * 64 + __builtin_ctzll(bits);
+        bits &= bits - 1;
+        if (owners[idx] == tid32)
+          total += sz;
+      }
     }
   }
-  heap_lock.unlock_irqrestore(flags);
   return total;
 }
 
@@ -746,47 +885,71 @@ void *KernelHeap::krealloc(void *ptr, size_t size) {
     kfree(ptr);
     return nullptr;
   }
-  if (size > UINT32_MAX)
-    return nullptr;
-  const uint64_t flags = heap_lock.lock_irqsave();
-  Block *block = reinterpret_cast<Block *>(ptr) - 1;
-  SlabPage *page = slab_page_for_pointer(ptr);
-  void *result = ptr;
-  if (page) {
-    AllocHeader *header = static_cast<AllocHeader *>(ptr) - 1;
-    if (size <= CLASS_SIZE[page->class_index]) {
-      header->requested = (uint32_t)size;
-    } else {
-      const size_t old_size = header->requested;
-      const uint64_t owner = header->owner;
-      result = allocate_locked(size, owner);
-      if (result) {
-        memcpy(result, ptr, old_size < size ? old_size : size);
-        free_slab_locked(ptr, header, page);
+
+  size_t old_usable;
+  uint64_t owner;
+
+  if (HugeAllocHeader *h = huge_header(ptr)) {
+    old_usable = h->size - sizeof(HugeAllocHeader);
+    if (size >= HUGE_THRESHOLD &&
+        size <= static_cast<size_t>(-1) - sizeof(HugeAllocHeader) - (PAGE - 1)) {
+      const size_t new_pages = (size + sizeof(HugeAllocHeader) + PAGE - 1) / PAGE;
+      const size_t old_pages = h->size / PAGE;
+      if (new_pages == old_pages)
+        return ptr;
+      if (new_pages < old_pages) { // shrink in place, give the tail back
+        g_pmm.free_page_block(reinterpret_cast<char *>(h) + new_pages * PAGE,
+                              old_pages - new_pages);
+        h->size = new_pages * PAGE;
+        return ptr;
       }
     }
-  } else if (block->alloc.tag == TAG_LARGE) {
-    if (!resize_large_locked(block, size)) {
-      const size_t old_size = block->alloc.requested;
-      const uint64_t owner = block->alloc.owner;
-      result = allocate_locked(size, owner);
-      if (result) {
-        memcpy(result, ptr, old_size < size ? old_size : size);
-        block->alloc.owner = 0;
-        block->alloc.requested = 0;
-        block->alloc.tag = TAG_FREE;
-        release_block(block);
-      }
-    }
-  } else {
-    result = nullptr;
+    void *np = size >= HUGE_THRESHOLD ? kmalloc_huge(size) : kmalloc(size);
+    if (!np)
+      return nullptr;
+    memcpy(np, ptr, std::min(old_usable, size));
+    kfree(ptr);
+    return np;
   }
-  heap_lock.unlock_irqrestore(flags);
-  return result;
+
+  void *np = nullptr;
+  {
+    LockGuard guard;
+    unsigned idx;
+    if (SlabPage *page = slab_lookup(ptr, &idx)) {
+      const size_t csz = TABLES.info[page->cls].size;
+      if (size <= csz && csz <= 2 * align_up_size(size, ALIGNMENT))
+        return ptr; // fits and not wasteful
+      old_usable = csz;
+      owner = slab_owners(page)[idx];
+    } else {
+      if (reinterpret_cast<uintptr_t>(ptr) & (ALIGNMENT - 1))
+        return nullptr;
+      auto *b = reinterpret_cast<Block *>(reinterpret_cast<uintptr_t>(ptr) - HDR);
+      if ((b->size_flags & (BLOCK_USED | BLOCK_SENTINEL)) != BLOCK_USED)
+        return nullptr;
+      if (size > SLAB_MAX && size < HUGE_THRESHOLD &&
+          resize_large_locked(b, size))
+        return ptr;
+      old_usable = bsize(b) - HDR;
+      owner = b->owner;
+    }
+    if (size < HUGE_THRESHOLD)
+      np = allocate_locked(size, owner);
+  }
+
+  if (size >= HUGE_THRESHOLD)
+    np = kmalloc_huge(size);
+  if (!np)
+    return nullptr; // original block untouched
+
+  memcpy(np, ptr, std::min(old_usable, size)); // outside the IRQ-off section
+  kfree(ptr);
+  return np;
 }
 
 void *KernelHeap::kcalloc(size_t num, size_t size) {
-  if (size && num > (size_t)-1 / size)
+  if (size && num > static_cast<size_t>(-1) / size)
     return nullptr;
   const size_t total = num * size;
   void *ptr = kmalloc(total);
@@ -797,202 +960,176 @@ void *KernelHeap::kcalloc(size_t num, size_t size) {
 
 void *KernelHeap::kzalloc(size_t size) { return kcalloc(1, size); }
 
+// ---------------------------------------------------------------- stats ----
+
 size_t KernelHeap::get_total_size() const {
-  const uint64_t flags = heap_lock.lock_irqsave();
-  const size_t value = total_heap_size;
-  heap_lock.unlock_irqrestore(flags);
-  return value;
+  LockGuard guard;
+  return total_heap_size + g_slab_pages * PAGE;
 }
 
 size_t KernelHeap::get_used_size() const {
-  const uint64_t flags = heap_lock.lock_irqsave();
-  const size_t value = used_bytes_count;
-  heap_lock.unlock_irqrestore(flags);
-  return value;
+  LockGuard guard;
+  return used_bytes_count + g_slab_used;
 }
 
 size_t KernelHeap::get_free_size() const {
-  const uint64_t flags = heap_lock.lock_irqsave();
-  const size_t value = used_bytes_count <= total_heap_size
-                           ? total_heap_size - used_bytes_count
-                           : 0;
-  heap_lock.unlock_irqrestore(flags);
-  return value;
+  LockGuard guard;
+  const size_t total = total_heap_size + g_slab_pages * PAGE;
+  const size_t used = used_bytes_count + g_slab_used;
+  return used <= total ? total - used : 0;
 }
 
 size_t KernelHeap::get_peak_used_size() const {
-  const uint64_t flags = heap_lock.lock_irqsave();
-  const size_t value = peak_used_size;
-  heap_lock.unlock_irqrestore(flags);
-  return value;
+  LockGuard guard;
+  return peak_used_size;
 }
 
 bool KernelHeap::validate() const {
-  const uint64_t flags = heap_lock.lock_irqsave();
-  bool valid = true;
-  if (!heap_begin || !heap_end || !first_block ||
-      (uintptr_t)heap_begin >= (uintptr_t)heap_end)
-    valid = false;
-  size_t physical_used = 0, physical_free = 0, previous_size = 0;
-  uintptr_t cursor = (uintptr_t)heap_begin;
-  const uintptr_t end = (uintptr_t)heap_end;
-  size_t block_limit = total_heap_size / MIN_BLOCK_SIZE + 1;
-  while (valid && cursor < end && block_limit--) {
-    Block *b = reinterpret_cast<Block *>(cursor);
-    const size_t size = block_size(b);
-    if ((cursor & (ALIGNMENT - 1)) || (size < MIN_BLOCK_SIZE) ||
-        (size & (ALIGNMENT - 1)) || size > end - cursor ||
-        b->prev_size != previous_size) {
-      valid = false;
-      break;
-    }
-    if (block_used(b))
-      physical_used += size;
-    else {
-      ++physical_free;
-      uintptr_t next = cursor + size;
-      if (next < end && !block_used(reinterpret_cast<Block *>(next))) {
-        valid = false;
-        break;
+  LockGuard guard;
+
+  if (!heap_begin || !heap_end || !first_block || !g_segments_head ||
+      reinterpret_cast<uintptr_t>(heap_begin) >=
+          reinterpret_cast<uintptr_t>(heap_end))
+    return false;
+
+  size_t phys_used = 0, phys_free = 0, total_usable = 0;
+  HeapSegment *prev_seg = nullptr;
+  for (HeapSegment *seg = g_segments_head; seg; seg = seg->next) {
+    if (seg->prev != prev_seg || seg->end < seg->begin + HDR + MIN_BLOCK)
+      return false;
+    const uintptr_t limit = seg->end - HDR;
+    total_usable += limit - seg->begin;
+    bool prev_free = false, first = true;
+    uintptr_t cur = seg->begin;
+    while (cur < limit) {
+      auto *b = reinterpret_cast<Block *>(cur);
+      const size_t size = bsize(b);
+      if ((cur & (ALIGNMENT - 1)) || size < MIN_BLOCK || (size & (ALIGNMENT - 1)) ||
+          size > limit - cur || (b->size_flags & BLOCK_SENTINEL) ||
+          static_cast<bool>(b->size_flags & BLOCK_FIRST) != first ||
+          static_cast<bool>(b->size_flags & BLOCK_PREV_FREE) != prev_free)
+        return false;
+      if (bused(b)) {
+        phys_used += size;
+      } else {
+        if (prev_free || footer(b, size) != size)
+          return false;
+        ++phys_free;
       }
+      prev_free = !bused(b);
+      first = false;
+      cur += size;
     }
-    previous_size = size;
-    cursor += size;
+    auto *sentinel = reinterpret_cast<Block *>(limit);
+    if (cur != limit ||
+        sentinel->size_flags !=
+            (HDR | BLOCK_USED | BLOCK_SENTINEL |
+             (prev_free ? BLOCK_PREV_FREE : 0)))
+      return false;
+    prev_seg = seg;
   }
-  if (cursor != end || block_limit == 0 || physical_used != used_bytes_count)
-    valid = false;
+  if (total_usable != total_heap_size || phys_used != used_bytes_count)
+    return false;
+
   uint64_t expected_fl = 0;
-  size_t listed_free = 0;
-  for (unsigned fl = 0; valid && fl < FL_COUNT; ++fl) {
+  size_t listed = 0;
+  for (unsigned fl = 0; fl < FL_COUNT; ++fl) {
     uint8_t expected_sl = 0;
     for (unsigned sl = 0; sl < SL_COUNT; ++sl) {
       Block *prev = nullptr;
-      Block *b = static_cast<Block *>(free_bins[fl][sl]);
-      size_t chain_limit = total_heap_size / MIN_BLOCK_SIZE + 1;
-      while (b && chain_limit--) {
-        unsigned actual_fl, actual_sl;
-        if (block_used(b) || b->free_prev != prev ||
-            !mapping_insert(block_size(b), actual_fl, actual_sl) ||
-            actual_fl != fl || actual_sl != sl) {
-          valid = false;
-          break;
-        }
+      auto *b = static_cast<Block *>(free_bins[fl][sl]);
+      size_t guard_n = phys_free + 1;
+      while (b && guard_n--) {
+        unsigned afl, asl;
+        if (bused(b) || b->free_prev != prev)
+          return false;
+        map_insert(bsize(b), afl, asl);
+        if (afl != fl || asl != sl)
+          return false;
         prev = b;
         b = b->free_next;
-        ++listed_free;
+        ++listed;
       }
       if (b)
-        valid = false;
+        return false;
       if (free_bins[fl][sl])
         expected_sl |= static_cast<uint8_t>(1u << sl);
     }
     if (expected_sl)
       expected_fl |= static_cast<uint64_t>(1) << fl;
     if (expected_sl != sl_bitmap[fl])
-      valid = false;
+      return false;
   }
-  if (expected_fl != fl_bitmap || listed_free != physical_free)
-    valid = false;
-  size_t page_limit = total_heap_size / SLAB_SIZE + 1;
-  size_t expected_free_pages[CLASS_COUNT] = {};
-  bool empty_page_found[CLASS_COUNT] = {};
+  if (expected_fl != fl_bitmap || listed != phys_free)
+    return false;
+
+  // Slabs.
+  size_t pages = 0, used_bytes = 0;
+  size_t partial[CLASS_COUNT] = {};
+  bool empty_seen[CLASS_COUNT] = {};
   SlabPage *prev_page = nullptr;
-  for (SlabPage *page = static_cast<SlabPage *>(slab_pages);
-       valid && page && page_limit--; page = page->all_next) {
-    if (page->all_prev != prev_page || page->magic != SLAB_MAGIC ||
-        page->class_index >= CLASS_COUNT ||
-        page->stride !=
-            align_up_size(sizeof(AllocHeader) + CLASS_SIZE[page->class_index],
-                          ALIGNMENT)) {
-      valid = false;
-      break;
+  for (SlabPage *page = static_cast<SlabPage *>(slab_pages); page;
+       page = page->all_next) {
+    if (++pages > g_slab_pages || page->all_prev != prev_page ||
+        page->cookie != (reinterpret_cast<uintptr_t>(page) ^ SLAB_COOKIE) ||
+        page->cls >= CLASS_COUNT)
+      return false;
+    const ClassInfo &ci = TABLES.info[page->cls];
+    if (page->capacity != ci.cap || page->used > page->capacity ||
+        page->bump > page->capacity || page->used > page->bump)
+      return false;
+    unsigned bits = 0;
+    for (unsigned w = 0; w < 4; ++w) {
+      bits += static_cast<unsigned>(__builtin_popcountll(page->used_bits[w]));
+      for (uint64_t m = page->used_bits[w]; m; m &= m - 1)
+        if (w * 64 + static_cast<unsigned>(__builtin_ctzll(m)) >= page->bump)
+          return false;
     }
-    Block *backing = static_cast<Block *>(page->backing);
-    if (!block_used(backing) || !block_slab(backing) ||
-        (uintptr_t)page < (uintptr_t)backing + sizeof(Block) ||
-        (uintptr_t)page + SLAB_SIZE >
-            (uintptr_t)backing + block_size(backing)) {
-      valid = false;
-      break;
+    if (bits != page->used)
+      return false;
+    size_t chain = 0;
+    for (void *u = page->free_head; u; u = *static_cast<void **>(u)) {
+      const uintptr_t a = reinterpret_cast<uintptr_t>(u);
+      if (a < slab_base(page) || ++chain > page->bump)
+        return false;
+      const size_t off = a - slab_base(page);
+      if (off >= static_cast<size_t>(page->bump) * ci.size)
+        return false;
+      const unsigned idx = slab_index_of(page, ci, a);
+      if (idx * ci.size != off || (page->used_bits[idx >> 6] >> (idx & 63) & 1))
+        return false;
     }
-    const unsigned capacity = (SLAB_SIZE - sizeof(SlabPage)) / page->stride;
-    if (page->capacity != capacity ||
-        page->free_count + page->used_count != page->capacity) {
-      valid = false;
-      break;
+    if (chain + page->used != page->bump)
+      return false;
+    const bool want_listed = page->used > 0 && page->used < page->capacity;
+    if (static_cast<bool>(page->on_list) != want_listed)
+      return false;
+    if (page->used == 0) {
+      if (g_slab_empty[page->cls] != page || page->bump != 0)
+        return false;
+      empty_seen[page->cls] = true;
     }
-    unsigned free_slots = 0, used_slots = 0;
-    for (unsigned i = 0; i < page->capacity; ++i) {
-      AllocHeader *h = reinterpret_cast<AllocHeader *>(
-          (uintptr_t)page + sizeof(SlabPage) + (size_t)i * page->stride);
-      if (h->tag == TAG_FREE)
-        ++free_slots;
-      else if (h->tag == (TAG_SLAB | page->class_index) &&
-               h->requested <= CLASS_SIZE[page->class_index])
-        ++used_slots;
-      else {
-        valid = false;
-        break;
-      }
-    }
-    if (free_slots != page->free_count || used_slots != page->used_count) {
-      valid = false;
-      break;
-    }
-    size_t free_chain = 0;
-    for (void *user = page->free_head; user;
-         user = *reinterpret_cast<void **>(user)) {
-      const uintptr_t base = (uintptr_t)page + sizeof(SlabPage);
-      const uintptr_t addr = (uintptr_t)user - sizeof(AllocHeader);
-      if (addr < base || (addr - base) % page->stride ||
-          (addr - base) / page->stride >= page->capacity) {
-        valid = false;
-        break;
-      }
-      AllocHeader *h = reinterpret_cast<AllocHeader *>(addr);
-      if (h->tag != TAG_FREE || ++free_chain > page->capacity) {
-        valid = false;
-        break;
-      }
-    }
-    if (free_chain != page->free_count ||
-        (page->on_free_list != (page->free_count != 0))) {
-      valid = false;
-      break;
-    }
-    if (slab_empty[page->class_index] == page) {
-      if (page->used_count != 0)
-        valid = false;
-      empty_page_found[page->class_index] = true;
-    }
-    if (page->on_free_list)
-      ++expected_free_pages[page->class_index];
+    if (want_listed)
+      ++partial[page->cls];
+    used_bytes += static_cast<size_t>(page->used) * ci.size;
     prev_page = page;
   }
-  if (page_limit == 0)
-    valid = false;
-  for (unsigned idx = 0; valid && idx < CLASS_COUNT; ++idx)
-    if (slab_empty[idx] && !empty_page_found[idx])
-      valid = false;
-  for (unsigned idx = 0; valid && idx < CLASS_COUNT; ++idx) {
+  if (pages != g_slab_pages || used_bytes != g_slab_used)
+    return false;
+  for (unsigned c = 0; c < CLASS_COUNT; ++c) {
+    if (g_slab_empty[c] && !empty_seen[c])
+      return false;
+    size_t n = 0;
     SlabPage *prev = nullptr;
-    size_t list_limit = total_heap_size / SLAB_SIZE + 1;
-    size_t listed_pages = 0;
-    for (SlabPage *page = static_cast<SlabPage *>(slab_free[idx]);
-         page && list_limit--; page = page->free_next) {
-      if (page->class_index != idx || !page->free_count ||
-          !page->on_free_list || page->free_prev != prev) {
-        valid = false;
-        break;
-      }
-      prev = page;
-      ++listed_pages;
+    for (SlabPage *p = g_slab_free[c]; p; p = p->free_next) {
+      if (++n > partial[c] || p->cls != c || !p->on_list || p->free_prev != prev)
+        return false;
+      prev = p;
     }
-    if (!list_limit || listed_pages != expected_free_pages[idx])
-      valid = false;
+    if (n != partial[c])
+      return false;
   }
-  heap_lock.unlock_irqrestore(flags);
-  return valid;
+  return true;
 }
 
 SystemMemoryInfo KernelHeap::get_system_memory_info(bool recheck) const {
@@ -1005,22 +1142,28 @@ SystemMemoryInfo KernelHeap::get_system_memory_info(bool recheck) const {
     info.pmm_used_memory = g_pmm.get_used_memory();
     info.pmm_free_memory = g_pmm.get_free_memory();
   }
-  const uint64_t flags = heap_lock.lock_irqsave();
-  info.heap_total_size = total_heap_size;
-  info.heap_used_size = used_bytes_count;
+
+  LockGuard guard;
+  size_t used = used_bytes_count + g_slab_used;
   if (recheck) {
-    size_t used = 0;
-    Block *block = static_cast<Block *>(first_block);
-    while (block && (uintptr_t)block < (uintptr_t)heap_end) {
-      if (block_used(block))
-        used += block_size(block);
-      block = reinterpret_cast<Block *>((uintptr_t)block + block_size(block));
+    used = 0;
+    for (HeapSegment *seg = g_segments_head; seg; seg = seg->next) {
+      const uintptr_t limit = seg->end - HDR;
+      for (uintptr_t cur = seg->begin; cur < limit;) {
+        auto *b = reinterpret_cast<Block *>(cur);
+        if (bused(b))
+          used += bsize(b);
+        cur += bsize(b);
+      }
     }
-    info.heap_used_size = used;
+    for (SlabPage *p = static_cast<SlabPage *>(slab_pages); p; p = p->all_next)
+      used += static_cast<size_t>(p->used) * TABLES.info[p->cls].size;
   }
-  info.heap_free_size = info.heap_total_size - info.heap_used_size;
+  info.heap_total_size = total_heap_size + g_slab_pages * PAGE;
+  info.heap_used_size = used;
+  info.heap_free_size =
+      info.heap_total_size >= used ? info.heap_total_size - used : 0;
   info.heap_peak_size = peak_used_size;
-  heap_lock.unlock_irqrestore(flags);
   return info;
 }
 
@@ -1046,8 +1189,9 @@ void *calloc(size_t num, size_t size) {
 }
 }
 
-void *operator new(size_t size) { return malloc(size); }
-void *operator new[](size_t size) { return malloc(size); }
+// new T[0] / new T must never return null.
+void *operator new(size_t size) { return malloc(size ? size : 1); }
+void *operator new[](size_t size) { return malloc(size ? size : 1); }
 void operator delete(void *ptr) noexcept { free(ptr); }
 void operator delete[](void *ptr) noexcept { free(ptr); }
 void operator delete(void *ptr, size_t) noexcept { free(ptr); }
