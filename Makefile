@@ -97,7 +97,6 @@ endif
 # Separate location for the debug ELF and all of its intermediate objects.
 DEBUG_BUILD_DIR ?= $(BUILD_DIR)/debug
 
-OS_ISO ?= os.iso
 DISK_IMAGE ?= disk.img
 RUST_TARGET = x86_64-unknown-none
 RUST_TARGET_DIR = $(BUILD_DIR)/rust
@@ -190,7 +189,7 @@ endef
 
 .PHONY: all clean simd filesimd compare-redzone compare-compiler debug-elf
 
-all: $(OS_ISO) $(DISK_IMAGE)
+all: $(DISK_IMAGE)
 
 RUNS ?= 4
 JOBS ?= 6
@@ -220,15 +219,21 @@ DOOM1_WAD = $(firstword $(wildcard doom1.wad doom.wad))
 DOOM2_WAD = $(wildcard doom2.wad)
 DOOM_WADS = $(DOOM1_WAD) $(DOOM2_WAD)
 
-# Build disk image with WADs and/or Font files if present
-DISK_DEPS = tools/mklaziofs.py $(DOOM_WADS) $(FONT_FILES)
+# Build a bootable hybrid disk with its automounted filesystem appended as a partition.
+DISK_DEPS = Makefile $(BUILD_DIR)/os.bin grub.cfg tools/mklaziofs.py $(DOOM_WADS) $(FONT_FILES)
 
 $(DISK_IMAGE): $(DISK_DEPS)
 	@mkdir -p $(@D)
-	@python3 tools/mklaziofs.py $@ \
+	@mkdir -p $(BUILD_DIR)/disk/boot/grub
+	@cp $(BUILD_DIR)/os.bin $(BUILD_DIR)/disk/boot/osfos
+	@cp grub.cfg $(BUILD_DIR)/disk/boot/grub/grub.cfg
+	@python3 tools/mklaziofs.py $(BUILD_DIR)/laziofs.img \
+		--add /boot/osfos=$(BUILD_DIR)/os.bin \
 		$(if $(DOOM1_WAD),--add /bin/doom/doom1.wad=$(DOOM1_WAD)) \
 		$(if $(DOOM2_WAD),--add /bin/doom/doom2.wad=$(DOOM2_WAD)) \
 		$(FONT_ADD_ARGS)
+	@grub-mkrescue -o $@ -append_partition 2 0x83 \
+		$(BUILD_DIR)/laziofs.img $(BUILD_DIR)/disk >/dev/null
 
 $(BUILD_DIR)/%.o: %.asm Makefile
 	@mkdir -p $(@D)
@@ -307,17 +312,6 @@ else
 	$(Q)$(call PRINT_TUI, [RUST  ], rust/net/src/lib.rs)
 endif
 
-$(OS_ISO): $(BUILD_DIR)/os.bin grub.cfg
-	$(Q)mkdir -p $(BUILD_DIR)/iso/boot/grub
-	$(Q)cp $(BUILD_DIR)/os.bin $(BUILD_DIR)/iso/boot/os.bin
-	$(Q)cp grub.cfg $(BUILD_DIR)/iso/boot/grub/grub.cfg
-	$(Q)grub-mkrescue -o $@ $(BUILD_DIR)/iso >/dev/null 2>&1
-	$(Q)rm -rf $(BUILD_DIR)/iso
-ifeq ($(V),1)
-else
-	$(Q)$(call PRINT_TUI, [ISO   ], $@)
-endif
-
 simd: $(BUILD_DIR)/os.bin
 	@total=$$(objdump -d $(BUILD_DIR)/os.bin 2>/dev/null | grep -E '\b(xmm|ymm|zmm)[0-9]+' | wc -l); \
 	printf "\033[32mTotal SIMD instructions generated:\033[0m \033[1;33m%5d\033[0m\n\n" "$$total"; \
@@ -368,7 +362,7 @@ filesimd:
 	fi
 
 clean:
-	$(Q)rm -rf $(BUILD_DIR) os.bin os.iso disk.img iso kernel.profdata kernel.afdo perf.data
+	$(Q)rm -rf $(BUILD_DIR) os.bin disk.img kernel.profdata kernel.afdo perf.data
 	$(Q)cargo clean --manifest-path rust/kernel_heap/Cargo.toml 2>/dev/null || true
 ifeq ($(V),1)
 else

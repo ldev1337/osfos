@@ -12,7 +12,16 @@ Install the bare-metal Rust target with `rustup target add x86_64-unknown-none`.
 make
 ```
 
-This creates a bootable `os.iso` in the repository root. Object files, the kernel binary (`build/os.bin`), and ISO staging files are kept under `build/`. The filesystem image builds without game data. To include Doom I or Doom II, place legally obtained `doom1.wad` and/or `doom2.wad` files in the repository root and rebuild the disk image with `make disk.img`. Launch them with `doom1` and `doom2` from the shell. Doom WAD files are ignored by Git and are not distributed here. Run `make clean` to remove build outputs.
+This creates a bootable `disk.img` with the kernel at `/boot/osfos` and the automounted LazioFS as a partition on the same disk. Boot it directly with QEMU:
+
+```sh
+qemu-system-x86_64 -enable-kvm -cpu host -smp 4 -m 64M -machine pc \
+  -drive file=disk.img,format=raw,if=ide -boot c \
+  -netdev user,id=net0 -device rtl8139,netdev=net0 \
+  -serial stdio -no-reboot
+```
+
+Object files and the linked kernel binary (`build/os.bin`) stay under `build/`. To include Doom I or Doom II, place legally obtained `doom1.wad` and/or `doom2.wad` files in the repository root and rebuild with `make`. Launch them with `doom1` and `doom2` from the shell. Doom WAD files are ignored by Git and are not distributed here. Run `make clean` to remove build outputs.
 
 Launch `pacman` from the shell to play Pac-Man. Use the arrow keys or WASD to move, and Escape to close the game window. The port renders directly into the OS window manager and does not use Sokol; sound is disabled because the kernel has no application audio output yet.
 

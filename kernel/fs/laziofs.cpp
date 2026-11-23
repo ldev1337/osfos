@@ -107,6 +107,7 @@ uint8_t g_inode_bitmap[INODE_BITMAP_SECTORS * VFS_SECTOR_SIZE]{};
 bool g_inode_bitmap_dirty = false;
 bool g_inode_dirty[VFS_MAX_INODES]{};
 bool g_mounted = false;
+uint32_t g_vfs_start_lba = VFS_START_LBA;
 uint32_t g_next_free_inode = 0;
 uint32_t g_next_free_block = 0;
 FileStream g_streams[VFS_MAX_OPEN_FILES]{};
@@ -300,7 +301,7 @@ bool cached_read_sector(uint32_t rel_lba, uint8_t *out) {
 bool cached_write_sector(uint32_t rel_lba, const uint8_t *data) {
   if (!data || rel_lba >= g_sb.total_sectors)
     return false;
-  uint32_t abs = VFS_START_LBA + rel_lba;
+  uint32_t abs = g_vfs_start_lba + rel_lba;
   CacheSlot *slot = cache_find(abs);
   if (!slot) {
     slot = cache_evict();
@@ -318,7 +319,7 @@ bool cached_write_sector(uint32_t rel_lba, const uint8_t *data) {
 uint8_t *cached_read_sector_ptr(uint32_t rel_lba) {
   if (rel_lba >= g_sb.total_sectors)
     return nullptr;
-  uint32_t abs = VFS_START_LBA + rel_lba;
+  uint32_t abs = g_vfs_start_lba + rel_lba;
   CacheSlot *slot = cache_find(abs);
   if (slot)
     return slot->data;
@@ -367,7 +368,7 @@ uint8_t *cached_read_sector_ptr(uint32_t rel_lba) {
 bool cached_write_full_sector(uint32_t rel_lba, const uint8_t *data) {
   if (!data || rel_lba >= g_sb.total_sectors)
     return false;
-  const uint32_t abs = VFS_START_LBA + rel_lba;
+  const uint32_t abs = g_vfs_start_lba + rel_lba;
   CacheSlot *slot = cache_find(abs);
   if (!slot) {
     slot = cache_evict();
@@ -383,7 +384,7 @@ bool cached_write_full_sector(uint32_t rel_lba, const uint8_t *data) {
 }
 
 void cached_mark_dirty(uint32_t rel_lba) {
-  uint32_t abs = VFS_START_LBA + rel_lba;
+  uint32_t abs = g_vfs_start_lba + rel_lba;
   CacheSlot *slot = cache_find(abs);
   if (slot)
     slot->dirty = true;
@@ -647,8 +648,39 @@ bool mount_internal() {
   bytes_zero(g_block_bitmap, sizeof(g_block_bitmap));
 
   uint8_t sector[VFS_SECTOR_SIZE];
-  if (!Kernel::Drivers::ATADriver::read_sectors(VFS_START_LBA, 1, sector))
+  uint32_t selected_lba = VFS_START_LBA;
+  auto has_fs_magic = [](const uint8_t *data) {
+    for (size_t i = 0; i < sizeof(FS_MAGIC); ++i) {
+      if (data[i] != static_cast<uint8_t>(FS_MAGIC[i]))
+        return false;
+    }
+    return true;
+  };
+
+  bool found = Kernel::Drivers::ATADriver::read_sectors(selected_lba, 1, sector) &&
+               has_fs_magic(sector);
+  if (!found &&
+      Kernel::Drivers::ATADriver::read_sectors(0, 1, sector) &&
+      sector[510] == 0x55 && sector[511] == 0xAA) {
+    for (uint32_t i = 0; i < 4 && !found; ++i) {
+      const uint8_t *entry = sector + 446 + i * 16;
+      if (entry[4] != 0x83)
+        continue;
+      const uint32_t partition_lba = static_cast<uint32_t>(entry[8]) |
+                                     (static_cast<uint32_t>(entry[9]) << 8) |
+                                     (static_cast<uint32_t>(entry[10]) << 16) |
+                                     (static_cast<uint32_t>(entry[11]) << 24);
+      if (partition_lba &&
+          Kernel::Drivers::ATADriver::read_sectors(partition_lba, 1, sector) &&
+          has_fs_magic(sector)) {
+        selected_lba = partition_lba;
+        found = true;
+      }
+    }
+  }
+  if (!found)
     return false;
+  g_vfs_start_lba = selected_lba;
   bytes_copy(&g_sb, sector, sizeof(g_sb));
 
   constexpr uint32_t expected_inode_table_sectors =
@@ -677,13 +709,13 @@ bool mount_internal() {
 
   for (uint32_t s = 0; s < g_sb.inode_bitmap_sectors; ++s) {
     if (!Kernel::Drivers::ATADriver::read_sectors(
-            VFS_START_LBA + g_sb.inode_bitmap_start + s, 1,
+            g_vfs_start_lba + g_sb.inode_bitmap_start + s, 1,
             g_inode_bitmap + s * VFS_SECTOR_SIZE))
       return false;
   }
   for (uint32_t s = 0; s < g_sb.block_bitmap_sectors; ++s) {
     if (!Kernel::Drivers::ATADriver::read_sectors(
-            VFS_START_LBA + g_sb.block_bitmap_start + s, 1,
+            g_vfs_start_lba + g_sb.block_bitmap_start + s, 1,
             g_block_bitmap + s * VFS_SECTOR_SIZE))
       return false;
   }
@@ -695,7 +727,7 @@ bool mount_internal() {
     uint32_t count =
         std::min(MOUNT_BATCH_SECTORS, g_sb.inode_table_sectors - sector);
     if (!Kernel::Drivers::ATADriver::read_sectors(
-            VFS_START_LBA + g_sb.inode_table_start + sector,
+            g_vfs_start_lba + g_sb.inode_table_start + sector,
             static_cast<uint8_t>(count), table_batch))
       return false;
     bytes_copy(inode_bytes + sector * VFS_SECTOR_SIZE, table_batch,
@@ -843,13 +875,13 @@ bool VFS::format(uint32_t total_sectors) {
   // Persist the complete metadata before publishing the superblock.
   for (uint32_t sec = 0; sec < g_sb.inode_bitmap_sectors; ++sec) {
     if (!Kernel::Drivers::ATADriver::write_sectors(
-            VFS_START_LBA + g_sb.inode_bitmap_start + sec, 1,
+            g_vfs_start_lba + g_sb.inode_bitmap_start + sec, 1,
             g_inode_bitmap + sec * VFS_SECTOR_SIZE))
       return false;
   }
   for (uint32_t sec = 0; sec < g_sb.block_bitmap_sectors; ++sec) {
     if (!Kernel::Drivers::ATADriver::write_sectors(
-            VFS_START_LBA + g_sb.block_bitmap_start + sec, 1,
+            g_vfs_start_lba + g_sb.block_bitmap_start + sec, 1,
             g_block_bitmap + sec * VFS_SECTOR_SIZE))
       return false;
   }
@@ -866,18 +898,18 @@ bool VFS::format(uint32_t total_sectors) {
     if (copy_len)
       bytes_copy(sec, inode_bytes + byte_offset, copy_len);
     if (!Kernel::Drivers::ATADriver::write_sectors(
-            VFS_START_LBA + g_sb.inode_table_start + sec_idx, 1, sec))
+            g_vfs_start_lba + g_sb.inode_table_start + sec_idx, 1, sec))
       return false;
   }
 
   bytes_zero(sec, sizeof(sec));
   if (!Kernel::Drivers::ATADriver::write_sectors(
-          VFS_START_LBA + g_sb.data_start, 1, sec))
+          g_vfs_start_lba + g_sb.data_start, 1, sec))
     return false;
 
   bytes_zero(sec, sizeof(sec));
   bytes_copy(sec, &g_sb, sizeof(g_sb));
-  if (!Kernel::Drivers::ATADriver::write_sectors(VFS_START_LBA, 1, sec))
+  if (!Kernel::Drivers::ATADriver::write_sectors(g_vfs_start_lba, 1, sec))
     return false;
 
   cache_init();
