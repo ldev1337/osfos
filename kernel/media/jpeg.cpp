@@ -18,17 +18,18 @@ void kfree(void *ptr);
 #define STBI_ASSERT(condition) ((void)0)
 #define STBI_MALLOC(size) kmalloc(size)
 #define STBI_REALLOC(pointer, size) krealloc(pointer, size)
-#define STBI_REALLOC_SIZED(pointer, old_size, new_size) krealloc(pointer, new_size)
+#define STBI_REALLOC_SIZED(pointer, old_size, new_size)                        \
+  krealloc(pointer, new_size)
 #define STBI_FREE(pointer) kfree(pointer)
 #define STB_IMAGE_IMPLEMENTATION
-#include <stb_image.h>
+#include <stb/stb_image.h>
 
 namespace Kernel::Media::JPEG {
 namespace {
 
 bool output_dimensions(uint32_t width, uint32_t height, uint32_t max_width,
-                      uint32_t max_height, uint32_t &out_width,
-                      uint32_t &out_height) {
+                       uint32_t max_height, uint32_t &out_width,
+                       uint32_t &out_height) {
   if (!width || !height || !max_width || !max_height)
     return false;
   out_width = width;
@@ -37,12 +38,12 @@ bool output_dimensions(uint32_t width, uint32_t height, uint32_t max_width,
     if (static_cast<uint64_t>(max_width) * height <=
         static_cast<uint64_t>(max_height) * width) {
       out_width = max_width;
-      out_height = static_cast<uint32_t>(
-          static_cast<uint64_t>(height) * max_width / width);
+      out_height = static_cast<uint32_t>(static_cast<uint64_t>(height) *
+                                         max_width / width);
     } else {
       out_height = max_height;
-      out_width = static_cast<uint32_t>(
-          static_cast<uint64_t>(width) * max_height / height);
+      out_width = static_cast<uint32_t>(static_cast<uint64_t>(width) *
+                                        max_height / height);
     }
     if (!out_width)
       out_width = 1;
@@ -64,9 +65,8 @@ int decode(const uint8_t *input, size_t input_size, uint32_t *output,
   int source_width = 0;
   int source_height = 0;
   int source_components = 0;
-  if (!stbi_info_from_memory(input, static_cast<int>(input_size),
-                             &source_width, &source_height,
-                             &source_components))
+  if (!stbi_info_from_memory(input, static_cast<int>(input_size), &source_width,
+                             &source_height, &source_components))
     return -2;
   if (source_width <= 0 || source_height <= 0 || source_width > 512 ||
       source_height > 512 || source_components < 1 || source_components > 4)
@@ -78,17 +78,16 @@ int decode(const uint8_t *input, size_t input_size, uint32_t *output,
                          static_cast<uint32_t>(source_height), max_width,
                          max_height, out_width, out_height))
     return -4;
-  const uint64_t needed_pixels =
-      static_cast<uint64_t>(out_width) * out_height;
+  const uint64_t needed_pixels = static_cast<uint64_t>(out_width) * out_height;
   if (needed_pixels > output_pixels)
     return -5;
 
   int decoded_width = 0;
   int decoded_height = 0;
   int decoded_components = 0;
-  stbi_uc *rgb = stbi_load_from_memory(
-      input, static_cast<int>(input_size), &decoded_width, &decoded_height,
-      &decoded_components, 3);
+  stbi_uc *rgb =
+      stbi_load_from_memory(input, static_cast<int>(input_size), &decoded_width,
+                            &decoded_height, &decoded_components, 3);
   if (!rgb)
     return -6;
   if (decoded_width != source_width || decoded_height != source_height) {
