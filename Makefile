@@ -19,8 +19,10 @@ RED_ZONE_FLAG = -mred-zone
 
 ifeq ($(COMPILER),gcc)
 LTO_FLAGS = -flto
+SIZE_OPT_FLAG = -Os
 else
 LTO_FLAGS = -flto=full
+SIZE_OPT_FLAG = -Oz
 endif
 
 # DEBUG_ELF=1 adds DWARF information and preserves the ELF symbol table.
@@ -34,7 +36,7 @@ else
   STRIP_LDFLAG = -Wl,--strip-all
 endif
 
-COMMON_FLAGS = -march=x86-64-v3 -mavx2 -msse2 -msse -ffast-math \
+COMMON_FLAGS = -march=x86-64-v3 -mavx2 -mavx -msse2 -msse -ffast-math \
   -ffreestanding -Wall -Wextra -w $(RED_ZONE_FLAG) -m64 \
   -fno-exceptions -fno-stack-protector -fno-rtti \
   -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fvisibility=hidden \
@@ -61,6 +63,8 @@ CFLAGS_C_PERF   = $(COMMON_FLAGS) -O3 $(LESS_EXTR_FLAGS) $(C_STD)
 CFLAGS_CPP_PERF = $(COMMON_FLAGS) -O3 $(LESS_EXTR_FLAGS) $(CPP_STD)
 CFLAGS_C_SIZE   = $(COMMON_FLAGS) -O1 $(LESS_EXTR_FLAGS) $(C_STD)
 CFLAGS_CPP_SIZE = $(COMMON_FLAGS) -O1 $(LESS_EXTR_FLAGS) $(CPP_STD)
+CFLAGS_C_OZ     = $(COMMON_FLAGS) $(SIZE_OPT_FLAG) $(C_STD)
+CFLAGS_CPP_OZ   = $(COMMON_FLAGS) $(SIZE_OPT_FLAG) $(CPP_STD)
 CFLAGS_BEARSSL  = $(COMMON_FLAGS) -O2 $(LESS_EXTR_FLAGS) $(C_STD) \
   -DBR_USE_URANDOM=0 -DBR_USE_UNIX_TIME=0 -DBR_USE_WIN32_RAND=0 -DBR_RDRAND=0
 
@@ -144,6 +148,8 @@ OBJS = $(sort \
   $(DRIVER_CPP_OBJS) \
 )
 
+$(PROGRAM_C_OBJS):      CFLAGS_C   = $(CFLAGS_C_OZ)
+$(PROGRAM_CPP_OBJS):    CFLAGS_CPP = $(CFLAGS_CPP_OZ)
 $(KERNEL_O3_C_OBJS):    CFLAGS_C   = $(CFLAGS_C_PERF)
 $(KERNEL_O3_CPP_OBJS):  CFLAGS_CPP = $(CFLAGS_CPP_PERF)
 $(GRAPHICS_OBJS):       CFLAGS_CPP = $(CFLAGS_CPP_PERF)
