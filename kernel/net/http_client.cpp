@@ -151,16 +151,37 @@ bool append_url_authority(char *buffer, size_t capacity, size_t &length,
   return true;
 }
 
-bool make_request(const Url &url, char *request, size_t capacity,
-                  size_t &length) {
+bool append_size(char *buffer, size_t capacity, size_t &length, size_t value) {
+  char digits[20];
+  size_t count = 0;
+  do {
+    digits[count++] = static_cast<char>('0' + value % 10);
+    value /= 10;
+  } while (value && count < sizeof(digits));
+  while (count) {
+    char digit[2] = {digits[--count], '\0'};
+    if (!append_text(buffer, capacity, length, digit))
+      return false;
+  }
+  return true;
+}
+
+bool make_request(const Url &url, bool post, size_t body_length, char *request,
+                  size_t capacity, size_t &length) {
   length = 0;
-  return append_text(request, capacity, length, "GET ") &&
+  return append_text(request, capacity, length, post ? "POST " : "GET ") &&
          append_text(request, capacity, length, url.path) &&
          append_text(request, capacity, length, " HTTP/1.0\r\nHost: ") &&
          append_url_authority(request, capacity, length, url) &&
          append_text(request, capacity, length,
                      "\r\nConnection: close\r\nAccept: */*\r\n"
-                     "User-Agent: osfos/0.1\r\n\r\n");
+                     "User-Agent: osfos/0.1\r\n") &&
+         (!post ||
+          (append_text(request, capacity, length,
+                       "Content-Type: application/json\r\nContent-Length: ") &&
+           append_size(request, capacity, length, body_length) &&
+           append_text(request, capacity, length, "\r\n"))) &&
+         append_text(request, capacity, length, "\r\n");
 }
 
 bool random_word(uint32_t &value) {
@@ -434,8 +455,12 @@ int read_response(bool https, char *output, size_t capacity) {
 
 } // namespace
 
-int fetch(const char *url_text, char *output, size_t output_capacity) {
+static int fetch_internal(const char *url_text, const uint8_t *body,
+                          size_t body_length, char *output,
+                          size_t output_capacity) {
   if (!output || output_capacity < 2)
+    return -1;
+  if ((body_length && !body) || body_length > 1024)
     return -1;
 
   if (url_text == nullptr)
@@ -463,7 +488,8 @@ int fetch(const char *url_text, char *output, size_t output_capacity) {
 
   char request[REQUEST_CAPACITY];
   size_t request_length;
-  if (!make_request(url, request, sizeof(request), request_length)) {
+  if (!make_request(url, body != nullptr, body_length, request,
+                    sizeof(request), request_length)) {
     tcp_close();
     return -3;
   }
@@ -497,6 +523,7 @@ int fetch(const char *url_text, char *output, size_t output_capacity) {
     br_sslio_init(&tls_io, &tls_client.eng, tls_read, nullptr, tls_write,
                   nullptr);
     if (br_sslio_write_all(&tls_io, request, request_length) < 0 ||
+        (body_length && br_sslio_write_all(&tls_io, body, body_length) < 0) ||
         br_sslio_flush(&tls_io) < 0) {
       int tls_error = br_ssl_engine_last_error(&tls_client.eng);
       tcp_close();
@@ -505,7 +532,8 @@ int fetch(const char *url_text, char *output, size_t output_capacity) {
     result = read_response(true, output, output_capacity);
   } else {
     if (tcp_write(reinterpret_cast<const uint8_t *>(request), request_length) <
-        0) {
+            0 ||
+        (body_length && tcp_write(body, body_length) < 0)) {
       tcp_close();
       return -7;
     }
@@ -513,6 +541,15 @@ int fetch(const char *url_text, char *output, size_t output_capacity) {
   }
   tcp_close();
   return result;
+}
+
+int fetch(const char *url, char *output, size_t output_capacity) {
+  return fetch_internal(url, nullptr, 0, output, output_capacity);
+}
+
+int fetch_post(const char *url, const uint8_t *body, size_t body_length,
+               char *output, size_t output_capacity) {
+  return fetch_internal(url, body, body_length, output, output_capacity);
 }
 
 } // namespace Kernel::Net

@@ -64,6 +64,9 @@ void run();
 namespace Calc {
 void run();
 }
+namespace YouTube {
+void run();
+}
 namespace Cube3D {
 void run();
 }
@@ -145,6 +148,7 @@ void run_shitpad() { Kernel::Apps::shitpad_run(); }
 void run_c3d() { Kernel::Apps::Cube3D::run(); }
 void run_pain() { Kernel::Apps::Pain::run(); }
 void run_calc() { Kernel::Apps::Calc::run(); }
+void run_youtube() { Kernel::Apps::YouTube::run(); }
 
 bool equals(const char *a, const char *b) {
   while (*a && *b && *a == *b) {
@@ -259,6 +263,7 @@ void help() {
   kprintf("  netinfo               Show network interface settings\n");
   kprintf("  fetch <url>           Fetch a bounded HTTP or verified "
                 "HTTPS response\n");
+  kprintf("  youtube               Search YouTube and show thumbnails\n");
   kprintf(
       "  tcp-echo <host> <port> <text>  Send text to a TCP echo service\n");
   kprintf("  about                 Kernel shell information\n");
@@ -675,7 +680,10 @@ void execute(char *line) {
     run_tcp_echo(args);
   else if (equals(line, "fetch"))
     run_fetch(args);
-  else if (equals(line, "fontcheck"))
+  else if (equals(line, "youtube")) {
+    if (!launch_app("YouTube", run_youtube))
+      kprintf("Could not launch YouTube.\n");
+  } else if (equals(line, "fontcheck"))
     run_fontcheck(args);
   else if (equals(line, "fontview")) {
     if (!launch_app("Font Viewer", Apps::font_viewer_run))

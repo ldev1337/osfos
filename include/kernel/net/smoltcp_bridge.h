@@ -33,5 +33,7 @@ int tcp_close();
 int tcp_echo(const char *host, uint16_t port, const char *message, char *output,
              size_t output_capacity, uint32_t timeout_ms);
 int fetch(const char *url, char *output, size_t output_capacity);
+int fetch_post(const char *url, const uint8_t *body, size_t body_length,
+               char *output, size_t output_capacity);
 
 } // namespace Kernel::Net

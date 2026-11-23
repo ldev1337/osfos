@@ -13,7 +13,7 @@ C_STD   = -std=c11
 CPP_STD = -std=c++20
 
 INCLUDES = -Iinclude -Ikernel/programs/doomgeneric -Ithird_party/bearssl/inc \
-  -Ithird_party/bearssl/src
+  -Ithird_party/bearssl/src -Ithird_party/stb
 
 RED_ZONE_FLAG = -mred-zone
 

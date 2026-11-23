@@ -27,6 +27,8 @@ Launch `pacman` from the shell to play Pac-Man. Use the arrow keys or WASD to mo
 
 Network commands: `netup` acquires IPv4 settings by DHCP, `netinfo` prints the interface configuration, `ping <host>` sends ICMP echo requests, `tcp-echo <host> <port> <text>` tests TCP, and `fetch <url>` prints a bounded HTTP or HTTPS response. HTTPS uses BearSSL v0.6 with hostname and certificate-date validation, CMOS RTC time, and RDRAND entropy. The initial trust store contains only GTS Root R1 and ISRG Root X1, so HTTPS hosts must chain to one of those roots. If the RTC or RDRAND is unavailable, HTTPS fails closed. The network stack is polled by these commands; it is not yet a background service.
 
+The `youtube` command opens a native search window. Enter a search term to query YouTube's public innertube search API over the existing verified HTTPS transport. The client parses video IDs, titles, channels, and relative timestamps, then fetches and decodes the selected result's `i.ytimg.com` JPEG thumbnail. Video/audio playback is still unavailable because OSFOS has no media codecs or application audio output yet.
+
 ## Source layout
 
 - `arch/` — x86_64 boot and architecture code
