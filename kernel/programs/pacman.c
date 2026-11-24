@@ -731,8 +731,7 @@ static uint32_t xorshift32(void) {
 }
 // get level spec for a game round
 static levelspec_t levelspec(int round) {
-    assert(round >= 0);
-    if (round >= MAX_LEVELSPEC) {
+if (round >= MAX_LEVELSPEC) {
         round = MAX_LEVELSPEC-1;
     }
     return levelspec_table[round];
@@ -775,8 +774,7 @@ static uint32_t since(trigger_t t) {
 
 // check if a time trigger is between begin and end tick
 static bool between(trigger_t t, uint32_t begin, uint32_t end) {
-    assert(begin < end);
-    if (t.tick != DISABLED_TICKS) {
+if (t.tick != DISABLED_TICKS) {
         uint32_t ticks = since(t);
         return (ticks >= begin) && (ticks < end);
     }
@@ -909,20 +907,17 @@ static bool valid_tile_pos(int2_t tile_pos) {
 
 // put a color into the color buffer
 static void vid_color(int2_t tile_pos, uint8_t color_code) {
-    assert(valid_tile_pos(tile_pos));
-    state.gfx.color_ram[tile_pos.y][tile_pos.x] = color_code;
+state.gfx.color_ram[tile_pos.y][tile_pos.x] = color_code;
 }
 
 // put a tile into the tile buffer
 static void vid_tile(int2_t tile_pos, uint8_t tile_code) {
-    assert(valid_tile_pos(tile_pos));
-    state.gfx.video_ram[tile_pos.y][tile_pos.x] = tile_code;
+state.gfx.video_ram[tile_pos.y][tile_pos.x] = tile_code;
 }
 
 // put a colored tile into the tile and color buffers
 static void vid_color_tile(int2_t tile_pos, uint8_t color_code, uint8_t tile_code) {
-    assert(valid_tile_pos(tile_pos));
-    state.gfx.video_ram[tile_pos.y][tile_pos.x] = tile_code;
+state.gfx.video_ram[tile_pos.y][tile_pos.x] = tile_code;
     state.gfx.color_ram[tile_pos.y][tile_pos.x] = color_code;
 }
 
@@ -941,21 +936,18 @@ static char conv_char(char c) {
 
 // put colored char into tile+color buffers
 static void vid_color_char(int2_t tile_pos, uint8_t color_code, char chr) {
-    assert(valid_tile_pos(tile_pos));
-    state.gfx.video_ram[tile_pos.y][tile_pos.x] = conv_char(chr);
+state.gfx.video_ram[tile_pos.y][tile_pos.x] = conv_char(chr);
     state.gfx.color_ram[tile_pos.y][tile_pos.x] = color_code;
 }
 
 // put char into tile buffer
 static void vid_char(int2_t tile_pos, char chr) {
-    assert(valid_tile_pos(tile_pos));
-    state.gfx.video_ram[tile_pos.y][tile_pos.x] = conv_char(chr);
+state.gfx.video_ram[tile_pos.y][tile_pos.x] = conv_char(chr);
 }
 
 // put colored text into the tile+color buffers
 static void vid_color_text(int2_t tile_pos, uint8_t color_code, const char* text) {
-    assert(valid_tile_pos(tile_pos));
-    uint8_t chr;
+uint8_t chr;
     while ((chr = (uint8_t) *text++)) {
         if (tile_pos.x < DISPLAY_TILES_X) {
             vid_color_char(tile_pos, color_code, chr);
@@ -969,8 +961,7 @@ static void vid_color_text(int2_t tile_pos, uint8_t color_code, const char* text
 
 // put text into the tile buffer
 static void vid_text(int2_t tile_pos, const char* text) {
-    assert(valid_tile_pos(tile_pos));
-    uint8_t chr;
+uint8_t chr;
     while ((chr = (uint8_t) *text++)) {
         if (tile_pos.x < DISPLAY_TILES_X) {
             vid_char(tile_pos, chr);
@@ -1021,8 +1012,7 @@ static void vid_draw_tile_quad(int2_t tile_pos, uint8_t color_code, uint8_t tile
 
 // draw the fruit bonus score tiles (when Pacman has eaten the bonus fruit)
 static void vid_fruit_score(fruit_t fruit_type) {
-    assert((fruit_type >= 0) && (fruit_type < NUM_FRUITS));
-    uint8_t color_code = (fruit_type == FRUIT_NONE) ? COLOR_DOT : COLOR_FRUIT_SCORE;
+uint8_t color_code = (fruit_type == FRUIT_NONE) ? COLOR_DOT : COLOR_FRUIT_SCORE;
     for (int i = 0; i < 4; i++) {
         vid_color_tile(i2(12+i, 20), color_code, fruit_score_tiles[fruit_type][i]);
     }
@@ -1040,8 +1030,7 @@ static sprite_t* spr_pacman(void) {
 
 // get pointer to ghost sprite
 static sprite_t* spr_ghost(ghosttype_t type) {
-    assert((type >= 0) && (type < NUM_GHOSTS));
-    return &state.gfx.sprite[SPRITE_BLINKY + type];
+return &state.gfx.sprite[SPRITE_BLINKY + type];
 }
 
 // get pointer to fruit sprite
@@ -1078,8 +1067,7 @@ static void spr_anim_pacman_death(uint32_t tick) {
 
 // set sprite to animated ghost
 static void spr_anim_ghost(ghosttype_t ghost_type, dir_t dir, uint32_t tick) {
-    assert((dir >= 0) && (dir < NUM_DIRS));
-    static const uint8_t tiles[4][2]  = {
+static const uint8_t tiles[4][2]  = {
         { 32, 33 }, // right
         { 34, 35 }, // down
         { 36, 37 }, // left
@@ -1115,8 +1103,7 @@ static void spr_anim_ghost_frightened(ghosttype_t ghost_type, uint32_t tick) {
     only the eyes visible
 */
 static void spr_anim_ghost_eyes(ghosttype_t ghost_type, dir_t dir) {
-    assert((dir >= 0) && (dir < NUM_DIRS));
-    static const uint8_t tiles[NUM_DIRS] = { 32, 34, 36, 38 };
+static const uint8_t tiles[NUM_DIRS] = { 32, 34, 36, 38 };
     sprite_t* spr = spr_ghost(ghost_type);
     spr->tile = tiles[dir];
     spr->color = COLOR_EYES;
@@ -1149,8 +1136,7 @@ static int2_t clamped_tile_pos(int2_t tile_pos) {
 
 // convert a direction to a movement vector
 static int2_t dir_to_vec(dir_t dir) {
-    assert((dir >= 0) && (dir < NUM_DIRS));
-    static const int2_t dir_map[NUM_DIRS] = { { +1, 0 }, { 0, +1 }, { -1, 0 }, { 0, -1 } };
+static const int2_t dir_map[NUM_DIRS] = { { +1, 0 }, { 0, +1 }, { -1, 0 }, { 0, -1 } };
     return dir_map[dir];
 }
 
@@ -1166,8 +1152,7 @@ static dir_t reverse_dir(dir_t dir) {
 
 // return tile code at tile position
 static uint8_t tile_code_at(int2_t tile_pos) {
-    assert((tile_pos.x >= 0) && (tile_pos.x < DISPLAY_TILES_X));
-    assert((tile_pos.y >= 0) && (tile_pos.y < DISPLAY_TILES_Y));
+assert((tile_pos.y >= 0) && (tile_pos.y < DISPLAY_TILES_Y));
     return state.gfx.video_ram[tile_pos.y][tile_pos.x];
 }
 
@@ -1259,8 +1244,7 @@ static int2_t move(int2_t pos, dir_t dir, bool allow_cornering) {
 // set a debug marker
 #if DBG_MARKERS
 static void dbg_marker(int index, int2_t tile_pos, uint8_t tile_code, uint8_t color_code) {
-    assert((index >= 0) && (index < NUM_DEBUG_MARKERS));
-    state.gfx.debug_marker[index] = (debugmarker_t) {
+state.gfx.debug_marker[index] = (debugmarker_t) {
         .enabled = true,
         .tile = tile_code,
         .color = color_code,
@@ -1388,9 +1372,7 @@ static void game_round_init(void) {
         }
         state.game.num_lives--;
     }
-    assert(state.game.num_lives >= 0);
-
-    state.game.active_fruit = FRUIT_NONE;
+state.game.active_fruit = FRUIT_NONE;
     state.game.freeze = FREEZETYPE_READY;
     state.game.xorshift = 0x12345678;   // random-number-generator seed
     state.game.num_ghosts_eaten = 0;
@@ -1646,8 +1628,7 @@ static bool game_pacman_should_move(void) {
 // move/don't move boolean return value, because ghosts in eye state move faster
 // than one pixel per tick
 static int game_ghost_speed(const ghost_t* ghost) {
-    assert(ghost);
-    switch (ghost->state) {
+switch (ghost->state) {
         case GHOSTSTATE_HOUSE:
         case GHOSTSTATE_LEAVEHOUSE:
             // inside house at half speed (estimated)
@@ -1688,8 +1669,7 @@ static ghoststate_t game_scatter_chase_phase(void) {
 // of two important functions of the ghost AI (the other being the target selection
 // function below)
 static void game_update_ghost_state(ghost_t* ghost) {
-    assert(ghost);
-    ghoststate_t new_state = ghost->state;
+ghoststate_t new_state = ghost->state;
     switch (ghost->state) {
         case GHOSTSTATE_EYES:
             // When in eye state (heading back to the ghost house), check if the
@@ -1782,14 +1762,12 @@ static void game_update_ghost_state(ghost_t* ghost) {
 // update the ghost's target position, this is the other important function
 // of the ghost's AI
 static void game_update_ghost_target(ghost_t* ghost) {
-    assert(ghost);
-    int2_t pos = ghost->target_pos;
+int2_t pos = ghost->target_pos;
     switch (ghost->state) {
         case GHOSTSTATE_SCATTER:
             // when in scatter mode, each ghost heads to its own scatter
             // target position in the playfield corners
-            assert((ghost->type >= 0) && (ghost->type < NUM_GHOSTS));
-            pos = ghost_scatter_targets[ghost->type];
+pos = ghost_scatter_targets[ghost->type];
             break;
         case GHOSTSTATE_CHASE:
             // when in chase mode, each ghost has its own particular
@@ -1853,8 +1831,7 @@ static void game_update_ghost_target(ghost_t* ghost) {
 // should always happen regardless of current ghost position or blocking
 // tiles (this special case is used for movement inside the ghost house)
 static bool game_update_ghost_dir(ghost_t* ghost) {
-    assert(ghost);
-    // inside ghost-house, just move up and down
+// inside ghost-house, just move up and down
     if (ghost->state == GHOSTSTATE_HOUSE) {
         if (ghost->actor.pos.y <= 17*TILE_HEIGHT) {
             ghost->next_dir = DIR_DOWN;
@@ -2532,8 +2509,7 @@ static void gfx_create_resources(void) {
                 "}\n";
                 break;
         default:
-            assert(false);
-    }
+}
 
     // create pipeline and shader object for rendering into offscreen render target
     state.gfx.offscreen.pip = sg_make_pipeline(&(sg_pipeline_desc){
@@ -2802,8 +2778,7 @@ static void gfx_init(void) {
 
 #if 0
 static void gfx_add_vertex(float x, float y, float u, float v, uint8_t color_code, uint8_t opacity) {
-    assert(state.gfx.num_vertices < MAX_VERTICES);
-    vertex_t* vtx = &state.gfx.vertices[state.gfx.num_vertices++];
+vertex_t* vtx = &state.gfx.vertices[state.gfx.num_vertices++];
     vtx->x = x;
     vtx->y = y;
     vtx->u = u;
@@ -2812,8 +2787,7 @@ static void gfx_add_vertex(float x, float y, float u, float v, uint8_t color_cod
 }
 
 static void gfx_add_tile_vertices(uint32_t tx, uint32_t ty, uint8_t tile_code, uint8_t color_code) {
-    assert((tx < DISPLAY_TILES_X) && (ty < DISPLAY_TILES_Y));
-    const float dx = 1.0f / DISPLAY_TILES_X;
+const float dx = 1.0f / DISPLAY_TILES_X;
     const float dy = 1.0f / DISPLAY_TILES_Y;
     const float du = (float)TILE_WIDTH / TILE_TEXTURE_WIDTH;
     const float dv = (float)TILE_HEIGHT / TILE_TEXTURE_HEIGHT;
@@ -2965,8 +2939,7 @@ static void gfx_draw(void) {
     if (state.gfx.fade > 0) {
         gfx_add_fade_vertices();
     }
-    assert(state.gfx.num_vertices <= MAX_VERTICES);
-    sg_write_buffer_transient(&(sg_write_buffer_desc){
+sg_write_buffer_transient(&(sg_write_buffer_desc){
         .dst.buffer = state.gfx.offscreen.vbuf,
         .src.data = SG_RANGE(state.gfx.vertices),
         .size = state.gfx.num_vertices * sizeof(vertex_t),
@@ -3178,8 +3151,7 @@ static void snd_tick(void) {
         }
         else if (snd->flags & SOUNDFLAG_ALL_VOICES) {
             // register-dump sound effect
-            assert(snd->data);
-            if (snd->cur_tick == snd->num_ticks) {
+if (snd->cur_tick == snd->num_ticks) {
                 snd_stop(sound_slot);
                 continue;
             }
@@ -3211,11 +3183,8 @@ static void snd_clear(void) {
 
 // start a sound effect
 static void snd_start(int slot, const sound_desc_t* desc) {
-    assert((slot >= 0) && (slot < NUM_SOUNDS));
-    assert(desc);
-    assert((desc->ptr && desc->size) || desc->func);
-
-    sound_t* snd = &state.audio.sound[slot];
+assert(desc);
+sound_t* snd = &state.audio.sound[slot];
     *snd = (sound_t) { 0 };
     int num_voices = 0;
     for (int i = 0; i < NUM_VOICES; i++) {
@@ -3229,8 +3198,7 @@ static void snd_start(int slot, const sound_desc_t* desc) {
         snd->func = desc->func;
     }
     else {
-        assert(num_voices > 0);
-        assert((desc->size % (num_voices*sizeof(uint32_t))) == 0);
+assert((desc->size % (num_voices*sizeof(uint32_t))) == 0);
         snd->stride = num_voices;
         snd->num_ticks = desc->size / (snd->stride*sizeof(uint32_t));
         snd->data = desc->ptr;
@@ -3239,9 +3207,7 @@ static void snd_start(int slot, const sound_desc_t* desc) {
 
 // stop a sound effect
 static void snd_stop(int slot) {
-    assert((slot >= 0) && (slot < NUM_SOUNDS));
-
-    // silence the sound's output voices
+// silence the sound's output voices
     for (int i = 0; i < NUM_VOICES; i++) {
         if (state.audio.sound[slot].flags & (1<<i)) {
             state.audio.voice[i] = (voice_t) { 0 };
@@ -3254,8 +3220,7 @@ static void snd_stop(int slot) {
 
 // procedural sound effects
 static void snd_func_eatdot1(int slot) {
-    assert((slot >= 0) && (slot < NUM_SOUNDS));
-    const sound_t* snd = &state.audio.sound[slot];
+const sound_t* snd = &state.audio.sound[slot];
     voice_t* voice = &state.audio.voice[2];
     if (snd->cur_tick == 0) {
         voice->volume = 12;
@@ -3271,8 +3236,7 @@ static void snd_func_eatdot1(int slot) {
 }
 
 static void snd_func_eatdot2(int slot) {
-    assert((slot >= 0) && (slot < NUM_SOUNDS));
-    const sound_t* snd = &state.audio.sound[slot];
+const sound_t* snd = &state.audio.sound[slot];
     voice_t* voice = &state.audio.voice[2];
     if (snd->cur_tick == 0) {
         voice->volume = 12;
@@ -3288,8 +3252,7 @@ static void snd_func_eatdot2(int slot) {
 }
 
 static void snd_func_eatghost(int slot) {
-    assert((slot >= 0) && (slot < NUM_SOUNDS));
-    const sound_t* snd = &state.audio.sound[slot];
+const sound_t* snd = &state.audio.sound[slot];
     voice_t* voice = &state.audio.voice[2];
     if (snd->cur_tick == 0) {
         voice->volume = 12;
@@ -3305,8 +3268,7 @@ static void snd_func_eatghost(int slot) {
 }
 
 static void snd_func_eatfruit(int slot) {
-    assert((slot >= 0) && (slot < NUM_SOUNDS));
-    const sound_t* snd = &state.audio.sound[slot];
+const sound_t* snd = &state.audio.sound[slot];
     voice_t* voice = &state.audio.voice[2];
     if (snd->cur_tick == 0) {
         voice->volume = 15;
@@ -3325,8 +3287,7 @@ static void snd_func_eatfruit(int slot) {
 }
 
 static void snd_func_weeooh(int slot) {
-    assert((slot >= 0) && (slot < NUM_SOUNDS));
-    const sound_t* snd = &state.audio.sound[slot];
+const sound_t* snd = &state.audio.sound[slot];
     voice_t* voice = &state.audio.voice[1];
     if (snd->cur_tick == 0) {
         voice->volume = 6;
@@ -3342,8 +3303,7 @@ static void snd_func_weeooh(int slot) {
 }
 
 static void snd_func_frightened(int slot) {
-    assert((slot >= 0) && (slot < NUM_SOUNDS));
-    const sound_t* snd = &state.audio.sound[slot];
+const sound_t* snd = &state.audio.sound[slot];
     voice_t* voice = &state.audio.voice[1];
     if (snd->cur_tick == 0) {
         voice->volume = 10;

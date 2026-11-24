@@ -7,13 +7,25 @@
 
 namespace Kernel::Drivers {
 
-static Spinlock keyboard_lock;
+namespace {
 
-static bool keyboard_focus_allows_input() {
+Spinlock keyboard_lock;
+
+bool left_shift_pressed = false;
+bool right_shift_flag = false;
+bool left_ctrl_pressed = false;
+bool right_ctrl_flag = false;
+bool left_alt_pressed = false;
+bool right_alt_flag = false;
+uint8_t pause_bytes_remaining = 0;
+
+bool keyboard_focus_allows_input() {
   const uint64_t tid = Kernel::Scheduler::current_thread_id();
   return !Kernel::Graphics::WindowManager::has_window(tid) ||
          Kernel::Graphics::WindowManager::has_keyboard_focus(tid);
 }
+
+} // namespace
 
 bool Keyboard::rx_buffer_empty() {
   SpinlockGuard guard(keyboard_lock);
@@ -73,7 +85,7 @@ const char kbd_US_extended[128] = {
     0, 0, 0, 0, 0, 0, 0,    0, 0, 0,   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0,    0, 0, 0,   0, 0, 0, 0, 0, 0, 0, 0};
 
-// Special scancodes
+// Special scancodes (Set 1)
 constexpr uint8_t SCANCODE_LSHIFT = 0x2A;
 constexpr uint8_t SCANCODE_RSHIFT = 0x36;
 constexpr uint8_t SCANCODE_LCTRL = 0x1D;
@@ -94,7 +106,6 @@ void __init Keyboard::init() {
   int timeout = 100000;
   while ((inb(0x64) & 0x02) && --timeout)
     ;
-
   if (!timeout)
     return;
 
@@ -103,7 +114,6 @@ void __init Keyboard::init() {
   timeout = 100000;
   while (!(inb(0x64) & 0x01) && --timeout)
     ;
-
   if (!timeout)
     return;
 
@@ -115,7 +125,6 @@ void __init Keyboard::init() {
   timeout = 100000;
   while ((inb(0x64) & 0x02) && --timeout)
     ;
-
   if (!timeout)
     return;
 
@@ -124,7 +133,6 @@ void __init Keyboard::init() {
   timeout = 100000;
   while ((inb(0x64) & 0x02) && --timeout)
     ;
-
   if (!timeout)
     return;
 
@@ -149,7 +157,7 @@ void __init Keyboard::init() {
   if (timeout)
     inb(0x60);
 
-  // Send LED state command to keyboard to synchronize Lock LEDs
+  // Synchronize Lock LEDs
   update_leds();
 
   // Unmask IRQ1 on the master PIC.
@@ -164,8 +172,7 @@ bool Keyboard::available() {
   const uint64_t thread_id = Kernel::Scheduler::current_thread_id();
   if (rx_buffer_owner != 0 && rx_buffer_owner != thread_id)
     rx_buffer.clear();
-  bool result = !rx_buffer.empty();
-  return result;
+  return !rx_buffer.empty();
 }
 
 char Keyboard::getchar() {
@@ -181,8 +188,8 @@ char Keyboard::getchar() {
         rx_buffer.clear();
         continue;
       }
-      char c = rx_buffer.pop();
-      return c;
+      if (!rx_buffer.empty())
+        return rx_buffer.pop();
     }
   }
 }
@@ -191,14 +198,15 @@ void Keyboard::handle_interrupt() {
   const uint64_t input_owner =
       Kernel::Graphics::WindowManager::keyboard_focus_thread_id();
   bool wake_waiters = false;
+
   {
     SpinlockGuard guard(keyboard_lock);
-    uint8_t status = inb(0x64);
+    const uint8_t status = inb(0x64);
     if (!(status & 0x01) || (status & 0x20)) {
       return;
     }
 
-    uint8_t scancode = inb(0x60);
+    const uint8_t scancode = inb(0x60);
     if (scancode == 0xFA || scancode == 0xFE) {
       return;
     }
@@ -208,12 +216,18 @@ void Keyboard::handle_interrupt() {
       rx_buffer_owner = input_owner;
     }
 
-    if (scancode == SCANCODE_PAUSE1) {
-      pause_state = true;
+    // Consume the remaining 5 bytes of the 6-byte PS/2 Pause sequence
+    // (E1 1D 45 E1 9D C5) so it does not leak into NumLock or key states.
+    if (pause_bytes_remaining > 0) {
+      --pause_bytes_remaining;
+      pause_state = (pause_bytes_remaining > 0);
       return;
     }
-    if (pause_state) {
-      pause_state = false;
+
+    if (scancode == SCANCODE_PAUSE1) {
+      pause_bytes_remaining = 5;
+      pause_state = true;
+      extended_code = false;
       return;
     }
 
@@ -222,105 +236,93 @@ void Keyboard::handle_interrupt() {
       return;
     }
 
-    bool is_release = (scancode & 0x80) != 0;
-    uint8_t base_scancode = scancode & 0x7F;
+    const bool was_extended = extended_code;
+    extended_code = false;
 
-    if (extended_code) {
-      if (base_scancode < 128) {
-        extended_key_states[base_scancode] = !is_release;
-      }
-    } else {
-      if (base_scancode < 128) {
-        key_states[base_scancode] = !is_release;
+    const bool is_release = (scancode & 0x80) != 0;
+    const uint8_t base_scancode = scancode & 0x7F;
+    const bool pressed = !is_release;
+
+    if (base_scancode < 128) {
+      if (was_extended) {
+        extended_key_states[base_scancode] = pressed;
+      } else {
+        key_states[base_scancode] = pressed;
       }
     }
 
-    if (extended_code) {
+    auto sync_modifiers = [&]() {
+      shift_pressed = left_shift_pressed || right_shift_flag;
+      right_shift_pressed = right_shift_flag;
+      ctrl_pressed = left_ctrl_pressed || right_ctrl_flag;
+      right_ctrl_pressed = right_ctrl_flag;
+      alt_pressed = left_alt_pressed || right_alt_flag;
+      right_alt_pressed = right_alt_flag;
+    };
+
+    if (was_extended) {
       if (base_scancode == 0x1D) {
-        right_ctrl_pressed = !is_release;
-        ctrl_pressed = right_ctrl_pressed || ctrl_pressed;
-        extended_code = false;
+        right_ctrl_flag = pressed;
+        sync_modifiers();
         return;
       }
       if (base_scancode == 0x38) {
-        right_alt_pressed = !is_release;
-        alt_pressed = right_alt_pressed || alt_pressed;
-        extended_code = false;
+        right_alt_flag = pressed;
+        sync_modifiers();
         return;
       }
     } else {
       if (base_scancode == SCANCODE_LSHIFT) {
-        shift_pressed = !is_release;
-        extended_code = false;
+        left_shift_pressed = pressed;
+        sync_modifiers();
         return;
       }
       if (base_scancode == SCANCODE_RSHIFT) {
-        right_shift_pressed = !is_release;
-        shift_pressed = right_shift_pressed || shift_pressed;
-        extended_code = false;
+        right_shift_flag = pressed;
+        sync_modifiers();
         return;
       }
       if (base_scancode == SCANCODE_LCTRL) {
-        ctrl_pressed = !is_release;
-        extended_code = false;
+        left_ctrl_pressed = pressed;
+        sync_modifiers();
         return;
       }
       if (base_scancode == SCANCODE_LALT) {
-        alt_pressed = !is_release;
-        extended_code = false;
+        left_alt_pressed = pressed;
+        sync_modifiers();
         return;
       }
-      if (base_scancode == SCANCODE_CAPSLOCK && !is_release) {
-        caps_lock_active = !caps_lock_active;
-        update_leds();
-        extended_code = false;
-        return;
-      }
-      if (base_scancode == SCANCODE_NUMLOCK && !is_release) {
-        num_lock_active = !num_lock_active;
-        update_leds();
-        extended_code = false;
-        return;
-      }
-      if (base_scancode == SCANCODE_SCROLLLOCK && !is_release) {
-        scroll_lock_active = !scroll_lock_active;
-        update_leds();
-        extended_code = false;
-        return;
+      if (!is_release) {
+        if (base_scancode == SCANCODE_CAPSLOCK) {
+          caps_lock_active = !caps_lock_active;
+          update_leds();
+          return;
+        }
+        if (base_scancode == SCANCODE_NUMLOCK) {
+          num_lock_active = !num_lock_active;
+          update_leds();
+          return;
+        }
+        if (base_scancode == SCANCODE_SCROLLLOCK) {
+          scroll_lock_active = !scroll_lock_active;
+          update_leds();
+          return;
+        }
       }
     }
 
     if (is_release) {
-      if (!extended_code) {
-        if (base_scancode == SCANCODE_LSHIFT)
-          shift_pressed = false;
-        if (base_scancode == SCANCODE_RSHIFT)
-          right_shift_pressed = false;
-        if (base_scancode == SCANCODE_LCTRL)
-          ctrl_pressed = false;
-        if (base_scancode == SCANCODE_LALT)
-          alt_pressed = false;
-      } else {
-        if (base_scancode == 0x1D)
-          right_ctrl_pressed = false;
-        if (base_scancode == 0x38)
-          right_alt_pressed = false;
-      }
-      shift_pressed = shift_pressed || right_shift_pressed;
-      ctrl_pressed = ctrl_pressed || right_ctrl_pressed;
-      alt_pressed = alt_pressed || right_alt_pressed;
-      extended_code = false;
       return;
     }
 
     if (base_scancode < 128) {
       char ascii = 0;
 
-      if (extended_code) {
+      if (was_extended) {
         ascii = kbd_US_extended[base_scancode];
       } else {
         bool use_shift = shift_pressed;
-        char normal_char = kbd_US[base_scancode];
+        const char normal_char = kbd_US[base_scancode];
 
         if (caps_lock_active && normal_char >= 'a' && normal_char <= 'z') {
           use_shift = !use_shift;
@@ -334,9 +336,8 @@ void Keyboard::handle_interrupt() {
         wake_waiters = true;
       }
     }
-
-    extended_code = false;
   }
+
   if (wake_waiters)
     Kernel::Scheduler::unblock_io_threads();
 }
@@ -361,17 +362,17 @@ bool Keyboard::is_extended_pressed(uint8_t scancode) {
 
 bool Keyboard::is_shift_pressed() {
   SpinlockGuard guard(keyboard_lock);
-  return shift_pressed || right_shift_pressed;
+  return shift_pressed;
 }
 
 bool Keyboard::is_ctrl_pressed() {
   SpinlockGuard guard(keyboard_lock);
-  return ctrl_pressed || right_ctrl_pressed;
+  return ctrl_pressed;
 }
 
 bool Keyboard::is_alt_pressed() {
   SpinlockGuard guard(keyboard_lock);
-  return alt_pressed || right_alt_pressed;
+  return alt_pressed;
 }
 
 bool Keyboard::is_caps_lock_active() {

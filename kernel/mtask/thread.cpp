@@ -4,10 +4,12 @@
 #if SCHED_TRACE
 #include <kernel/debug/debug.h>
 #endif
-#include <string.h>
 #include <kernel/drivers/tsc_deadline.h>
+#include <kernel/graphics/lwm.h>
 #include <kernel/memory/heap.h>
 #include <kernel/mtask/internal.h>
+#include <stdlib.h>
+#include <string.h>
 
 namespace Kernel::Scheduler {
 
@@ -217,9 +219,13 @@ auto should_stop() -> bool {
 }
 
 [[noreturn]] void thread_exit() {
-  (void)irq_save();
   CpuSchedulerState &state = cpu_state();
   ThreadControlBlock *const current = state.current;
+  if (current && current != state.idle) {
+    Kernel::Graphics::WindowManager::unregister_window(current->id);
+  }
+
+  (void)irq_save();
   if (current && current != state.idle) {
     current->state = ThreadState::TERMINATED;
     current->timed_wait = false;
@@ -233,3 +239,8 @@ auto should_stop() -> bool {
 #undef SCHED_UNLIKELY
 
 } // namespace Kernel::Scheduler
+
+extern "C" [[noreturn]] void exit(int status) {
+  (void)status;
+  Kernel::Scheduler::thread_exit();
+}

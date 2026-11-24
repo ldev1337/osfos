@@ -372,8 +372,6 @@ long ftell(FILE *stream) {
   return Kernel::FS::VFS::vfs_tell(stream->stream);
 }
 
-int abs(int j) { return (j < 0) ? -j : j; }
-
 double fabs(double x) { return (x < 0.0) ? -x : x; }
 
 long strtol(const char *nptr, char **endptr, int base) {
@@ -449,15 +447,6 @@ double strtod(const char *nptr, char **endptr) {
   return static_cast<double>(strtol(nptr, endptr, 10));
 }
 
-void exit(int status) {
-  if (Kernel::Scheduler::is_current_thread_application())
-    Kernel::AppCommon::exit(status);
-  kprintf("\nProcess exited with status %d\n", status);
-  for (;;) {
-    __asm__ volatile("cli; hlt");
-  }
-}
-
 int system(const char *command) {
   (void)command;
   errno_val = 38;
@@ -525,10 +514,6 @@ int sscanf(const char *str, const char *format, ...) {
   int ret = vscanf_internal(str, format, args);
   va_end(args);
   return ret;
-}
-
-int atoi(const char *nptr) {
-  return static_cast<int>(strtol(nptr, nullptr, 10));
 }
 
 long atol(const char *nptr) { return strtol(nptr, nullptr, 10); }

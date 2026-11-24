@@ -1,3 +1,4 @@
+#include "doomgeneric/doomkeys.h"
 #include <cstddef>
 #include <cstdint>
 #include <kernel/drivers/keyboard.h>
@@ -23,10 +24,60 @@
 #define KEY_LEFTARROW 0xac
 #define KEY_UPARROW 0xad
 #define KEY_DOWNARROW 0xaf
+#define KEY_STRAFE_L 0xa0
+#define KEY_STRAFE_R 0xa1
+#define KEY_USE 0xa2
+#define KEY_FIRE 0xa3
 #define KEY_ESCAPE 27
 #define KEY_ENTER 13
+#define KEY_TAB 9
+#define KEY_F1 (0x80 + 0x3b)
+#define KEY_F2 (0x80 + 0x3c)
+#define KEY_F3 (0x80 + 0x3d)
+#define KEY_F4 (0x80 + 0x3e)
+#define KEY_F5 (0x80 + 0x3f)
+#define KEY_F6 (0x80 + 0x40)
+#define KEY_F7 (0x80 + 0x41)
+#define KEY_F8 (0x80 + 0x42)
+#define KEY_F9 (0x80 + 0x43)
+#define KEY_F10 (0x80 + 0x44)
+#define KEY_F11 (0x80 + 0x57)
+#define KEY_F12 (0x80 + 0x58)
+#define KEY_BACKSPACE 0x7f
+#define KEY_PAUSE 0xff
+#define KEY_EQUALS 0x3d
+#define KEY_MINUS 0x2d
+#define KEY_RSHIFT (0x80 + 0x36)
 #define KEY_RCTRL (0x80 + 0x1d)
 #define KEY_RALT (0x80 + 0x38)
+#define KEY_LALT KEY_RALT
+#define KEY_CAPSLOCK (0x80 + 0x3a)
+#define KEY_NUMLOCK (0x80 + 0x45)
+#define KEY_SCRLCK (0x80 + 0x46)
+#define KEY_PRTSCR (0x80 + 0x59)
+#define KEY_HOME (0x80 + 0x47)
+#define KEY_END (0x80 + 0x4f)
+#define KEY_PGUP (0x80 + 0x49)
+#define KEY_PGDN (0x80 + 0x51)
+#define KEY_INS (0x80 + 0x52)
+#define KEY_DEL (0x80 + 0x53)
+#define KEYP_0 0
+#define KEYP_1 KEY_END
+#define KEYP_2 KEY_DOWNARROW
+#define KEYP_3 KEY_PGDN
+#define KEYP_4 KEY_LEFTARROW
+#define KEYP_5 '5'
+#define KEYP_6 KEY_RIGHTARROW
+#define KEYP_7 KEY_HOME
+#define KEYP_8 KEY_UPARROW
+#define KEYP_9 KEY_PGUP
+#define KEYP_DIVIDE '/'
+#define KEYP_PLUS '+'
+#define KEYP_MINUS '-'
+#define KEYP_MULTIPLY '*'
+#define KEYP_PERIOD 0
+#define KEYP_EQUALS KEY_EQUALS
+#define KEYP_ENTER KEY_ENTER
 
 struct KeyMapping {
   uint8_t scancode;
@@ -83,33 +134,148 @@ void DG_SleepMs(uint32_t ms) { Kernel::Scheduler::thread_sleep_ms(ms); }
 uint32_t DG_GetTicksMs() { return Kernel::Drivers::TSCDeadline::get_ticks(); }
 
 int DG_GetKey(int *pressed, unsigned char *doomKey) {
-  static const KeyMapping mappings[] = {
-      {0x48, true, KEY_UPARROW},   {0x50, true, KEY_DOWNARROW},
-      {0x4B, true, KEY_LEFTARROW}, {0x4D, true, KEY_RIGHTARROW},
-      {0x1C, false, KEY_ENTER},    {0x39, false, ' '},
-      {0x1D, false, KEY_RCTRL},    {0x38, false, KEY_RALT},
-      {0x01, false, KEY_ESCAPE},
+  // PS/2 Scancode Set 1 -> DOOM keycode (0 = unmapped)
+  // DOOM expects lowercase ASCII for letters/symbols and KEY_* for specials.
+  static constexpr unsigned char normal_keymap[128] = {
+      /* 0x00 */ 0,
+      /* 0x01 */ KEY_ESCAPE,
+      /* 0x02 */ '1',
+      /* 0x03 */ '2',
+      /* 0x04 */ '3',
+      /* 0x05 */ '4',
+      /* 0x06 */ '5',
+      /* 0x07 */ '6',
+      /* 0x08 */ '7',
+      /* 0x09 */ '8',
+      /* 0x0A */ '9',
+      /* 0x0B */ '0',
+      /* 0x0C */ KEY_MINUS,
+      /* 0x0D */ KEY_EQUALS,
+      /* 0x0E */ KEY_BACKSPACE,
+      /* 0x0F */ KEY_TAB,
+      /* 0x10 */ 'q',
+      /* 0x11 */ 'w',
+      /* 0x12 */ 'e',
+      /* 0x13 */ 'r',
+      /* 0x14 */ 't',
+      /* 0x15 */ 'y',
+      /* 0x16 */ 'u',
+      /* 0x17 */ 'i',
+      /* 0x18 */ 'o',
+      /* 0x19 */ 'p',
+      /* 0x1A */ '[',
+      /* 0x1B */ ']',
+      /* 0x1C */ KEY_ENTER,
+      /* 0x1D */ KEY_RCTRL, // Left Ctrl -> Fire
+      /* 0x1E */ 'a',
+      /* 0x1F */ 's',
+      /* 0x20 */ 'd',
+      /* 0x21 */ 'f',
+      /* 0x22 */ 'g',
+      /* 0x23 */ 'h',
+      /* 0x24 */ 'j',
+      /* 0x25 */ 'k',
+      /* 0x26 */ 'l',
+      /* 0x27 */ ';',
+      /* 0x28 */ '\'',
+      /* 0x29 */ '`',
+      /* 0x2A */ KEY_RSHIFT, // Left Shift -> Run
+      /* 0x2B */ '\\',
+      /* 0x2C */ 'z',
+      /* 0x2D */ 'x',
+      /* 0x2E */ 'c',
+      /* 0x2F */ 'v',
+      /* 0x30 */ 'b',
+      /* 0x31 */ 'n',
+      /* 0x32 */ 'm',
+      /* 0x33 */ ',',
+      /* 0x34 */ '.',
+      /* 0x35 */ '/',
+      /* 0x36 */ KEY_RSHIFT, // Right Shift -> Run
+      /* 0x37 */ KEYP_MULTIPLY,
+      /* 0x38 */ KEY_RALT, // Left Alt -> Strafe modifier
+      /* 0x39 */ ' ',      // Space -> Use / Open doors
+      /* 0x3A */ KEY_CAPSLOCK,
+      /* 0x3B */ KEY_F1,
+      /* 0x3C */ KEY_F2,
+      /* 0x3D */ KEY_F3,
+      /* 0x3E */ KEY_F4,
+      /* 0x3F */ KEY_F5,
+      /* 0x40 */ KEY_F6,
+      /* 0x41 */ KEY_F7,
+      /* 0x42 */ KEY_F8,
+      /* 0x43 */ KEY_F9,
+      /* 0x44 */ KEY_F10,
+      /* 0x45 */ KEY_NUMLOCK,
+      /* 0x46 */ KEY_SCRLCK,
+      /* 0x47 */ KEYP_7,
+      /* 0x48 */ KEYP_8,
+      /* 0x49 */ KEYP_9,
+      /* 0x4A */ KEYP_MINUS,
+      /* 0x4B */ KEYP_4,
+      /* 0x4C */ KEYP_5,
+      /* 0x4D */ KEYP_6,
+      /* 0x4E */ KEYP_PLUS,
+      /* 0x4F */ KEYP_1,
+      /* 0x50 */ KEYP_2,
+      /* 0x51 */ KEYP_3,
+      /* 0x52 */ KEYP_0,
+      /* 0x53 */ KEYP_PERIOD,
+      /* 0x54 */ 0,
+      /* 0x55 */ 0,
+      /* 0x56 */ '\\',
+      /* 0x57 */ KEY_F11,
+      /* 0x58 */ KEY_F12,
   };
 
-  static bool last_states[16] = {false};
-  static bool last_ext_states[16] = {false};
+  // E0-prefixed Set 1 scancodes -> DOOM keycode
+  static constexpr unsigned char extended_keymap[128] = {
+      /* 0x1C */ [0x1C] = KEYP_ENTER,
+      /* 0x1D */ [0x1D] = KEY_RCTRL,
+      /* 0x35 */ [0x35] = KEYP_DIVIDE,
+      /* 0x37 */ [0x37] = KEY_PRTSCR,
+      /* 0x38 */ [0x38] = KEY_RALT,
+      /* 0x47 */ [0x47] = KEY_HOME,
+      /* 0x48 */ [0x48] = KEY_UPARROW,
+      /* 0x49 */ [0x49] = KEY_PGUP,
+      /* 0x4B */ [0x4B] = KEY_LEFTARROW,
+      /* 0x4D */ [0x4D] = KEY_RIGHTARROW,
+      /* 0x4F */ [0x4F] = KEY_END,
+      /* 0x50 */ [0x50] = KEY_DOWNARROW,
+      /* 0x51 */ [0x51] = KEY_PGDN,
+      /* 0x52 */ [0x52] = KEY_INS,
+      /* 0x53 */ [0x53] = KEY_DEL,
+  };
 
-  for (size_t i = 0; i < sizeof(mappings) / sizeof(mappings[0]); ++i) {
-    bool current =
-        mappings[i].extended
-            ? Kernel::Drivers::Keyboard::is_extended_pressed(
-                  mappings[i].scancode)
-            : Kernel::Drivers::Keyboard::is_pressed(mappings[i].scancode);
+  static bool last_states[128] = {false};
+  static bool last_ext_states[128] = {false};
 
-    bool &last = mappings[i].extended ? last_ext_states[i] : last_states[i];
-
-    if (current != last) {
-      last = current;
-      *pressed = current ? 1 : 0;
-      *doomKey = mappings[i].doom_key;
-      return 1;
+  for (uint8_t sc = 1; sc < 128; ++sc) {
+    const unsigned char dk = normal_keymap[sc];
+    if (dk != 0) {
+      const bool current = Kernel::Drivers::Keyboard::is_pressed(sc);
+      if (current != last_states[sc]) {
+        last_states[sc] = current;
+        *pressed = current ? 1 : 0;
+        *doomKey = dk;
+        return 1;
+      }
     }
   }
+
+  for (uint8_t sc = 1; sc < 128; ++sc) {
+    const unsigned char dk = extended_keymap[sc];
+    if (dk != 0) {
+      const bool current = Kernel::Drivers::Keyboard::is_extended_pressed(sc);
+      if (current != last_ext_states[sc]) {
+        last_ext_states[sc] = current;
+        *pressed = current ? 1 : 0;
+        *doomKey = dk;
+        return 1;
+      }
+    }
+  }
+
   return 0;
 }
 

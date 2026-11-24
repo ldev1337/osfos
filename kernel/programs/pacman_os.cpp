@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstdint>
 
 #include <kernel/drivers/keyboard.h>
@@ -13,8 +14,7 @@ void pacman_game_input(bool up, bool down, bool left, bool right, bool escape,
                        bool anykey);
 void pacman_game_shutdown(void);
 
-bool pacman_os_present(const uint32_t *pixels, uint32_t width,
-                       uint32_t height);
+bool pacman_os_present(const uint32_t *pixels, uint32_t width, uint32_t height);
 }
 
 namespace Kernel::Games::Pacman {
@@ -24,6 +24,8 @@ constexpr uint32_t kGameHeight = 288;
 constexpr uint32_t kWindowWidth = 448;
 constexpr uint32_t kWindowHeight = 576;
 
+alignas(64) uint32_t
+    g_window_pixels[static_cast<size_t>(kWindowWidth) * kWindowHeight];
 Kernel::Graphics::VirtualFramebuffer window;
 
 bool key_down(uint8_t scancode, bool extended = false) {
@@ -42,31 +44,49 @@ extern "C" bool pacman_os_present(const uint32_t *pixels, uint32_t width,
   const uint32_t target_width = window.width();
   const uint32_t target_height = window.height();
   uint32_t *target = window.buffer();
+  if (!target || target_width == 0 || target_height == 0)
+    return false;
+
   for (uint32_t y = 0; y < target_height; ++y) {
-    const uint32_t source_y =
-        static_cast<uint32_t>(static_cast<uint64_t>(y) * height / target_height);
+    const uint32_t source_y = static_cast<uint32_t>(static_cast<uint64_t>(y) *
+                                                    height / target_height);
     for (uint32_t x = 0; x < target_width; ++x) {
-      const uint32_t source_x =
-          static_cast<uint32_t>(static_cast<uint64_t>(x) * width / target_width);
+      const uint32_t source_x = static_cast<uint32_t>(static_cast<uint64_t>(x) *
+                                                      width / target_width);
       target[static_cast<size_t>(y) * target_width + x] =
           pixels[static_cast<size_t>(source_y) * width + source_x];
     }
   }
-  window.flush();
-  return true;
+
+  return Kernel::Graphics::WindowManager::present(
+      Kernel::Scheduler::current_thread_id(), target, target_width,
+      target_height, target_width * sizeof(uint32_t));
 }
 
 void run() {
   if (!window.open_window(kWindowWidth, kWindowHeight))
     return;
 
+  const uint64_t tid = Kernel::Scheduler::current_thread_id();
+  const uint32_t w = window.width();
+  const uint32_t h = window.height();
+  const size_t needed_pixels = static_cast<size_t>(w) * h;
+  if (w == 0 || h == 0 ||
+      needed_pixels > sizeof(g_window_pixels) / sizeof(g_window_pixels[0]) ||
+      !window.attach(g_window_pixels, 0, 0, w, h)) {
+    Kernel::Graphics::WindowManager::unregister_window(tid);
+    window.destroy();
+    return;
+  }
+
   pacman_game_init();
   uint32_t last_tick = Kernel::Drivers::TSCDeadline::get_ticks();
+
   while (!Kernel::Scheduler::should_stop() &&
-         Kernel::Graphics::WindowManager::has_window(
-             Kernel::Scheduler::current_thread_id())) {
+         Kernel::Graphics::WindowManager::has_window(tid)) {
     const uint32_t current_tick = Kernel::Drivers::TSCDeadline::get_ticks();
-    const uint32_t frame_time_ns = (current_tick - last_tick) * 1000000u;
+    const uint64_t delta_ns =
+        static_cast<uint64_t>(current_tick - last_tick) * 1000000ULL;
     last_tick = current_tick;
 
     const bool focused = window.has_focus();
@@ -81,10 +101,15 @@ void run() {
       break;
 
     pacman_game_input(up, down, left, right, false, anykey);
+
+    const uint32_t frame_time_ns =
+        static_cast<uint32_t>(std::min<uint64_t>(delta_ns, UINT32_MAX));
     pacman_game_frame(frame_time_ns);
     Kernel::Scheduler::thread_sleep_ms(2);
   }
+
   pacman_game_shutdown();
+  Kernel::Graphics::WindowManager::unregister_window(tid);
   window.destroy();
 }
 } // namespace Kernel::Games::Pacman

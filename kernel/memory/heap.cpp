@@ -1,14 +1,16 @@
 #include <algorithm>
-#include <string.h>
 #include <cstdint>
 #include <kernel/memory/heap.h>
 #include <kernel/memory/pmm.h>
 #include <kernel/scheduler.h>
 #include <kernel/spinlock.h>
+#include <stdlib.h>
+#include <string.h>
 
 // Design
 // ------
-//  * Small objects (<= 512 B): slab pages taken straight from the PMM, one 4 KiB
+//  * Small objects (<= 512 B): slab pages taken straight from the PMM, one 4
+//  KiB
 //    page each. No per-object header: ownership lives in a 4-byte-per-slot
 //    side table inside the page, "allocated" in a bitmap. 16 B objects cost
 //    ~20 B instead of 32 B. Slots are handed out by a bump index first, so
@@ -156,8 +158,8 @@ SlabPage *slab_lookup(void *ptr, unsigned *idx_out) {
   const size_t off = a - base;
   if (off >= static_cast<size_t>(ci.cap) * ci.size)
     return nullptr;
-  const unsigned idx = static_cast<unsigned>(
-      (static_cast<uint64_t>(off) * ci.recip) >> 32);
+  const unsigned idx =
+      static_cast<unsigned>((static_cast<uint64_t>(off) * ci.recip) >> 32);
   if (idx * ci.size != off)
     return nullptr;
   if (idx_out)
@@ -170,7 +172,7 @@ SlabPage *slab_lookup(void *ptr, unsigned *idx_out) {
 struct Block {
   size_t size_flags;
   union {
-    uint64_t owner; // used
+    uint64_t owner;   // used
     Block *free_prev; // free
   };
   Block *free_next; // free only
@@ -179,7 +181,7 @@ static_assert(offsetof(Block, free_next) == 16);
 
 struct HugeAllocHeader {
   uint64_t magic;
-  size_t size; // bytes of the whole page run
+  size_t size;           // bytes of the whole page run
   HugeAllocHeader *next; // intrusive list so thread exit can reclaim them
   HugeAllocHeader *prev;
   uint64_t owner;
@@ -222,7 +224,9 @@ inline size_t &footer(Block *b, size_t size) {
   return *reinterpret_cast<size_t *>(reinterpret_cast<uintptr_t>(b) + size - 8);
 }
 
-inline size_t align_up_size(size_t n, size_t a) { return (n + a - 1) & ~(a - 1); }
+inline size_t align_up_size(size_t n, size_t a) {
+  return (n + a - 1) & ~(a - 1);
+}
 inline unsigned msb_index(size_t n) {
   return 63u - static_cast<unsigned>(__builtin_clzll(n));
 }
@@ -255,7 +259,8 @@ inline void map_search(size_t size, unsigned &fl, unsigned &sl) {
 }
 
 HugeAllocHeader *huge_header(void *ptr) {
-  if ((reinterpret_cast<uintptr_t>(ptr) & (PAGE - 1)) != sizeof(HugeAllocHeader))
+  if ((reinterpret_cast<uintptr_t>(ptr) & (PAGE - 1)) !=
+      sizeof(HugeAllocHeader))
     return nullptr;
   auto *h = reinterpret_cast<HugeAllocHeader *>(
       reinterpret_cast<uintptr_t>(ptr) - sizeof(HugeAllocHeader));
@@ -477,8 +482,8 @@ void *KernelHeap::release_block(void *raw) {
     size += bsize(next);
   }
   if (b->size_flags & BLOCK_PREV_FREE) {
-    const size_t psz = *reinterpret_cast<size_t *>(
-        reinterpret_cast<uintptr_t>(b) - 8);
+    const size_t psz =
+        *reinterpret_cast<size_t *>(reinterpret_cast<uintptr_t>(b) - 8);
     Block *prev = bat(b, 0 - psz);
     remove_free_block(prev);
     size += psz;
@@ -766,8 +771,8 @@ void KernelHeap::init(void *heap_start_addr, size_t initial_size) {
 }
 
 void *KernelHeap::kmalloc_huge(size_t size) {
-  if (__builtin_expect(size > static_cast<size_t>(-1) - sizeof(HugeAllocHeader) -
-                                  (PAGE - 1),
+  if (__builtin_expect(size > static_cast<size_t>(-1) -
+                                  sizeof(HugeAllocHeader) - (PAGE - 1),
                        0))
     return nullptr;
   const size_t pages = (size + sizeof(HugeAllocHeader) + PAGE - 1) / PAGE;
@@ -873,9 +878,9 @@ void KernelHeap::free_thread_allocations(uint64_t thread_id) {
           if (owners[idx] != tid32)
             continue;
           const bool last = page->used == 1; // page may vanish below
-          free_slab_locked(
-              reinterpret_cast<void *>(base + static_cast<size_t>(idx) * ci.size),
-              nullptr, page);
+          free_slab_locked(reinterpret_cast<void *>(
+                               base + static_cast<size_t>(idx) * ci.size),
+                           nullptr, page);
           if (last) {
             gone = true;
             break;
@@ -936,9 +941,11 @@ void *KernelHeap::krealloc(void *ptr, size_t size) {
 
   if (HugeAllocHeader *h = huge_header(ptr)) {
     old_usable = h->size - sizeof(HugeAllocHeader);
-    if (size >= HUGE_THRESHOLD &&
-        size <= static_cast<size_t>(-1) - sizeof(HugeAllocHeader) - (PAGE - 1)) {
-      const size_t new_pages = (size + sizeof(HugeAllocHeader) + PAGE - 1) / PAGE;
+    if (size >= HUGE_THRESHOLD && size <= static_cast<size_t>(-1) -
+                                              sizeof(HugeAllocHeader) -
+                                              (PAGE - 1)) {
+      const size_t new_pages =
+          (size + sizeof(HugeAllocHeader) + PAGE - 1) / PAGE;
       const size_t old_pages = h->size / PAGE;
       if (new_pages == old_pages)
         return ptr;
@@ -981,7 +988,8 @@ void *KernelHeap::krealloc(void *ptr, size_t size) {
     } else {
       if (reinterpret_cast<uintptr_t>(ptr) & (ALIGNMENT - 1))
         return nullptr;
-      auto *b = reinterpret_cast<Block *>(reinterpret_cast<uintptr_t>(ptr) - HDR);
+      auto *b =
+          reinterpret_cast<Block *>(reinterpret_cast<uintptr_t>(ptr) - HDR);
       if ((b->size_flags & (BLOCK_USED | BLOCK_SENTINEL)) != BLOCK_USED)
         return nullptr;
       if (size > SLAB_MAX && size < HUGE_THRESHOLD &&
@@ -1065,8 +1073,9 @@ bool KernelHeap::validate() const {
     while (cur < limit) {
       auto *b = reinterpret_cast<Block *>(cur);
       const size_t size = bsize(b);
-      if ((cur & (ALIGNMENT - 1)) || size < MIN_BLOCK || (size & (ALIGNMENT - 1)) ||
-          size > limit - cur || (b->size_flags & BLOCK_SENTINEL) ||
+      if ((cur & (ALIGNMENT - 1)) || size < MIN_BLOCK ||
+          (size & (ALIGNMENT - 1)) || size > limit - cur ||
+          (b->size_flags & BLOCK_SENTINEL) ||
           static_cast<bool>(b->size_flags & BLOCK_FIRST) != first ||
           static_cast<bool>(b->size_flags & BLOCK_PREV_FREE) != prev_free)
         return false;
@@ -1083,9 +1092,8 @@ bool KernelHeap::validate() const {
     }
     auto *sentinel = reinterpret_cast<Block *>(limit);
     if (cur != limit ||
-        sentinel->size_flags !=
-            (HDR | BLOCK_USED | BLOCK_SENTINEL |
-             (prev_free ? BLOCK_PREV_FREE : 0)))
+        sentinel->size_flags != (HDR | BLOCK_USED | BLOCK_SENTINEL |
+                                 (prev_free ? BLOCK_PREV_FREE : 0)))
       return false;
     prev_seg = seg;
   }
@@ -1183,7 +1191,8 @@ bool KernelHeap::validate() const {
     size_t n = 0;
     SlabPage *prev = nullptr;
     for (SlabPage *p = g_slab_free[c]; p; p = p->free_next) {
-      if (++n > partial[c] || p->cls != c || !p->on_list || p->free_prev != prev)
+      if (++n > partial[c] || p->cls != c || !p->on_list ||
+          p->free_prev != prev)
         return false;
       prev = p;
     }
@@ -1247,6 +1256,17 @@ void *realloc(void *ptr, size_t size) {
 }
 void *calloc(size_t num, size_t size) {
   return Kernel::Memory::g_kheap.kcalloc(num, size);
+}
+void *aligned_alloc(size_t alignment, size_t size) {
+  if (!alignment || (alignment & (alignment - 1)) != 0)
+    return nullptr;
+  if ((size & (alignment - 1)) != 0)
+    return nullptr;
+  if (alignment <= 16)
+    return Kernel::Memory::g_kheap.kmalloc(size);
+  if (alignment <= 4096 && size >= 128 * 1024)
+    return Kernel::Memory::g_kheap.kmalloc(size);
+  return nullptr;
 }
 }
 
