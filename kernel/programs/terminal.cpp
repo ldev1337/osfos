@@ -1,4 +1,4 @@
-#include <arch/x86_64/string.h>
+#include <string.h>
 #include <kernel/drivers/framebuffer.h>
 #include <kernel/graphics/lwm.h>
 #include <kernel/graphics/open_font.h>

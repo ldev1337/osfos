@@ -20,7 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 
-#include <arch/x86_64/string.h>
+#include <string.h>
 #include <kernel/drivers/framebuffer.h>
 #include <kernel/drivers/mouse.h>
 #include <kernel/graphics/internal.h>

@@ -1,10 +1,10 @@
 #ifndef KERNEL_GRAPHICS_K3D_H
 #define KERNEL_GRAPHICS_K3D_H
 
-#include <arch/x86_64/string.h>
 #include <cstddef>
 #include <cstdint>
 #include <kernel/graphics/vfb.h>
+#include <string.h>
 
 namespace Kernel::Graphics::K3D {
 

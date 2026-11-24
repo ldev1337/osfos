@@ -4,7 +4,7 @@
 #if SCHED_TRACE
 #include <kernel/debug/debug.h>
 #endif
-#include <arch/x86_64/string.h>
+#include <string.h>
 #include <kernel/drivers/tsc_deadline.h>
 #include <kernel/memory/heap.h>
 #include <kernel/mtask/internal.h>

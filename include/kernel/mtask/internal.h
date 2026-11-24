@@ -1,6 +1,6 @@
 #pragma once
 
-#include <arch/x86_64/string.h>
+#include <string.h>
 #include <cstddef>
 #include <cstdint>
 #include <kernel/scheduler.h>

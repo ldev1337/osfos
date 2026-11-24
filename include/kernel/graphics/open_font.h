@@ -1,12 +1,12 @@
 #pragma once
 
-#include <arch/x86_64/string.h>
 #include <cstddef>
 #include <cstdint>
 #include <kernel/fs/laziofs.h>
 #include <kernel/graphics/truetype.h>
 #include <kernel/lib/lz4.h>
 #include <kernel/memory/heap.h>
+#include <string.h>
 
 // Link external symbols defined by incbin in embedded font assembly
 extern "C" {

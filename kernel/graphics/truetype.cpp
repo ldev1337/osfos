@@ -2,7 +2,7 @@
 #define STBTT_STATIC
 
 // Kernel memory and string overrides
-#include <arch/x86_64/string.h>
+#include <string.h>
 #include <kernel/memory/heap.h>
 #include <kernel/spinlock.h>
 

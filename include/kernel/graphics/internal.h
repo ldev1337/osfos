@@ -66,7 +66,9 @@ inline uint32_t *begin(Ring *q, uint32_t n) {
 }
 
 // Publishes the record written after begin().
-inline void end(Ring *q) { __atomic_store_n(&q->head, q->pend, __ATOMIC_RELEASE); }
+inline void end(Ring *q) {
+  __atomic_store_n(&q->head, q->pend, __ATOMIC_RELEASE);
+}
 
 // Queues a pixel blit. mode: 0 opaque, 1 colour-key (param = key),
 // 2 global alpha (param = alpha). Small sources are copied into the ring;
@@ -77,9 +79,9 @@ void blit(Ring *q, int32_t x, int32_t y, uint32_t w, uint32_t h,
 
 } // namespace Cmd
 
-namespace Raster { // implemented in vfb.cpp
+namespace Raster {            // implemented in vfb.cpp
 TrueTypeFont *default_font(); // may be null
-Canvas screen();              // whole hardware framebuffer (origin null if none)
+Canvas screen(); // whole hardware framebuffer (origin null if none)
 uint32_t blend(uint32_t fg, uint32_t bg, uint32_t alpha);
 void fill_rect(const Canvas &c, int32_t x, int32_t y, int32_t w, int32_t h,
                uint32_t color);
@@ -87,11 +89,13 @@ void fill_rounded_rect(const Canvas &c, int32_t x, int32_t y, int32_t w,
                        int32_t h, int32_t radius, uint32_t color);
 void fill_circle(const Canvas &c, int32_t xc, int32_t yc, int32_t r,
                  uint32_t color);
-int text(const Canvas &c, TrueTypeFont &font, int32_t x, int32_t y,
-         float size, const char *text, uint32_t color);
+int text(const Canvas &c, TrueTypeFont &font, int32_t x, int32_t y, float size,
+         const char *text, uint32_t color);
 void glyph8(const Canvas &c, int32_t x, int32_t y, char ch, uint32_t color);
-void execute(const Canvas &c, const uint32_t *record); // decode + draw one record
-bool get_record_bounds(const uint32_t *record, int32_t &l, int32_t &t, int32_t &r, int32_t &b);
+void execute(const Canvas &c,
+             const uint32_t *record); // decode + draw one record
+bool get_record_bounds(const uint32_t *record, int32_t &l, int32_t &t,
+                       int32_t &r, int32_t &b);
 } // namespace Raster
 
 namespace WindowManager { // implemented in lwm.cpp

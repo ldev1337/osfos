@@ -1,10 +1,9 @@
-#include <arch/x86_64/string.h>
+#include <kernel/debug/debug.h>
 #include <kernel/drivers/ata.h>
 #include <kernel/drivers/keyboard.h>
 #include <kernel/drivers/net/device.h>
 #include <kernel/drivers/pci.h>
 #include <kernel/drivers/usb/xhci.h>
-#include <kernel/debug/debug.h>
 #include <kernel/fs/laziofs.h>
 #include <kernel/graphics/lwm.h>
 #include <kernel/graphics/open_font.h>
@@ -12,10 +11,11 @@
 #include <kernel/memory/heap.h>
 #include <kernel/memory/pmm.h>
 #include <kernel/net/smoltcp_bridge.h>
-#include <kernel/scheduler.h>
-#include <kernel/smp.h>
 #include <kernel/programs/terminal.h>
+#include <kernel/scheduler.h>
 #include <kernel/shell/shell.h>
+#include <kernel/smp.h>
+#include <string.h>
 
 #include <cstdarg>
 #include <cstddef>
@@ -233,12 +233,12 @@ namespace {
 void show_debug_info() {
   const auto memory = Kernel::Memory::g_kheap.get_system_memory_info();
   kprintf("Debug status: heap %u/%u bytes used; PMM %u/%u bytes used\n",
-                static_cast<unsigned>(memory.heap_used_size),
-                static_cast<unsigned>(memory.heap_total_size),
-                static_cast<unsigned>(memory.pmm_used_memory),
-                static_cast<unsigned>(memory.pmm_total_memory));
+          static_cast<unsigned>(memory.heap_used_size),
+          static_cast<unsigned>(memory.heap_total_size),
+          static_cast<unsigned>(memory.pmm_used_memory),
+          static_cast<unsigned>(memory.pmm_total_memory));
   kprintf("Heap integrity: %s; recent log entries:\n",
-                Kernel::Memory::g_kheap.validate() ? "OK" : "FAILED");
+          Kernel::Memory::g_kheap.validate() ? "OK" : "FAILED");
   const size_t count = Kernel::Debug::log_count();
   for (size_t i = 0; i < count; ++i) {
     Kernel::Debug::LogEntry entry{};
@@ -262,24 +262,22 @@ void help() {
   kprintf("  netup                 Acquire network settings with DHCP\n");
   kprintf("  netinfo               Show network interface settings\n");
   kprintf("  fetch <url>           Fetch a bounded HTTP or verified "
-                "HTTPS response\n");
+          "HTTPS response\n");
   kprintf("  youtube               Search YouTube and show thumbnails\n");
-  kprintf(
-      "  tcp-echo <host> <port> <text>  Send text to a TCP echo service\n");
+  kprintf("  tcp-echo <host> <port> <text>  Send text to a TCP echo service\n");
   kprintf("  about                 Kernel shell information\n");
-  kprintf("  debug                 Show allocator health and recent kernel log\n");
+  kprintf(
+      "  debug                 Show allocator health and recent kernel log\n");
   kprintf("  smpinfo               Show detected and online CPUs\n");
   kprintf("  mem                   Memory-manager test commands\n");
   kprintf("  taskman               List running apps and task stats\n");
-  kprintf(
-      "  heap-test [bytes]     Allocate/free a heap block (default 64)\n");
-  kprintf(
-      "  pmm-test [pages]      Allocate/free physical pages (default 1)\n");
+  kprintf("  heap-test [bytes]     Allocate/free a heap block (default 64)\n");
+  kprintf("  pmm-test [pages]      Allocate/free physical pages (default 1)\n");
   kprintf("  disk-init             Initialize LazIOfs disk\n");
   kprintf(
       "  xhci-init             Probe and initialize a USB xHCI controller\n");
   kprintf("  disk-check <file>     Check if a file exists on disk and "
-                "print info\n");
+          "print info\n");
   kprintf("  spong                 Play Shitty Pong\n");
   kprintf("  doom1                 Launch Doom I\n");
   kprintf("  doom2                 Launch Doom II\n");
@@ -292,10 +290,10 @@ void help() {
   kprintf("  shitcell              Run The Shitty Excel spreadsheet\n");
   kprintf("  shitpad               Run The Shitpad Editor\n");
   kprintf("  pain                  Run THE PAIN PNG Image Viewer and "
-                "Paint shits\n");
+          "Paint shits\n");
   kprintf("  c3d                   Run the 3D showoff\n");
   kprintf("  calc                  Use your brain, a pen and a paper "
-                "before this\n");
+          "before this\n");
   kprintf("  fontview              Open the TrueType font viewer/check app\n");
   kprintf("  fileview              Browse and read files on the disk\n");
   kprintf("  fontcheck             List available TTF files and font status\n");
@@ -315,7 +313,7 @@ void run_heap_test(const char *args) {
   }
   kfree(block);
   kprintf("heap-test: allocated and freed %u bytes\n",
-                static_cast<unsigned int>(bytes));
+          static_cast<unsigned int>(bytes));
 }
 
 void run_pmm_test(const char *args) {
@@ -331,7 +329,7 @@ void run_pmm_test(const char *args) {
   }
   Kernel::Memory::g_pmm.free_page_block(block, pages);
   kprintf("pmm-test: allocated and freed %u page(s)\n",
-                static_cast<unsigned int>(pages));
+          static_cast<unsigned int>(pages));
 }
 
 void run_disk_init(const char *) {
@@ -352,8 +350,8 @@ void run_disk_check(const char *args) {
   }
   Kernel::FS::VFSFile file;
   if (Kernel::FS::VFS::find_file(args, &file)) {
-    kprintf("File found: %s\n  Size: %u bytes\n  Start LBA: %u\n",
-                  file.name, file.size, file.start_lba);
+    kprintf("File found: %s\n  Size: %u bytes\n  Start LBA: %u\n", file.name,
+            file.size, file.start_lba);
   } else {
     kprintf("disk-check: file '%s' not found on disk.\n", args);
   }
@@ -368,8 +366,8 @@ void run_ls(const char *) {
   for (uint32_t i = 0; i < FS::VFS_MAX_INODES; ++i) {
     Kernel::FS::VFSFile file;
     if (Kernel::FS::VFS::get_file_at(i, &file) && file.exists) {
-      kprintf("%s  %u     %s\n", file.is_directory ? "DIR " : "FILE",
-                    file.size, file.name);
+      kprintf("%s  %u     %s\n", file.is_directory ? "DIR " : "FILE", file.size,
+              file.name);
     }
   }
 }
@@ -424,7 +422,7 @@ void run_xhci_init(const char *) {
 
 void print_ipv4(uint32_t address) {
   kprintf("%u.%u.%u.%u", (address >> 24) & 255, (address >> 16) & 255,
-                (address >> 8) & 255, address & 255);
+          (address >> 8) & 255, address & 255);
 }
 
 void run_netup(const char *) {
@@ -452,7 +450,7 @@ void run_netinfo(const char *) {
   }
   kprintf("Driver: %s\n", driver);
   kprintf("MAC %02X:%02X:%02X:%02X:%02X:%02X\n", info.mac[0], info.mac[1],
-                info.mac[2], info.mac[3], info.mac[4], info.mac[5]);
+          info.mac[2], info.mac[3], info.mac[4], info.mac[5]);
   if (!info.configured) {
     kprintf("IPv4: not configured (run netup)\n");
     return;
@@ -480,7 +478,7 @@ void run_ping(const char *host) {
   for (uint32_t sequence = 0; sequence < 4; ++sequence) {
     if (stats.received_mask & (1u << sequence))
       kprintf("reply from %s: seq=%u time=%u ms\n", host, sequence + 1,
-                    stats.rtt_ms[sequence]);
+              stats.rtt_ms[sequence]);
     else
       kprintf("request timed out (seq=%u)\n", sequence + 1);
   }
@@ -530,7 +528,8 @@ void run_fontcheck(const char *) {
   kprintf("TrueType font availability:\n");
 
   Kernel::Graphics::TrueTypeFont embedded_font;
-  const bool embedded_ok = Kernel::Graphics::OpenFont::load_embedded(embedded_font);
+  const bool embedded_ok =
+      Kernel::Graphics::OpenFont::load_embedded(embedded_font);
   kprintf("  embedded fallback: %s\n", embedded_ok ? "READY" : "MISSING");
 
   if (!Kernel::FS::VFS::is_mounted()) {
@@ -541,7 +540,8 @@ void run_fontcheck(const char *) {
   bool found_any = false;
   for (uint32_t i = 0; i < Kernel::FS::VFS_MAX_INODES; ++i) {
     Kernel::FS::VFSFile file{};
-    if (!Kernel::FS::VFS::get_file_at(i, &file) || !file.exists || file.is_directory)
+    if (!Kernel::FS::VFS::get_file_at(i, &file) || !file.exists ||
+        file.is_directory)
       continue;
 
     const size_t name_len = strlen(file.name);
@@ -549,10 +549,9 @@ void run_fontcheck(const char *) {
       continue;
 
     const char *ext = file.name + name_len - 4;
-    const bool is_ttf = (ext[0] == '.' &&
-                         ((ext[1] == 't' || ext[1] == 'T') &&
-                          (ext[2] == 't' || ext[2] == 'T') &&
-                          (ext[3] == 'f' || ext[3] == 'F')));
+    const bool is_ttf = (ext[0] == '.' && ((ext[1] == 't' || ext[1] == 'T') &&
+                                           (ext[2] == 't' || ext[2] == 'T') &&
+                                           (ext[3] == 'f' || ext[3] == 'F')));
     if (!is_ttf)
       continue;
 
@@ -582,13 +581,11 @@ void run_fetch(const char *url) {
     return;
   }
   if (length == -5) {
-    kprintf(
-        "fetch: RTC time unavailable; HTTPS certificate checks refused\n");
+    kprintf("fetch: RTC time unavailable; HTTPS certificate checks refused\n");
     return;
   }
   if (length == -6) {
-    kprintf(
-        "fetch: HTTPS handshake or certificate verification failed\n");
+    kprintf("fetch: HTTPS handshake or certificate verification failed\n");
     return;
   }
   if (length <= -1000) {
@@ -598,13 +595,11 @@ void run_fetch(const char *url) {
       const int tls_error = (detail - 1000) % 100;
       if (failure == 1)
         kprintf("fetch: TCP receive timed out during TLS (BearSSL %d)\n",
-                      tls_error);
+                tls_error);
       else if (failure == 2)
-        kprintf("fetch: peer closed TCP during TLS (BearSSL %d)\n",
-                      tls_error);
+        kprintf("fetch: peer closed TCP during TLS (BearSSL %d)\n", tls_error);
       else
-        kprintf("fetch: TCP send failed during TLS (BearSSL %d)\n",
-                      tls_error);
+        kprintf("fetch: TCP send failed during TLS (BearSSL %d)\n", tls_error);
       return;
     }
     const int tls_error = detail;
@@ -643,7 +638,7 @@ void run_fetch(const char *url) {
   kprintf("%s", response);
   if (length == static_cast<int>(sizeof(response) - 1))
     kprintf("\n[response truncated at %u bytes]\n",
-                  static_cast<unsigned int>(sizeof(response) - 1));
+            static_cast<unsigned int>(sizeof(response) - 1));
   else
     kprintf("\n");
 }
@@ -693,10 +688,10 @@ void execute(char *line) {
       kprintf("Could not launch File Viewer.\n");
   } else if (equals(line, "about"))
     kprintf("OSFOS kernel shell\nFramebuffer text UI with Virtual "
-                  "Framebuffer abstraction.\n");
+            "Framebuffer abstraction.\n");
   else if (equals(line, "smpinfo"))
     kprintf("Online processors: %u\n",
-                  static_cast<unsigned>(Kernel::SMP::online_cpu_count()));
+            static_cast<unsigned>(Kernel::SMP::online_cpu_count()));
   else if (equals(line, "debug"))
     show_debug_info();
   else if (equals(line, "mem"))
@@ -725,7 +720,7 @@ void execute(char *line) {
     run_cat(args);
   else if (equals(line, "exit"))
     kprintf("The kernel shell runs in ring 0; there is no userspace "
-                  "process to exit.\n");
+            "process to exit.\n");
   else if (equals(line, "spong")) {
     if (!launch_app("Spong", run_spong))
       kprintf("Could not launch Spong.\n");
@@ -769,8 +764,7 @@ void execute(char *line) {
     if (!launch_app("Cube3D", run_c3d))
       kprintf("Could not launch calculator.\n");
   } else
-    kprintf("command not found: %s\nType 'help' to list commands.\n",
-                  line);
+    kprintf("command not found: %s\nType 'help' to list commands.\n", line);
 }
 
 } // namespace
@@ -783,8 +777,8 @@ void run() {
 
   if (Kernel::Debug::g_kernel_debug_info.init_reclaimed) {
     kprintf("Reclaimed %zu bytes (%zu pages) of init memory.\n",
-                  Kernel::Debug::g_kernel_debug_info.reclaimed_init_bytes,
-                  Kernel::Debug::g_kernel_debug_info.reclaimed_init_pages);
+            Kernel::Debug::g_kernel_debug_info.reclaimed_init_bytes,
+            Kernel::Debug::g_kernel_debug_info.reclaimed_init_pages);
   }
   size_t size = 0;
   kprintf("Embedded font size: %u bytes\n", size);
@@ -795,8 +789,7 @@ void run() {
   prompt();
 
   for (;;) {
-    const size_t cursor_column =
-        Kernel::Programs::Terminal::cursor_column();
+    const size_t cursor_column = Kernel::Programs::Terminal::cursor_column();
     const size_t cursor_row = Kernel::Programs::Terminal::cursor_row();
     Kernel::Programs::Terminal::show_cursor(cursor_column, cursor_row, BLUE);
 

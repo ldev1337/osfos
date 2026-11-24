@@ -1,4 +1,4 @@
-#include <arch/x86_64/string.h>
+#include <string.h>
 #include <cstdint>
 #include <kernel/drivers/keyboard.h>
 #include <kernel/fs/laziofs.h>

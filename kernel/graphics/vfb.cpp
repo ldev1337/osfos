@@ -12,7 +12,7 @@
 // Discs, rings, triangles and sectors are scan-converted from per-sample-row
 // intervals: only edge pixels are evaluated, interiors are plain stores.
 #include <algorithm>
-#include <arch/x86_64/string.h>
+#include <string.h>
 #include <kernel/drivers/framebuffer.h>
 #include <kernel/graphics/internal.h>
 #include <kernel/graphics/lwm.h>

@@ -1,4 +1,4 @@
-#include <arch/x86_64/string.h>
+#include <string.h>
 #include <kernel/drivers/usb/xhci.h>
 #include <kernel/memory/pmm.h>
 

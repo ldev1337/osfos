@@ -1,5 +1,5 @@
 #include <algorithm>
-#include <arch/x86_64/string.h>
+#include <string.h>
 #include <cstdint>
 #include <kernel/drivers/keyboard.h>
 #include <kernel/drivers/mouse.h>

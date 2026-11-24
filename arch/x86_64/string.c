@@ -1,4 +1,4 @@
-#include <arch/x86_64/string.h>
+#include <string.h>
 
 extern void *malloc(size_t size);
 

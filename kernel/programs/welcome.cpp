@@ -1,7 +1,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstddef>
-#include <arch/x86_64/string.h>
+#include <string.h>
 #include <kernel/drivers/framebuffer.h>
 #include <kernel/graphics/vfb.h>
 #include <kernel/lib/uicommon.h>

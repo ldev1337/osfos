@@ -1,5 +1,5 @@
 #include <algorithm>
-#include <arch/x86_64/string.h>
+#include <string.h>
 #include <kernel/graphics/k3d.h>
 #include <kernel/lib/math.h>
 #include <kernel/memory/heap.h>

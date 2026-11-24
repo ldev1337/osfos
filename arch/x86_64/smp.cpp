@@ -1,10 +1,10 @@
-#include <arch/x86_64/string.h>
 #include <atomic>
 #include <kernel/cpu.h>
 #include <kernel/drivers/tsc_deadline.h>
 #include <kernel/memory/pmm.h>
 #include <kernel/scheduler.h>
 #include <kernel/smp.h>
+#include <string.h>
 
 namespace Kernel::SMP {
 namespace {
