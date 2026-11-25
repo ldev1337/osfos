@@ -1,13 +1,13 @@
-#include <stdlib.h>
-#include <string.h>
 #include <kernel/drivers/keyboard.h>
 #include <kernel/graphics/vfb.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/media/jpeg.h>
 #include <kernel/memory/heap.h>
-#include <kernel/net/smoltcp_bridge.h>
+#include <kernel/net/smoltcp.h>
 #include <kernel/programs/youtube.h>
 #include <kernel/scheduler.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include <cstddef>
 #include <cstdint>

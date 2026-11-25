@@ -6,7 +6,7 @@
 #include <kernel/fs/laziofs.h>
 #include <kernel/graphics/lwm.h>
 #include <kernel/graphics/vfb.h>
-#include <kernel/lib/uicommon.h>
+#include <oslib/ui.h>
 #include <kernel/scheduler.h>
 
 #define fopen(path, mode) kernel_vfs_open(path, mode)

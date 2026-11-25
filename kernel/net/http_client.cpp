@@ -1,6 +1,6 @@
 #include <bearssl.h>
 #include <kernel/cpu.h>
-#include <kernel/net/smoltcp_bridge.h>
+#include <kernel/net/smoltcp.h>
 
 #include <algorithm>
 #include <cstddef>
@@ -356,7 +356,7 @@ bool response_has_content_length(const char *response, size_t length,
   size_t header_end = 0;
   while (header_end + 3 < length &&
          (response[header_end] != '\r' || response[header_end + 1] != '\n' ||
-           response[header_end + 2] != '\r' || response[header_end + 3] != '\n'))
+          response[header_end + 2] != '\r' || response[header_end + 3] != '\n'))
     ++header_end;
   if (header_end + 3 >= length)
     return false;
@@ -468,10 +468,9 @@ static int fetch_internal(const char *url_text, const uint8_t *body,
   while (*url_text == ' ' || *url_text == '\t')
     ++url_text;
   size_t url_length = strlen(url_text);
-  while ((url_length != 0U) && (url_text[url_length - 1] == ' ' ||
-                        url_text[url_length - 1] == '\t' ||
-                        url_text[url_length - 1] == '\r' ||
-                        url_text[url_length - 1] == '\n'))
+  while ((url_length != 0U) &&
+         (url_text[url_length - 1] == ' ' || url_text[url_length - 1] == '\t' ||
+          url_text[url_length - 1] == '\r' || url_text[url_length - 1] == '\n'))
     --url_length;
   char normalized_url[512];
   if ((url_length == 0U) || url_length >= sizeof(normalized_url))
@@ -488,8 +487,8 @@ static int fetch_internal(const char *url_text, const uint8_t *body,
 
   char request[REQUEST_CAPACITY];
   size_t request_length;
-  if (!make_request(url, body != nullptr, body_length, request,
-                    sizeof(request), request_length)) {
+  if (!make_request(url, body != nullptr, body_length, request, sizeof(request),
+                    request_length)) {
     tcp_close();
     return -3;
   }

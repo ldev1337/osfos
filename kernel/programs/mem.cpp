@@ -2,7 +2,7 @@
 #include <kernel/drivers/keyboard.h>
 #include <kernel/graphics/vfb.h>
 #include <kernel/lib/appcommon.h>
-#include <kernel/lib/uicommon.h>
+#include <oslib/ui.h>
 #include <kernel/memory/heap.h>
 #include <kernel/scheduler.h>
 

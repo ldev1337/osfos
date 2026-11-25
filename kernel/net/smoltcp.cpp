@@ -1,6 +1,6 @@
 #include <kernel/drivers/net/device.h>
 #include <kernel/drivers/tsc_deadline.h>
-#include <kernel/net/smoltcp_bridge.h>
+#include <kernel/net/smoltcp.h>
 #include <kernel/scheduler.h>
 
 extern "C" {

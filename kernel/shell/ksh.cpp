@@ -10,7 +10,7 @@
 #include <kernel/lib/appcommon.h>
 #include <kernel/memory/heap.h>
 #include <kernel/memory/pmm.h>
-#include <kernel/net/smoltcp_bridge.h>
+#include <kernel/net/smoltcp.h>
 #include <kernel/programs/terminal.h>
 #include <kernel/scheduler.h>
 #include <kernel/shell/shell.h>

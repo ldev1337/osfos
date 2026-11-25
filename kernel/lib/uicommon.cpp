@@ -3,7 +3,7 @@
 #include <kernel/drivers/mouse.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/lib/math.h>
-#include <kernel/lib/uicommon.h>
+#include <oslib/ui.h>
 
 #include <algorithm>
 
