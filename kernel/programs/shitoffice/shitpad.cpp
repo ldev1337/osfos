@@ -1,3 +1,4 @@
+#include <stdlib.h>
 #include <string.h>
 #include <cstdint>
 #include <kernel/drivers/keyboard.h>
@@ -360,7 +361,7 @@ void run_shitty_pad() {
   const auto w = static_cast<int32_t>(vfb.width());
   const auto h = static_cast<int32_t>(vfb.height());
 
-  auto *text_buf = static_cast<TextBuffer *>(kmalloc(sizeof(TextBuffer)));
+  auto *text_buf = static_cast<TextBuffer *>(malloc(sizeof(TextBuffer)));
   if (!text_buf)
     return;
   text_buf->clear();
@@ -586,7 +587,7 @@ void run_shitty_pad() {
   }
 
 done:
-  kfree(text_buf);
+  free(text_buf);
   return;
 }
 

@@ -1,3 +1,4 @@
+#include <stdlib.h>
 #define STB_TRUETYPE_IMPLEMENTATION
 #define STBTT_STATIC
 
@@ -6,8 +7,8 @@
 #include <kernel/memory/heap.h>
 #include <kernel/spinlock.h>
 
-#define STBTT_malloc(x, u) ((void)(u), kmalloc(x))
-#define STBTT_free(x, u) ((void)(u), kfree(x))
+#define STBTT_malloc(x, u) ((void)(u), malloc(x))
+#define STBTT_free(x, u) ((void)(u), free(x))
 #define STBTT_assert(x) ((void)(0))
 #define STBTT_memcpy memcpy
 #define STBTT_memset memset
@@ -112,7 +113,7 @@ namespace Kernel::Graphics {
 TrueTypeFont::TrueTypeFont()
     : font_buffer_(nullptr), buffer_size_(0), font_info_storage_(nullptr),
       initialized_(false) {
-  font_info_storage_ = kmalloc(sizeof(stbtt_fontinfo));
+  font_info_storage_ = malloc(sizeof(stbtt_fontinfo));
   if (font_info_storage_)
     memset(font_info_storage_, 0, sizeof(stbtt_fontinfo));
 }
@@ -120,7 +121,7 @@ TrueTypeFont::TrueTypeFont()
 TrueTypeFont::~TrueTypeFont() {
   reset();
   if (font_info_storage_)
-    kfree(font_info_storage_);
+    free(font_info_storage_);
   font_info_storage_ = nullptr;
 }
 
@@ -133,7 +134,7 @@ void TrueTypeFont::reset() {
     }
   }
   if (font_buffer_) {
-    kfree(font_buffer_);
+    free(font_buffer_);
     font_buffer_ = nullptr;
   }
   buffer_size_ = 0;
@@ -148,7 +149,7 @@ bool TrueTypeFont::load(const uint8_t *buffer, size_t size, int font_index) {
 
   reset();
 
-  font_buffer_ = static_cast<uint8_t *>(kmalloc(size));
+  font_buffer_ = static_cast<uint8_t *>(malloc(size));
   if (!font_buffer_)
     return false;
 
@@ -299,7 +300,7 @@ int TrueTypeFont::render_text(uint32_t *dest_buffer, uint32_t dest_width,
       }
 
       if (!glyph_bitmap) {
-        temporary_bitmap = static_cast<unsigned char *>(kmalloc(bitmap_size));
+        temporary_bitmap = static_cast<unsigned char *>(malloc(bitmap_size));
         if (temporary_bitmap) {
           stbtt_MakeCodepointBitmap(info, temporary_bitmap, gw, gh, gw, scale,
                                     scale, codepoint);
@@ -384,7 +385,7 @@ int TrueTypeFont::render_text(uint32_t *dest_buffer, uint32_t dest_width,
         }
       }
       if (temporary_bitmap)
-        kfree(temporary_bitmap);
+        free(temporary_bitmap);
     }
 
     cursor_x += static_cast<int>(advance * scale);

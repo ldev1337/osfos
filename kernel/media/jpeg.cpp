@@ -1,12 +1,13 @@
+#include <stdlib.h>
 #include <kernel/media/jpeg.h>
 
 #include <climits>
 #include <cstddef>
 
 extern "C" {
-void *kmalloc(size_t size);
+void *malloc(size_t size);
 void *krealloc(void *ptr, size_t size);
-void kfree(void *ptr);
+void free(void *ptr);
 }
 
 #define STBI_ONLY_JPEG
@@ -16,11 +17,11 @@ void kfree(void *ptr);
 #define STBI_NO_FAILURE_STRINGS
 #define STBI_NO_THREAD_LOCALS
 #define STBI_ASSERT(condition) ((void)0)
-#define STBI_MALLOC(size) kmalloc(size)
+#define STBI_MALLOC(size) malloc(size)
 #define STBI_REALLOC(pointer, size) krealloc(pointer, size)
 #define STBI_REALLOC_SIZED(pointer, old_size, new_size)                        \
   krealloc(pointer, new_size)
-#define STBI_FREE(pointer) kfree(pointer)
+#define STBI_FREE(pointer) free(pointer)
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb/stb_image.h>
 

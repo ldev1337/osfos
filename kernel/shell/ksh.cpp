@@ -15,6 +15,7 @@
 #include <kernel/scheduler.h>
 #include <kernel/shell/shell.h>
 #include <kernel/smp.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <cstdarg>
@@ -100,7 +101,7 @@ void app_thread_entry(void *argument) {
   }
   Kernel::Scheduler::mark_current_thread_as_application(title);
   if (launch != nullptr)
-    kfree(launch);
+    free(launch);
   while (!Kernel::Scheduler::should_stop() &&
          !Kernel::Graphics::WindowManager::has_window(
              Kernel::Scheduler::current_thread_id()))
@@ -111,7 +112,7 @@ void app_thread_entry(void *argument) {
 }
 
 bool launch_app(const char *title, void (*entry)()) {
-  auto *launch = static_cast<AppLaunch *>(kmalloc(sizeof(AppLaunch)));
+  auto *launch = static_cast<AppLaunch *>(malloc(sizeof(AppLaunch)));
   if (!launch)
     return false;
   launch->entry = entry;
@@ -123,7 +124,7 @@ bool launch_app(const char *title, void (*entry)()) {
   launch->title[title_index] = '\0';
   int id = Kernel::Scheduler::thread_create(app_thread_entry, launch);
   if (id < 0) {
-    kfree(launch);
+    free(launch);
     return false;
   }
   if (Kernel::Graphics::WindowManager::register_window(
@@ -306,12 +307,12 @@ void run_heap_test(const char *args) {
     kprintf("usage: heap-test [bytes], range: 1..4194304\n");
     return;
   }
-  void *block = kmalloc(bytes);
+  void *block = malloc(bytes);
   if (!block) {
     kprintf("heap-test: allocation failed\n");
     return;
   }
-  kfree(block);
+  free(block);
   kprintf("heap-test: allocated and freed %u bytes\n",
           static_cast<unsigned int>(bytes));
 }
@@ -696,7 +697,7 @@ void execute(char *line) {
     show_debug_info();
   else if (equals(line, "mem"))
     kprintf(
-        "Memory APIs available in this build:\n  KernelHeap::kmalloc/kfree\n  "
+        "Memory APIs available in this build:\n  KernelHeap::malloc/free\n  "
         "PMM::allocate_page_block/free_page_block\n");
   else if (equals(line, "taskman")) {
     if (!launch_app("Task Manager", Apps::task_manager_run))

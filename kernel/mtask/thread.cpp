@@ -52,8 +52,8 @@ void reap_deferred() {
     ThreadControlBlock *const thread = pending;
     pending = thread->reap_next;
     if (thread->stack_mem)
-      kfree(thread->stack_mem);
-    kfree(thread);
+      free(thread->stack_mem);
+    free(thread);
   }
 }
 
@@ -75,21 +75,21 @@ static auto create_thread(void (*entry)(), ThreadEntry arg_entry,
   reap_deferred();
 
   auto *thread =
-      static_cast<ThreadControlBlock *>(kmalloc(sizeof(ThreadControlBlock)));
+      static_cast<ThreadControlBlock *>(malloc(sizeof(ThreadControlBlock)));
   if (SCHED_UNLIKELY(!thread))
     return -1;
 
-  auto *stack_mem = static_cast<uint64_t *>(kmalloc(THREAD_STACK_SIZE));
+  auto *stack_mem = static_cast<uint64_t *>(malloc(THREAD_STACK_SIZE));
   if (SCHED_UNLIKELY(!stack_mem)) {
-    kfree(thread);
+    free(thread);
     return -1;
   }
 
   memset(thread, 0, sizeof(*thread));
   if (SCHED_UNLIKELY(!initialize_context(thread, stack_mem, THREAD_STACK_SIZE,
                                          entry, arg_entry, argument))) {
-    kfree(stack_mem);
-    kfree(thread);
+    free(stack_mem);
+    free(thread);
     return -1;
   }
 

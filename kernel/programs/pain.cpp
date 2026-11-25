@@ -1,3 +1,4 @@
+#include <stdlib.h>
 #include <string.h>
 #include <kernel/drivers/keyboard.h>
 #include <kernel/drivers/mouse.h>
@@ -81,7 +82,7 @@ inline auto save_png(const char *filename, const uint32_t *pixels,
 
   size_t row_size = width * 4 + 1;
   size_t total_idat_data = height * row_size;
-  uint8_t *raw_filtered = static_cast<uint8_t *>(kmalloc(total_idat_data));
+  uint8_t *raw_filtered = static_cast<uint8_t *>(malloc(total_idat_data));
   size_t raw_offset = 0;
 
   for (uint32_t y = 0; y < height; ++y) {
@@ -97,7 +98,7 @@ inline auto save_png(const char *filename, const uint32_t *pixels,
 
   size_t num_blocks = (total_idat_data + 65534) / 65535;
   size_t zlib_size = 2 + total_idat_data + (num_blocks * 5) + 4;
-  uint8_t *zlib_buf = static_cast<uint8_t *>(kmalloc(zlib_size));
+  uint8_t *zlib_buf = static_cast<uint8_t *>(malloc(zlib_size));
   size_t z_idx = 0;
   zlib_buf[z_idx++] = 0x78;
   zlib_buf[z_idx++] = 0x01;
@@ -120,7 +121,7 @@ inline auto save_png(const char *filename, const uint32_t *pixels,
     z_idx += block_len;
     src_offset += block_len;
   }
-  kfree(raw_filtered);
+  free(raw_filtered);
 
   uint32_t adler = calculate_adler32(zlib_buf + 2, z_idx - 2);
   zlib_buf[z_idx++] = (adler >> 24) & 0xFF;
@@ -134,14 +135,14 @@ inline auto save_png(const char *filename, const uint32_t *pixels,
   Kernel::FS::VFS::vfs_write(idat_type, 1, 4, f);
   Kernel::FS::VFS::vfs_write(zlib_buf, 1, z_idx, f);
 
-  uint8_t *idat_crc_buf = static_cast<uint8_t *>(kmalloc(4 + z_idx));
+  uint8_t *idat_crc_buf = static_cast<uint8_t *>(malloc(4 + z_idx));
   memcpy(idat_crc_buf, idat_type, 4);
   memcpy(idat_crc_buf + 4, zlib_buf, z_idx);
   uint32_t idat_crc =
       __builtin_bswap32(calculate_crc32(idat_crc_buf, 4 + z_idx));
   Kernel::FS::VFS::vfs_write(&idat_crc, 1, 4, f);
-  kfree(idat_crc_buf);
-  kfree(zlib_buf);
+  free(idat_crc_buf);
+  free(zlib_buf);
 
   uint32_t zero_len = 0;
   uint8_t iend_type[4] = {'I', 'E', 'N', 'D'};
@@ -166,13 +167,13 @@ inline auto load_png(const char *filename, uint32_t *pixels, uint32_t width,
     return false;
   }
 
-  uint8_t *file_data = static_cast<uint8_t *>(kmalloc(filesize));
+  uint8_t *file_data = static_cast<uint8_t *>(malloc(filesize));
   Kernel::FS::VFS::vfs_read(file_data, 1, filesize, f);
   Kernel::FS::VFS::vfs_close(f);
 
   const uint8_t png_sig[8] = {137, 80, 78, 71, 13, 10, 26, 10};
   if (memcmp(file_data, png_sig, 8) != 0) {
-    kfree(file_data);
+    free(file_data);
     return false;
   }
 
@@ -193,7 +194,7 @@ inline auto load_png(const char *filename, uint32_t *pixels, uint32_t width,
       size_t z_pos = 2;
       size_t z_end = chunk_len;
       size_t row_size = width * 4 + 1;
-      auto *raw_filtered = static_cast<uint8_t *>(kmalloc(height * row_size));
+      auto *raw_filtered = static_cast<uint8_t *>(malloc(height * row_size));
       size_t raw_pos = 0;
 
       while (z_pos < z_end - 4) {
@@ -221,7 +222,7 @@ inline auto load_png(const char *filename, uint32_t *pixels, uint32_t width,
                                     static_cast<uint32_t>(b);
         }
       }
-      kfree(raw_filtered);
+      free(raw_filtered);
       success = true;
     } else if (strcmp(chunk_type, "IEND") == 0) {
       break;
@@ -229,7 +230,7 @@ inline auto load_png(const char *filename, uint32_t *pixels, uint32_t width,
     offset += chunk_len + 4;
   }
 
-  kfree(file_data);
+  free(file_data);
   return success;
 }
 
@@ -352,7 +353,7 @@ inline void flood_fill(uint32_t *canvas, uint32_t cw, uint32_t ch, int start_x,
     int x, y;
   };
   size_t stack_capacity = cw * ch;
-  Point *stack = static_cast<Point *>(kmalloc(stack_capacity * sizeof(Point)));
+  Point *stack = static_cast<Point *>(malloc(stack_capacity * sizeof(Point)));
   size_t top = 0;
 
   stack[top++] = {.x = start_x, .y = start_y};
@@ -377,7 +378,7 @@ inline void flood_fill(uint32_t *canvas, uint32_t cw, uint32_t ch, int start_x,
       stack[top++] = {.x = x, .y = y - 1};
     }
   }
-  kfree(stack);
+  free(stack);
 }
 
 void run() {
@@ -394,9 +395,9 @@ void run() {
   const uint32_t COLOR_TEXT = 0xFFCDD6F4;
 
   uint32_t *canvas =
-      static_cast<uint32_t *>(kmalloc(canvas_w * canvas_h * sizeof(uint32_t)));
+      static_cast<uint32_t *>(malloc(canvas_w * canvas_h * sizeof(uint32_t)));
   uint32_t *backup_canvas =
-      static_cast<uint32_t *>(kmalloc(canvas_w * canvas_h * sizeof(uint32_t)));
+      static_cast<uint32_t *>(malloc(canvas_w * canvas_h * sizeof(uint32_t)));
   if ((canvas == nullptr) || (backup_canvas == nullptr))
     return;
   for (size_t i = 0; i < canvas_w * canvas_h; ++i)
@@ -711,8 +712,8 @@ void run() {
     }
   }
 
-  kfree(canvas);
-  kfree(backup_canvas);
+  free(canvas);
+  free(backup_canvas);
 }
 
 } // namespace Kernel::Apps::Pain

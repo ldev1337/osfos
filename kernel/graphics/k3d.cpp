@@ -1,3 +1,4 @@
+#include <stdlib.h>
 #include <algorithm>
 #include <string.h>
 #include <kernel/graphics/k3d.h>
@@ -106,7 +107,7 @@ bool DepthBuffer::init(uint32_t width, uint32_t height) {
   width_ = width;
   height_ = height;
   const size_t size = width_ * height_ * sizeof(float);
-  buffer_ = static_cast<float *>(kmalloc(size));
+  buffer_ = static_cast<float *>(malloc(size));
   if (!buffer_)
     return false;
 
@@ -116,7 +117,7 @@ bool DepthBuffer::init(uint32_t width, uint32_t height) {
 
 void DepthBuffer::destroy() {
   if (buffer_) {
-    kfree(buffer_);
+    free(buffer_);
     buffer_ = nullptr;
   }
   width_ = height_ = 0;

@@ -4,6 +4,7 @@
 #include <kernel/drivers/tsc_deadline.h>
 #include <kernel/memory/heap.h>
 #include <kernel/mtask/internal.h>
+#include <stdlib.h>
 
 namespace Kernel::Scheduler {
 
@@ -389,7 +390,7 @@ void scheduler_init() {
   // Heap allocation happens before disabling interrupts; the critical section
   // below only publishes fully initialized scheduler state.
   auto *main_tcb =
-      static_cast<ThreadControlBlock *>(kmalloc(sizeof(ThreadControlBlock)));
+      static_cast<ThreadControlBlock *>(malloc(sizeof(ThreadControlBlock)));
   if (!main_tcb) {
     Kernel::Debug::log("ERROR: scheduler init failed: main task allocation");
     return;
@@ -398,7 +399,7 @@ void scheduler_init() {
   memset(main_tcb, 0, sizeof(ThreadControlBlock));
   const size_t index = cpu_index();
   if (SCHED_UNLIKELY(index >= MAX_APIC_IDS)) {
-    kfree(main_tcb);
+    free(main_tcb);
     Kernel::Debug::log("ERROR: scheduler init failed: APIC ID out of range");
     return;
   }
@@ -406,7 +407,7 @@ void scheduler_init() {
   if (!initialize_context(&idle_thread_storage[index],
                           reinterpret_cast<uint64_t *>(idle_stack_mem[index]),
                           IDLE_STACK_SIZE, idle_loop, nullptr, nullptr)) {
-    kfree(main_tcb);
+    free(main_tcb);
     Kernel::Debug::log("ERROR: scheduler init failed: idle context setup");
     return;
   }

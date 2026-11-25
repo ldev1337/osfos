@@ -1,3 +1,4 @@
+#include <stdlib.h>
 #include <string.h>
 #include <kernel/drivers/keyboard.h>
 #include <kernel/graphics/vfb.h>
@@ -393,7 +394,7 @@ struct ThumbnailJob {
 
 void release_thumbnail_job(ThumbnailJob *job) {
   if (__atomic_sub_fetch(&job->references, 1u, __ATOMIC_ACQ_REL) == 0)
-    kfree(job);
+    free(job);
 }
 
 int decode_thumbnail_response(char *response, int response_length,
@@ -420,7 +421,7 @@ int decode_thumbnail_response(char *response, int response_length,
 
 void thumbnail_worker(void *argument) {
   auto *job = static_cast<ThumbnailJob *>(argument);
-  auto *response = static_cast<char *>(kmalloc(THUMBNAIL_RESPONSE_CAPACITY));
+  auto *response = static_cast<char *>(malloc(THUMBNAIL_RESPONSE_CAPACITY));
   if (!response) {
     job->result = -3;
   } else {
@@ -431,7 +432,7 @@ void thumbnail_worker(void *argument) {
     else
       job->result = decode_thumbnail_response(
           response, response_length, job->pixels, &job->width, &job->height);
-    kfree(response);
+    free(response);
   }
   __atomic_store_n(&job->state, 1u, __ATOMIC_RELEASE);
   release_thumbnail_job(job);
@@ -440,7 +441,7 @@ void thumbnail_worker(void *argument) {
 
 ThumbnailJob *request_thumbnail(const Video &video, size_t index,
                                 uint32_t generation) {
-  auto *job = static_cast<ThumbnailJob *>(kmalloc(sizeof(ThumbnailJob)));
+  auto *job = static_cast<ThumbnailJob *>(malloc(sizeof(ThumbnailJob)));
   if (!job)
     return nullptr;
   memset(job, 0, sizeof(*job));
@@ -452,7 +453,7 @@ ThumbnailJob *request_thumbnail(const Video &video, size_t index,
   if (Kernel::Scheduler::thread_create(
           thumbnail_worker, job, Kernel::Scheduler::ThreadPriority::NORMAL) <
       0) {
-    kfree(job);
+    free(job);
     return nullptr;
   }
   return job;
@@ -580,7 +581,7 @@ int search(const char *query, Video *videos, size_t capacity) {
                       "\",\"params\":\"EgIQAQ%3D%3D\"}"))
     return -20;
 
-  char *response = static_cast<char *>(kmalloc(SEARCH_CAPACITY));
+  char *response = static_cast<char *>(malloc(SEARCH_CAPACITY));
   if (!response)
     return -1;
   const int length = Kernel::Net::fetch_post(
@@ -591,7 +592,7 @@ int search(const char *query, Video *videos, size_t capacity) {
       length < 0 ? length
                  : parse_search_response(response, static_cast<size_t>(length),
                                          videos, capacity);
-  kfree(response);
+  free(response);
   return result;
 }
 
@@ -600,14 +601,14 @@ void run() {
   if (!vfb.open_window(820, 620, 400, 240))
     return;
 
-  auto *videos = static_cast<Video *>(kmalloc(sizeof(Video) * MAX_RESULTS));
+  auto *videos = static_cast<Video *>(malloc(sizeof(Video) * MAX_RESULTS));
   auto *thumbnail_cache = static_cast<ThumbnailCacheEntry *>(
-      kmalloc(sizeof(ThumbnailCacheEntry) * MAX_RESULTS));
+      malloc(sizeof(ThumbnailCacheEntry) * MAX_RESULTS));
   if (!videos || !thumbnail_cache) {
     if (videos)
-      kfree(videos);
+      free(videos);
     if (thumbnail_cache)
-      kfree(thumbnail_cache);
+      free(thumbnail_cache);
     return;
   }
   memset(videos, 0, sizeof(Video) * MAX_RESULTS);
@@ -800,8 +801,8 @@ void run() {
 
   if (thumbnail_job)
     release_thumbnail_job(thumbnail_job);
-  kfree(thumbnail_cache);
-  kfree(videos);
+  free(thumbnail_cache);
+  free(videos);
 }
 
 } // namespace Kernel::Apps::YouTube
