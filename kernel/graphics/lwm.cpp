@@ -20,13 +20,13 @@
 #include <cstddef>
 #include <cstdint>
 
-#include <string.h>
 #include <kernel/drivers/framebuffer.h>
 #include <kernel/drivers/mouse.h>
 #include <kernel/graphics/internal.h>
 #include <kernel/graphics/lwm.h>
 #include <kernel/init.h>
 #include <kernel/scheduler.h>
+#include <string.h>
 
 namespace Kernel::Graphics::WindowManager {
 namespace {
