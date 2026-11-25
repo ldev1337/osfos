@@ -1,5 +1,5 @@
 #include <cstdint>
-#include <kernel/drivers/keyboard.h>
+#include <oslib/keyboard.h>
 #include <kernel/graphics/vfb.h>
 #include <oslib/ui.h>
 #include <kernel/lib/appcommon.h>
@@ -8,7 +8,7 @@
 namespace Kernel::Apps {
 namespace {
 using namespace Kernel::AppCommon;
-using Kernel::Drivers::Keyboard;
+using oslib::Keyboard;
 
 constexpr uint32_t BG = 0x11111b;
 constexpr uint32_t FG = 0xcdd6f4;
@@ -46,13 +46,13 @@ void run_stress_test() {
 
     vfb.clear(BG);
 
-    Kernel::UICommon::text(vfb, 20, 15, "KERNEL STRESS TEST BENCHMARK", BLUE);
-    Kernel::UICommon::text(vfb, 20, h - 25, "SPACE: SWITCH MODE    Q: QUIT", FG);
-    Kernel::UICommon::text(vfb, w - 140, 15, "MODE:", YELLOW);
-    Kernel::UICommon::number(vfb, w - 80, 15, mode + 1, GREEN);
+    UI::text(vfb, 20, 15, "KERNEL STRESS TEST BENCHMARK", BLUE);
+    UI::text(vfb, 20, h - 25, "SPACE: SWITCH MODE    Q: QUIT", FG);
+    UI::text(vfb, w - 140, 15, "MODE:", YELLOW);
+    UI::number(vfb, w - 80, 15, mode + 1, GREEN);
 
     if (mode == 0) {
-      Kernel::UICommon::text(vfb, 20, 45,
+      UI::text(vfb, 20, 45,
            "Test 1: Heavy Primitive Flood (Rectangles & Rounded Shapes)",
            YELLOW);
       for (int i = 0; i < 150; ++i) {
@@ -62,7 +62,7 @@ void run_stress_test() {
         vfb.fill_rounded_rect(px, py, 30, 20, 4, col);
       }
     } else if (mode == 1) {
-      Kernel::UICommon::text(vfb, 20, 45, "Test 2: Heavy Alpha Blending Overload", YELLOW);
+      UI::text(vfb, 20, 45, "Test 2: Heavy Alpha Blending Overload", YELLOW);
       for (int i = 0; i < 80; ++i) {
         int32_t cx = 50 + (i * 41 + frame_count * 7) % (w - 100);
         int32_t cy = 80 + (i * 29 + frame_count * 4) % (h - 140);
@@ -71,7 +71,7 @@ void run_stress_test() {
         vfb.fill_circle_alpha(cx, cy, 35, col, alpha);
       }
     } else if (mode == 2) {
-      Kernel::UICommon::text(vfb, 20, 45, "Test 3: Line Matrix Rasterization Stress", YELLOW);
+      UI::text(vfb, 20, 45, "Test 3: Line Matrix Rasterization Stress", YELLOW);
       int32_t ox = w / 2;
       int32_t oy = h / 2;
       for (int i = 0; i < 60; ++i) {

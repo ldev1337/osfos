@@ -1,5 +1,5 @@
 #include <string.h>
-#include <kernel/drivers/keyboard.h>
+#include <oslib/keyboard.h>
 #include <kernel/fs/laziofs.h>
 #include <kernel/graphics/open_font.h>
 #include <kernel/graphics/vfb.h>
@@ -10,7 +10,7 @@
 namespace Kernel::Apps {
 namespace {
 using Kernel::AppCommon::delay;
-using Kernel::Drivers::Keyboard;
+using oslib::Keyboard;
 
 constexpr uint32_t BG = 0x121B2B;
 constexpr uint32_t PANEL = 0x1F2A3A;
@@ -29,8 +29,8 @@ void draw_status(Kernel::Graphics::VirtualFramebuffer &vfb, int32_t x,
   const uint32_t text = ok ? GREEN : RED;
   vfb.fill_rect(x, y, 260, 22, box);
   vfb.draw_rect(x, y, 260, 22, PANEL);
-  Kernel::UICommon::text(vfb, x + 8, y + 6, label, FG);
-  Kernel::UICommon::text(vfb, x + 150, y + 6, status, text);
+  UI::text(vfb, x + 8, y + 6, label, FG);
+  UI::text(vfb, x + 150, y + 6, status, text);
 }
 
 void draw_selection_bar(Kernel::Graphics::VirtualFramebuffer &vfb,
@@ -40,8 +40,8 @@ void draw_selection_bar(Kernel::Graphics::VirtualFramebuffer &vfb,
   const uint32_t text = available ? FG : MUTED;
   vfb.fill_rect(x, y, 320, 22, bg);
   vfb.draw_rect(x, y, 320, 22, PANEL);
-  Kernel::UICommon::text(vfb, x + 8, y + 6, selected ? ">" : " ", GOLD);
-  Kernel::UICommon::text(vfb, x + 24, y + 6, font_name, text);
+  UI::text(vfb, x + 8, y + 6, selected ? ">" : " ", GOLD);
+  UI::text(vfb, x + 24, y + 6, font_name, text);
 }
 
 bool load_font_choice(Kernel::Graphics::TrueTypeFont &font, const char *font_name) {
@@ -109,7 +109,7 @@ void run_font_viewer() {
 
     vfb.clear(BG);
     vfb.fill_rect(0, 0, vfb.width(), 30, PANEL);
-    Kernel::UICommon::text(vfb, 16, 8, "FONT VIEWER - AVAILABLE TTFs", FG);
+    UI::text(vfb, 16, 8, "FONT VIEWER - AVAILABLE TTFs", FG);
 
     draw_status(vfb, 12, 42, "embedded", embedded_ok ? "READY" : "MISSING", embedded_ok);
     int32_t list_y = 78;
@@ -129,16 +129,16 @@ void run_font_viewer() {
     const int32_t sample_y = 270;
     vfb.fill_rect(12, sample_y, vfb.width() - 24, 1, PANEL);
     if (active_loaded) {
-      Kernel::UICommon::text(vfb, 18, sample_y + 18, 20.0f, active_font,
+      UI::text(vfb, 18, sample_y + 18, 20.0f, active_font,
                             "The quick brown fox jumps over the lazy dog.", BLUE);
-      Kernel::UICommon::text(vfb, 18, sample_y + 52, 16.0f, active_font,
+      UI::text(vfb, 18, sample_y + 52, 16.0f, active_font,
                             "OSFOS font sample text", GOLD);
-      Kernel::UICommon::text(vfb, 18, sample_y + 82, active_name, GREEN);
+      UI::text(vfb, 18, sample_y + 82, active_name, GREEN);
     } else {
-      Kernel::UICommon::text(vfb, 18, sample_y + 18, "No valid font selected.", RED);
+      UI::text(vfb, 18, sample_y + 18, "No valid font selected.", RED);
     }
 
-    Kernel::UICommon::text(vfb, 18, sample_y + 104, 12.0f, embedded_font,
+    UI::text(vfb, 18, sample_y + 104, 12.0f, embedded_font,
                           "n/p or j/k switch fonts  q quits", MUTED);
     vfb.flush();
     delay(4);

@@ -1,7 +1,7 @@
 #include <stdlib.h>
 #include <string.h>
-#include <kernel/drivers/keyboard.h>
-#include <kernel/drivers/mouse.h>
+#include <oslib/keyboard.h>
+#include <oslib/mouse.h>
 #include <kernel/fs/laziofs.h>
 #include <kernel/graphics/vfb.h>
 #include <kernel/lib/appcommon.h>
@@ -416,39 +416,39 @@ void run() {
 
   // --- Instantiate UI Widgets in Panel ---
   // Tool buttons (Row 1: y = canvas_h + 8)
-  Kernel::UICommon::Button btn_pencil(10, canvas_h + 8, 55, 24, "Pencil");
-  Kernel::UICommon::Button btn_eraser(70, canvas_h + 8, 55, 24, "Eraser");
-  Kernel::UICommon::Button btn_line(130, canvas_h + 8, 50, 24, "Line");
-  Kernel::UICommon::Button btn_rect(185, canvas_h + 8, 55, 24, "Rect");
-  Kernel::UICommon::Button btn_fillrect(245, canvas_h + 8, 65, 24, "FillR");
-  Kernel::UICommon::Button btn_circle(315, canvas_h + 8, 55, 24, "Circle");
-  Kernel::UICommon::Button btn_fillcircle(375, canvas_h + 8, 65, 24, "FillC");
-  Kernel::UICommon::Button btn_bucket(445, canvas_h + 8, 65, 24, "Bucket");
-  Kernel::UICommon::Button btn_drop(515, canvas_h + 8, 65, 24, "Drop");
+  UI::Button btn_pencil(10, canvas_h + 8, 55, 24, "Pencil");
+  UI::Button btn_eraser(70, canvas_h + 8, 55, 24, "Eraser");
+  UI::Button btn_line(130, canvas_h + 8, 50, 24, "Line");
+  UI::Button btn_rect(185, canvas_h + 8, 55, 24, "Rect");
+  UI::Button btn_fillrect(245, canvas_h + 8, 65, 24, "FillR");
+  UI::Button btn_circle(315, canvas_h + 8, 55, 24, "Circle");
+  UI::Button btn_fillcircle(375, canvas_h + 8, 65, 24, "FillC");
+  UI::Button btn_bucket(445, canvas_h + 8, 65, 24, "Bucket");
+  UI::Button btn_drop(515, canvas_h + 8, 65, 24, "Drop");
 
   // Action buttons & Sliders (Row 2: y = canvas_h + 42)
-  Kernel::UICommon::Button btn_save(10, canvas_h + 42, 55, 24, "Save");
-  Kernel::UICommon::Button btn_open(70, canvas_h + 42, 55, 24, "Open");
-  Kernel::UICommon::Button btn_quit(130, canvas_h + 42, 50, 24, "Quit",
+  UI::Button btn_save(10, canvas_h + 42, 55, 24, "Save");
+  UI::Button btn_open(70, canvas_h + 42, 55, 24, "Open");
+  UI::Button btn_quit(130, canvas_h + 42, 50, 24, "Quit",
                                     0xFFF38BA8, 0xFF1E1E2E, 0);
 
-  Kernel::UICommon::Label lbl_brush(190, canvas_h + 48, "Size:");
-  Kernel::UICommon::Slider slider_brush(230, canvas_h + 46, 80, 20, 1, 20, 2);
+  UI::Label lbl_brush(190, canvas_h + 48, "Size:");
+  UI::Slider slider_brush(230, canvas_h + 46, 80, 20, 1, 20, 2);
 
   // RGB Sliders
-  Kernel::UICommon::Label lbl_r(325, canvas_h + 48, "R:");
-  Kernel::UICommon::Slider slider_r(340, canvas_h + 46, 110, 20, 0, 255, 0);
+  UI::Label lbl_r(325, canvas_h + 48, "R:");
+  UI::Slider slider_r(340, canvas_h + 46, 110, 20, 0, 255, 0);
 
-  Kernel::UICommon::Label lbl_g(460, canvas_h + 48, "G:");
-  Kernel::UICommon::Slider slider_g(475, canvas_h + 46, 110, 20, 0, 255, 0);
+  UI::Label lbl_g(460, canvas_h + 48, "G:");
+  UI::Slider slider_g(475, canvas_h + 46, 110, 20, 0, 255, 0);
 
-  Kernel::UICommon::Label lbl_b(595, canvas_h + 48, "B:");
-  Kernel::UICommon::Slider slider_b(610, canvas_h + 46, 110, 20, 0, 255, 0);
+  UI::Label lbl_b(595, canvas_h + 48, "B:");
+  UI::Slider slider_b(610, canvas_h + 46, 110, 20, 0, 255, 0);
 
   // Status Bar
-  Kernel::UICommon::StatusBar status_bar(10, canvas_h + 82, sw - 20, 28,
+  UI::StatusBar status_bar(10, canvas_h + 82, sw - 20, 28,
                                          status_msg);
-  Kernel::UICommon::WidgetGroup panel_widgets;
+  UI::WidgetGroup panel_widgets;
   panel_widgets.add(btn_pencil);
   panel_widgets.add(btn_eraser);
   panel_widgets.add(btn_line);
@@ -480,8 +480,8 @@ void run() {
   int prev_my = -1;
 
   while (running && !Kernel::Scheduler::should_stop()) {
-    int mx = Kernel::UICommon::mouse_x();
-    int my = Kernel::UICommon::mouse_y();
+    int mx = UI::mouse_x();
+    int my = UI::mouse_y();
 
     // Force a redraw when the mouse moves
     if (mx != prev_mx || my != prev_my) {
@@ -490,9 +490,9 @@ void run() {
       prev_my = my;
     }
 
-    bool m_left = Kernel::UICommon::primary_pressed();
+    bool m_left = UI::primary_pressed();
     bool m_released = old_left && !m_left;
-    Kernel::UICommon::Widget *active_widget =
+    UI::Widget *active_widget =
       panel_widgets.handle_mouse(mx, my, m_left, m_released);
 
     // Update RGB and brush size from sliders
@@ -643,7 +643,7 @@ void run() {
 
       else if (active_widget == &btn_save) {
         char filename[64] = "drawing.png";
-        if (Kernel::UICommon::prompt_filename(vfb, "Save filename:", filename,
+        if (UI::prompt_filename(vfb, "Save filename:", filename,
                                               sizeof(filename))) {
           save_png(filename, canvas, canvas_w, canvas_h);
           strcpy(status_msg, "File saved successfully.");
@@ -654,7 +654,7 @@ void run() {
 
       else if (active_widget == &btn_open) {
         char filename[64] = "drawing.png";
-        if (Kernel::UICommon::prompt_filename(vfb, "Open filename:", filename,
+        if (UI::prompt_filename(vfb, "Open filename:", filename,
                                               sizeof(filename))) {
           if (load_png(filename, canvas, canvas_w, canvas_h)) {
             memcpy(backup_canvas, canvas,

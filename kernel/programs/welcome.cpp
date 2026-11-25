@@ -5,7 +5,7 @@
 #include <kernel/drivers/framebuffer.h>
 #include <kernel/graphics/vfb.h>
 #include <oslib/ui.h>
-#include <kernel/drivers/keyboard.h>
+#include <oslib/keyboard.h>
 #include <kernel/drivers/tsc_deadline.h>
 #include <kernel/programs/welcome.h>
 namespace Kernel::Programs {
@@ -63,7 +63,7 @@ void vga_write(const char *text, uint8_t color) {
 void draw_string_fb(uint32_t x, uint32_t y, float size, const char *text,
                    uint32_t color) {
   if (welcome_surface.valid())
-    Kernel::UICommon::text(welcome_surface, static_cast<int32_t>(x),
+    UI::text(welcome_surface, static_cast<int32_t>(x),
                            static_cast<int32_t>(y), text, color, size);
 }
 
@@ -71,12 +71,12 @@ void draw_centered(const char *text, uint32_t y, float font_size,
                    uint32_t color) {
   const uint32_t width = Kernel::Drivers::Framebuffer::width();
   const int32_t max_width = static_cast<int32_t>(width > 32 ? width - 32 : width);
-  int text_width = Kernel::UICommon::text_width(text, font_size);
+  int text_width = UI::text_width(text, font_size);
   while (font_size > 8.0f && text_width > max_width) {
     font_size -= 1.0f;
-    text_width = Kernel::UICommon::text_width(text, font_size);
+    text_width = UI::text_width(text, font_size);
   }
-  const auto centered = Kernel::UICommon::FlexLayout::center(
+  const auto centered = UI::FlexLayout::center(
       {0, static_cast<int32_t>(y), static_cast<int32_t>(width),
        static_cast<int32_t>(font_size + 0.999f)},
       text_width, static_cast<int32_t>(font_size + 0.999f));
@@ -84,7 +84,7 @@ void draw_centered(const char *text, uint32_t y, float font_size,
                  font_size, text, color);
 }
 
-void draw_entry_box(Kernel::UICommon::TextInput &input) {
+void draw_entry_box(UI::TextInput &input) {
   if (!Kernel::Drivers::Framebuffer::valid() || !welcome_surface.valid())
     return;
   const uint32_t width = Kernel::Drivers::Framebuffer::width();
@@ -93,7 +93,7 @@ void draw_entry_box(Kernel::UICommon::TextInput &input) {
     return;
   const uint32_t panel_w = width < 720 ? width - 32 : 688;
   const uint32_t panel_h = height < 280 ? height - 32 : 248;
-  const auto panel = Kernel::UICommon::FlexLayout::center(
+  const auto panel = UI::FlexLayout::center(
       {0, 0, static_cast<int32_t>(width), static_cast<int32_t>(height)},
       static_cast<int32_t>(panel_w), static_cast<int32_t>(panel_h));
   const uint32_t panel_x = static_cast<uint32_t>(panel.x);
@@ -128,7 +128,7 @@ void show() {
   constexpr char required[] = "hello osfos";
   char entered[sizeof(required)]{};
   size_t length = 0;
-  Kernel::UICommon::TextInput input(0, 0, 1, 1, entered, sizeof(entered));
+  UI::TextInput input(0, 0, 1, 1, entered, sizeof(entered));
   input.set_focused(true);
   input.set_font_size_pixels(14.0f);
   acquire();
@@ -158,7 +158,7 @@ void show() {
       welcome_surface.clear(0x07111F);
       const uint32_t panel_w = width < 720 ? width - 32 : 688;
       const uint32_t panel_h = height < 280 ? height - 32 : 248;
-      const auto panel = Kernel::UICommon::FlexLayout::center(
+      const auto panel = UI::FlexLayout::center(
           {0, 0, static_cast<int32_t>(width), static_cast<int32_t>(height)},
           static_cast<int32_t>(panel_w), static_cast<int32_t>(panel_h));
       const uint32_t panel_x = static_cast<uint32_t>(panel.x);
@@ -177,7 +177,7 @@ void show() {
   release();
 
   for (;;) {
-    const char c = Kernel::Drivers::Keyboard::getchar();
+    const char c = oslib::Keyboard::getchar();
     if (c == '\b') {
       if (input.handle_key(c)) {
         length = strlen(entered);

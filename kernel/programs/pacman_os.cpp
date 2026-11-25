@@ -1,7 +1,7 @@
 #include <algorithm>
 #include <cstdint>
 
-#include <kernel/drivers/keyboard.h>
+#include <oslib/keyboard.h>
 #include <kernel/drivers/tsc_deadline.h>
 #include <kernel/graphics/lwm.h>
 #include <kernel/graphics/vfb.h>
@@ -29,8 +29,8 @@ alignas(64) uint32_t
 Kernel::Graphics::VirtualFramebuffer window;
 
 bool key_down(uint8_t scancode, bool extended = false) {
-  return extended ? Kernel::Drivers::Keyboard::is_extended_pressed(scancode)
-                  : Kernel::Drivers::Keyboard::is_pressed(scancode);
+  return extended ? oslib::Keyboard::is_extended_pressed(scancode)
+                  : oslib::Keyboard::is_pressed(scancode);
 }
 
 } // namespace

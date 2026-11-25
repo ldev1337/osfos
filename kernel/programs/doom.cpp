@@ -1,7 +1,7 @@
 #include "doomgeneric/doomkeys.h"
 #include <cstddef>
 #include <cstdint>
-#include <kernel/drivers/keyboard.h>
+#include <oslib/keyboard.h>
 #include <kernel/drivers/tsc_deadline.h>
 #include <kernel/fs/laziofs.h>
 #include <kernel/graphics/lwm.h>
@@ -253,7 +253,7 @@ int DG_GetKey(int *pressed, unsigned char *doomKey) {
   for (uint8_t sc = 1; sc < 128; ++sc) {
     const unsigned char dk = normal_keymap[sc];
     if (dk != 0) {
-      const bool current = Kernel::Drivers::Keyboard::is_pressed(sc);
+      const bool current = oslib::Keyboard::is_pressed(sc);
       if (current != last_states[sc]) {
         last_states[sc] = current;
         *pressed = current ? 1 : 0;
@@ -266,7 +266,7 @@ int DG_GetKey(int *pressed, unsigned char *doomKey) {
   for (uint8_t sc = 1; sc < 128; ++sc) {
     const unsigned char dk = extended_keymap[sc];
     if (dk != 0) {
-      const bool current = Kernel::Drivers::Keyboard::is_extended_pressed(sc);
+      const bool current = oslib::Keyboard::is_extended_pressed(sc);
       if (current != last_ext_states[sc]) {
         last_ext_states[sc] = current;
         *pressed = current ? 1 : 0;
@@ -293,8 +293,8 @@ static void show_startup_error(bool disk_not_initialized) {
   const char *title = "DOOM COULD NOT START";
   const char *message = disk_not_initialized ? "Disk is not initialized."
                                              : "WAD file was not found.";
-  Kernel::UICommon::TextObject title_text(44, 76, title, 0xFFFFC857);
-  Kernel::UICommon::TextObject message_text(44, 100, message, 0xFFE8E8E8);
+  UI::TextObject title_text(44, 76, title, 0xFFFFC857);
+  UI::TextObject message_text(44, 100, message, 0xFFE8E8E8);
   title_text.set_font_size_pixels(16.0f);
   message_text.set_font_size_pixels(14.0f);
   title_text.draw(*doom_window);

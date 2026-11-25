@@ -1,5 +1,5 @@
 #include <string.h>
-#include <kernel/drivers/keyboard.h>
+#include <oslib/keyboard.h>
 #include <kernel/graphics/vfb.h>
 #include <oslib/ui.h>
 #include <kernel/lib/appcommon.h>
@@ -8,7 +8,7 @@
 #include <stdint.h>
 
 namespace Kernel::Apps::Calc {
-using Kernel::Drivers::Keyboard;
+using oslib::Keyboard;
 using namespace Kernel::AppCommon;
 
 static const double PI_VAL = 3.141592653589793;
@@ -506,8 +506,8 @@ draw_highlighted_expression(Kernel::Graphics::VirtualFramebuffer &vfb,
   while (*p != '\0') {
     if (*p == ' ' || *p == '\t') {
       char space[2] = {*p, '\0'};
-      Kernel::UICommon::text(vfb, cx, y, space, 0xFFCDD6F4);
-      cx += Kernel::UICommon::text_width(space);
+      UI::text(vfb, cx, y, space, 0xFFCDD6F4);
+      cx += UI::text_width(space);
       p++;
       continue;
     }
@@ -522,8 +522,8 @@ draw_highlighted_expression(Kernel::Graphics::VirtualFramebuffer &vfb,
         p++;
       }
       word[idx] = '\0';
-      Kernel::UICommon::text(vfb, cx, y, word, 0xFFF9E2AF);
-      cx += Kernel::UICommon::text_width(word);
+      UI::text(vfb, cx, y, word, 0xFFF9E2AF);
+      cx += UI::text_width(word);
       continue;
     }
 
@@ -536,31 +536,31 @@ draw_highlighted_expression(Kernel::Graphics::VirtualFramebuffer &vfb,
         p++;
       }
       number[idx] = '\0';
-      Kernel::UICommon::text(vfb, cx, y, number, 0xFFFAB387);
-      cx += Kernel::UICommon::text_width(number);
+      UI::text(vfb, cx, y, number, 0xFFFAB387);
+      cx += UI::text_width(number);
       continue;
     }
 
     if (*p == '+' || *p == '-' || *p == '*' || *p == '/' || *p == '^' ||
         *p == ',') {
       char token[2] = {*p, '\0'};
-      Kernel::UICommon::text(vfb, cx, y, token, 0xFF89B4FA);
-      cx += Kernel::UICommon::text_width(token);
+      UI::text(vfb, cx, y, token, 0xFF89B4FA);
+      cx += UI::text_width(token);
       p++;
       continue;
     }
 
     if (*p == '(' || *p == ')') {
       char token[2] = {*p, '\0'};
-      Kernel::UICommon::text(vfb, cx, y, token, 0xFF94E2D5);
-      cx += Kernel::UICommon::text_width(token);
+      UI::text(vfb, cx, y, token, 0xFF94E2D5);
+      cx += UI::text_width(token);
       p++;
       continue;
     }
 
     char token[2] = {*p, '\0'};
-    Kernel::UICommon::text(vfb, cx, y, token, 0xFFCDD6F4);
-    cx += Kernel::UICommon::text_width(token);
+    UI::text(vfb, cx, y, token, 0xFFCDD6F4);
+    cx += UI::text_width(token);
     p++;
   }
 }
@@ -667,13 +667,13 @@ void run() {
     if (strlen(expression) > 0) {
       draw_highlighted_expression(vfb, 32, 42, expression);
     } else {
-      Kernel::UICommon::text(vfb, 32, 42, display, error ? 0xFFF38BA8 : 0xFFCDD6F4);
+      UI::text(vfb, 32, 42, display, error ? 0xFFF38BA8 : 0xFFCDD6F4);
     }
 
     // Minimalist help guide
-    Kernel::UICommon::text(vfb, 20, 100, "Functions: sin, cos, tan, sqrt, root, log10, logn, pi",
+    UI::text(vfb, 20, 100, "Functions: sin, cos, tan, sqrt, root, log10, logn, pi",
          0xFF6C7086);
-    Kernel::UICommon::text(vfb, 20, 118, "Exponents: ^-1, ^-2 | Enter: = | `: Clear | ESC: Quit",
+    UI::text(vfb, 20, 118, "Exponents: ^-1, ^-2 | Enter: = | `: Clear | ESC: Quit",
          0xFF6C7086);
 
     vfb.flush();

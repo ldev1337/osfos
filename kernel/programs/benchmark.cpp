@@ -3,8 +3,8 @@
 #include <cstdint>
 #include <kernel/crypto/password.h>
 #include <kernel/debug/debug.h>
-#include <kernel/drivers/keyboard.h>
-#include <kernel/drivers/mouse.h>
+#include <oslib/keyboard.h>
+#include <oslib/mouse.h>
 #include <kernel/drivers/pci.h>
 #include <kernel/drivers/tsc_deadline.h>
 #include <kernel/fs/laziofs.h>
@@ -104,11 +104,11 @@ void log_result(const char *name, const Result &result) {
   Kernel::Debug::log(message);
 }
 
-void keyboard_probe() { (void)Kernel::Drivers::Keyboard::available(); }
+void keyboard_probe() { (void)oslib::Keyboard::available(); }
 
 void mouse_probe() {
-  (void)Kernel::Drivers::Mouse::get_x();
-  (void)Kernel::Drivers::Mouse::get_y();
+  (void)oslib::Mouse::get_x();
+  (void)oslib::Mouse::get_y();
 }
 
 void pci_probe() { (void)pci_read_config(0, 0, 0, 0); }
@@ -603,11 +603,11 @@ void render(VirtualFramebuffer &vfb, size_t app_count) {
   const int32_t width = static_cast<int32_t>(vfb.width());
   const int32_t height = static_cast<int32_t>(vfb.height());
   vfb.clear(BG);
-  Kernel::UICommon::text(vfb, 18, 12, "SYSTEM BENCHMARK", FG);
-  Kernel::UICommon::text(vfb, 18, 28, "OSFOS / LIVE KERNEL MEASUREMENTS",
+  UI::text(vfb, 18, 12, "SYSTEM BENCHMARK", FG);
+  UI::text(vfb, 18, 28, "OSFOS / LIVE KERNEL MEASUREMENTS",
                          MUTED);
   vfb.fill_rect(18, 44, width - 36, 1, PANEL);
-  Kernel::UICommon::text(vfb, 18, 54,
+  UI::text(vfb, 18, 54,
                          running ? "RUNNING  |  31 TESTS"
                                  : "32TESTS  |  CLICK ROW OR SPACE FOR ALL",
                          running ? AMBER : CYAN);
@@ -658,22 +658,22 @@ void render(VirtualFramebuffer &vfb, size_t app_count) {
   const int32_t bar_width = width - 36;
   for (size_t i = 0; i < TEST_COUNT; ++i) {
     const int32_t row_y = 78 + static_cast<int32_t>(i) * 12;
-    Kernel::UICommon::text(vfb, 18, row_y, names[i], FG);
+    UI::text(vfb, 18, row_y, names[i], FG);
     if (results[i].complete) {
       char value[32];
       format_rate(results[i].rate, value, sizeof(value));
       const int32_t value_x = width - 72;
-      Kernel::UICommon::text(vfb, value_x, row_y, value, colors[i]);
+      UI::text(vfb, value_x, row_y, value, colors[i]);
       const uint64_t scaled =
           results[i].rate * static_cast<uint64_t>(bar_width) / max_rate;
       vfb.fill_rect(18, row_y + 9, static_cast<int32_t>(scaled ? scaled : 1), 2,
                     colors[i]);
     } else {
-      Kernel::UICommon::text(vfb, width - 42, row_y, "--", MUTED);
+      UI::text(vfb, width - 42, row_y, "--", MUTED);
     }
   }
   (void)app_count;
-  Kernel::UICommon::text(vfb, 18, height - 22,
+  UI::text(vfb, 18, height - 22,
                          "SPACE RUN ALL  R RESET  Q / ESC CLOSE", CYAN);
   vfb.flush();
 }
@@ -750,8 +750,8 @@ void run_benchmark() {
 
     bool run_all = false;
     int selected = -1;
-    while (Kernel::Drivers::Keyboard::available()) {
-      char key = Kernel::Drivers::Keyboard::getchar();
+    while (oslib::Keyboard::available()) {
+      char key = oslib::Keyboard::getchar();
       if (key >= 'A' && key <= 'Z')
         key += 'a' - 'A';
       if (key == 'q' || key == 27)
@@ -765,13 +765,13 @@ void run_benchmark() {
       }
     }
 
-    const bool mouse_down = Kernel::UICommon::primary_pressed();
+    const bool mouse_down = UI::primary_pressed();
     if (mouse_down && !previous_mouse) {
       int window_x = 0, window_y = 0;
       if (Kernel::AppCommon::get_window_position(
               Kernel::Scheduler::current_thread_id(), &window_x, &window_y)) {
-        const int32_t mouse_x = Kernel::UICommon::mouse_x() - window_x;
-        const int32_t mouse_y = Kernel::UICommon::mouse_y() - window_y;
+        const int32_t mouse_x = UI::mouse_x() - window_x;
+        const int32_t mouse_y = UI::mouse_y() - window_y;
         if (mouse_x >= 18 && mouse_x < static_cast<int32_t>(vfb.width()) - 18 &&
             mouse_y >= 78 &&
             mouse_y < 78 + static_cast<int32_t>(TEST_COUNT) * 12)

@@ -1,6 +1,5 @@
 #include <string.h>
-#include <kernel/drivers/keyboard.h>
-#include <kernel/drivers/mouse.h>
+#include <oslib/mouse.h>
 #include <kernel/graphics/lwm.h>
 #include <kernel/graphics/open_font.h>
 #include <kernel/lib/appcommon.h>
@@ -92,8 +91,8 @@ bool get_window_position(uint64_t thread_id, int *x, int *y) {
 
 static int mouse_position(bool horizontal) {
   int wx = 0, wy = 0;
-  int position = horizontal ? Kernel::Drivers::Mouse::get_x()
-                            : Kernel::Drivers::Mouse::get_y();
+  int position = horizontal ? oslib::Mouse::get_x()
+                            : oslib::Mouse::get_y();
   uint64_t tid = Kernel::Scheduler::current_thread_id();
   return get_window_position(tid, &wx, &wy) ? position - (horizontal ? wx : wy)
                                             : position;
@@ -102,6 +101,6 @@ static int mouse_position(bool horizontal) {
 int get_mouse_x() { return mouse_position(true); }
 int get_mouse_y() { return mouse_position(false); }
 
-bool is_left_pressed() { return Kernel::Drivers::Mouse::is_left_pressed(); }
+bool is_left_pressed() { return oslib::Mouse::is_left_pressed(); }
 
 } // namespace Kernel::AppCommon

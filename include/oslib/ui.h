@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <kernel/graphics/vfb.h>
 
-namespace Kernel::UICommon {
+namespace UI {
 
 // Modern Theme Color Palette (Catppuccin / Dark Theme)
 constexpr uint32_t COLOR_BG = 0xFF1E1E2E;
@@ -255,4 +255,8 @@ bool primary_pressed();
 bool prompt_filename(Kernel::Graphics::VirtualFramebuffer &vfb,
                      const char *prompt, char *buf, size_t max_len);
 
-} // namespace Kernel::UICommon
+} // namespace UI
+
+namespace Kernel::UICommon {
+using namespace UI;
+}

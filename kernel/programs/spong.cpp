@@ -1,6 +1,6 @@
 #include <algorithm>
 #include <cstdint>
-#include <kernel/drivers/keyboard.h>
+#include <oslib/keyboard.h>
 #include <kernel/graphics/vfb.h>
 #include <oslib/ui.h>
 #include <kernel/lib/appcommon.h>
@@ -9,7 +9,7 @@
 
 namespace Kernel::Games::Spong {
 namespace {
-using Kernel::Drivers::Keyboard;
+using oslib::Keyboard;
 using namespace Kernel::AppCommon;
 
 constexpr uint32_t BG = 0x1B1111;
@@ -58,12 +58,12 @@ void render(const Game &g, Kernel::Graphics::VirtualFramebuffer &vfb) {
   vfb.fill_rect(g.w - 20 - PW, g.p2, PW, g.paddle_h, RED);
   vfb.fill_rect(g.bx, g.by, BW, BW, FG);
 
-  const auto title_bounds = Kernel::UICommon::FlexLayout::center(
-      {0, 20, g.w, 16}, Kernel::UICommon::text_width("SPONG"), 16);
-  Kernel::UICommon::text(vfb, title_bounds.x, title_bounds.y, "SPONG", BLUE);
-  Kernel::UICommon::number(vfb, 16, 20, g.score1, GREEN);
-  Kernel::UICommon::number(vfb, g.w - 48, 20, g.score2, RED);
-  Kernel::UICommon::text(vfb, 16, g.h - 20, g.ai ? "W/S   AI   Q: QUIT" : "W/S   I/K   Q: QUIT",
+  const auto title_bounds = UI::FlexLayout::center(
+      {0, 20, g.w, 16}, UI::text_width("SPONG"), 16);
+  UI::text(vfb, title_bounds.x, title_bounds.y, "SPONG", BLUE);
+  UI::number(vfb, 16, 20, g.score1, GREEN);
+  UI::number(vfb, g.w - 48, 20, g.score2, RED);
+  UI::text(vfb, 16, g.h - 20, g.ai ? "W/S   AI   Q: QUIT" : "W/S   I/K   Q: QUIT",
        FG);
   vfb.flush();
 }

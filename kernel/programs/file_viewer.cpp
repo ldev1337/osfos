@@ -1,5 +1,5 @@
 #include <string.h>
-#include <kernel/drivers/keyboard.h>
+#include <oslib/keyboard.h>
 #include <kernel/fs/laziofs.h>
 #include <kernel/graphics/vfb.h>
 #include <kernel/lib/appcommon.h>
@@ -11,7 +11,7 @@ namespace {
 using Kernel::FS::VFS;
 using Kernel::FS::VFSFile;
 using Kernel::Graphics::VirtualFramebuffer;
-using namespace Kernel::UICommon;
+using namespace UI;
 
 constexpr uint32_t BG = 0xFF171D24;
 constexpr uint32_t PANEL = 0xFF232C35;
@@ -76,7 +76,7 @@ void draw_size(VirtualFramebuffer &vfb, int32_t x, int32_t y, uint32_t size,
   for (size_t i = 0; i < count; ++i)
     text[i] = digits[count - i - 1];
   text[count] = '\0';
-  Kernel::UICommon::text(vfb, x, y, text, color, font_size);
+  UI::text(vfb, x, y, text, color, font_size);
 }
 
 void draw_file_rows(VirtualFramebuffer &vfb, uint32_t selected,
@@ -95,7 +95,7 @@ void draw_file_rows(VirtualFramebuffer &vfb, uint32_t selected,
       display_name[sizeof(display_name) - 1] = '\0';
       size_t name_length = strlen(display_name);
       while (name_length > 3 &&
-             Kernel::UICommon::text_width(display_name, 12.0f) >
+             UI::text_width(display_name, 12.0f) >
                  list_width - 82) {
         name_length -= 1;
         display_name[name_length] = '\0';
@@ -105,7 +105,7 @@ void draw_file_rows(VirtualFramebuffer &vfb, uint32_t selected,
         display_name[name_length - 2] = '.';
         display_name[name_length - 1] = '.';
       }
-      Kernel::UICommon::text(vfb, list_x + 8, y + 4, display_name, TEXT,
+      UI::text(vfb, list_x + 8, y + 4, display_name, TEXT,
                               12.0f);
       char size_text[11];
       uint32_t remaining_size = file.size;
@@ -120,8 +120,8 @@ void draw_file_rows(VirtualFramebuffer &vfb, uint32_t selected,
         size_text[i] = size_text[size_length - i - 1];
         size_text[size_length - i - 1] = temp;
       }
-      const int size_width = Kernel::UICommon::text_width(size_text, 11.0f);
-      Kernel::UICommon::text(vfb, list_x + list_width - size_width - 8,
+      const int size_width = UI::text_width(size_text, 11.0f);
+      UI::text(vfb, list_x + list_width - size_width - 8,
                               y + 5, size_text, MUTED, 11.0f);
       ++row;
     }
@@ -183,7 +183,7 @@ void file_viewer_run() {
   char document_text[MAX_VIEW_BYTES + 1];
   bool viewing = false;
   bool running = true;
-  bool previous_left = Kernel::UICommon::primary_pressed();
+  bool previous_left = UI::primary_pressed();
   const int32_t list_x = 12;
   const int32_t list_y = 82;
   const int32_t list_width = 300;
@@ -197,9 +197,9 @@ void file_viewer_run() {
       continue;
     }
     bool changed = false;
-    const int mx = Kernel::UICommon::mouse_x();
-    const int my = Kernel::UICommon::mouse_y();
-    const bool left = Kernel::UICommon::primary_pressed();
+    const int mx = UI::mouse_x();
+    const int my = UI::mouse_y();
+    const bool left = UI::primary_pressed();
     const bool released = previous_left && !left;
     previous_left = left;
 
@@ -293,8 +293,8 @@ void file_viewer_run() {
       }
     }
 
-    while (Kernel::Drivers::Keyboard::available()) {
-      const char key = Kernel::Drivers::Keyboard::getchar();
+    while (oslib::Keyboard::available()) {
+      const char key = oslib::Keyboard::getchar();
       if (key == 27 || key == 'q' || key == 'Q') {
         if (viewing) {
           viewing = false;
@@ -370,23 +370,23 @@ void file_viewer_run() {
           document.set_scroll_line(0);
           loaded_offset = view_offset;
         }
-        Kernel::UICommon::text(vfb, 24, 86, selected_file.name, ACCENT,
+        UI::text(vfb, 24, 86, selected_file.name, ACCENT,
                                 14.0f);
         document.draw(vfb);
         status.set_status("j/k scroll  Page +/- browse file  Esc back");
       } else {
-        Kernel::UICommon::text(vfb, 22, 86, "FILES", ACCENT, 13.0f);
+        UI::text(vfb, 22, 86, "FILES", ACCENT, 13.0f);
         draw_file_rows(vfb, selected_index, first_index, list_x, list_y,
                        list_width, visible_rows);
         if (has_selection) {
-          Kernel::UICommon::text(vfb, 338, 100, selected_file.name, TEXT,
+          UI::text(vfb, 338, 100, selected_file.name, TEXT,
                                   14.0f);
-          Kernel::UICommon::text(vfb, 338, 130, "Size", MUTED, 12.0f);
+          UI::text(vfb, 338, 130, "Size", MUTED, 12.0f);
           draw_size(vfb, 390, 130, selected_file.size, TEXT, 12.0f);
-          Kernel::UICommon::text(vfb, 338, 162,
+          UI::text(vfb, 338, 162,
                                   "Press Enter or Open to view", MUTED, 12.0f);
         } else {
-          Kernel::UICommon::text(vfb, 338, 100, "No files found.", MUTED,
+          UI::text(vfb, 338, 100, "No files found.", MUTED,
                                   14.0f);
         }
         status.set_status("Up/Down select  Enter open  Esc quit");

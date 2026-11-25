@@ -1,6 +1,6 @@
 #include <kernel/debug/debug.h>
 #include <kernel/drivers/ata.h>
-#include <kernel/drivers/keyboard.h>
+#include <oslib/keyboard.h>
 #include <kernel/drivers/net/device.h>
 #include <kernel/drivers/pci.h>
 #include <kernel/drivers/usb/xhci.h>
@@ -798,7 +798,7 @@ void run() {
       Kernel::Scheduler::thread_sleep_ms(4);
       continue;
     }
-    char ch = Kernel::Drivers::Keyboard::getchar();
+    char ch = oslib::Keyboard::getchar();
     Kernel::Programs::Terminal::hide_cursor(cursor_column, cursor_row);
 
     if (ch == '\r' || ch == '\n') {

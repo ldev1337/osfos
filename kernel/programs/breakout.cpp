@@ -1,4 +1,4 @@
-#include <kernel/drivers/keyboard.h>
+#include <oslib/keyboard.h>
 #include <kernel/graphics/vfb.h>
 #include <oslib/ui.h>
 #include <kernel/lib/appcommon.h>
@@ -7,7 +7,7 @@
 
 namespace Kernel::Games::Breakout {
 namespace {
-using Kernel::Drivers::Keyboard;
+using oslib::Keyboard;
 static Kernel::Graphics::VirtualFramebuffer vfb;
 
 constexpr uint32_t BG = 0x1B1111;
@@ -90,10 +90,10 @@ static void reset_game() {
 }
 
 static void text_center(int y, const char *s, uint32_t color) {
-  const int width = Kernel::UICommon::text_width(s);
-  const auto bounds = Kernel::UICommon::FlexLayout::center(
+  const int width = UI::text_width(s);
+  const auto bounds = UI::FlexLayout::center(
       {0, y, sw, 14}, width, 14);
-  Kernel::UICommon::text(vfb, bounds.x, bounds.y, s, color);
+  UI::text(vfb, bounds.x, bounds.y, s, color);
 }
 
 static bool overlaps_rect(int cx, int cy, int radius, int rx, int ry, int rw,
@@ -162,11 +162,11 @@ static void draw() {
 
   vfb.fill_rect(0, 0, sw, 34, PANEL);
   vfb.fill_rect(0, 33, sw, 2, BLUE);
-  Kernel::UICommon::text(vfb, 12, 12, "OSFOS / BREAKOUT", GREEN);
-  Kernel::UICommon::text(vfb, sw / 2 - 56, 12, "SCORE", MUTED);
-  Kernel::UICommon::number(vfb, sw / 2 + 4, 12, score, FG);
-  Kernel::UICommon::text(vfb, sw - 100, 12, "LIVES", MUTED);
-  Kernel::UICommon::number(vfb, sw - 48, 12, lives, FG);
+  UI::text(vfb, 12, 12, "OSFOS / BREAKOUT", GREEN);
+  UI::text(vfb, sw / 2 - 56, 12, "SCORE", MUTED);
+  UI::number(vfb, sw / 2 + 4, 12, score, FG);
+  UI::text(vfb, sw - 100, 12, "LIVES", MUTED);
+  UI::number(vfb, sw - 48, 12, lives, FG);
 
   for (int r = 0; r < BRICK_ROWS; ++r) {
     const uint32_t colors[] = {RED, YELLOW, GREEN, BLUE, RED};
@@ -205,7 +205,7 @@ static void draw() {
     text_center(sh / 2 + 2, "SPACE: RESTART", FG);
     text_center(sh / 2 + 22, "Q: QUIT", MUTED);
   } else {
-    Kernel::UICommon::text(vfb, 12, sh - 20,
+    UI::text(vfb, 12, sh - 20,
                             "A/D or J/L: MOVE    SPACE: LAUNCH    Q: QUIT",
                             MUTED);
   }

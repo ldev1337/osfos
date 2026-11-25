@@ -1,7 +1,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <cstdint>
-#include <kernel/drivers/keyboard.h>
+#include <oslib/keyboard.h>
 #include <kernel/fs/laziofs.h>
 #include <kernel/graphics/vfb.h>
 #include <oslib/ui.h>
@@ -12,7 +12,7 @@
 namespace Kernel::Apps {
 namespace {
 using namespace Kernel::AppCommon;
-using Kernel::Drivers::Keyboard;
+using oslib::Keyboard;
 
 // Flat classic notepad palette: no gradients, no soft shading.
 constexpr uint32_t BG = 0xFFFFFF;
@@ -285,7 +285,7 @@ int cursor_pixel_offset(const char *line, size_t column) {
 
 bool prompt_path(Kernel::Graphics::VirtualFramebuffer &vfb, const char *prompt,
                  char *buf, size_t max_len) {
-  using namespace Kernel::UICommon;
+  using namespace UI;
   const Rect dialog = FlexLayout::center(
       {0, 0, static_cast<int32_t>(vfb.width()),
        static_cast<int32_t>(vfb.height())},
@@ -306,7 +306,7 @@ bool prompt_path(Kernel::Graphics::VirtualFramebuffer &vfb, const char *prompt,
   controls.add(input);
   controls.add(cancel);
   controls.add(confirm);
-  bool previous_left = Kernel::UICommon::primary_pressed();
+  bool previous_left = UI::primary_pressed();
 
   for (;;) {
     vfb.fill_rounded_rect(dialog.x, dialog.y, dialog.width, dialog.height, 6,
@@ -315,13 +315,13 @@ bool prompt_path(Kernel::Graphics::VirtualFramebuffer &vfb, const char *prompt,
                           RULE);
     title.draw(vfb);
     controls.draw(vfb, false);
-    Kernel::UICommon::text(vfb, dialog.x + 14, dialog.y + 104,
+    UI::text(vfb, dialog.x + 14, dialog.y + 104,
                            "Enter confirms   Esc cancels", MUTED, 11.0f);
     vfb.flush();
 
-    const int mx = Kernel::UICommon::mouse_x();
-    const int my = Kernel::UICommon::mouse_y();
-    const bool left = Kernel::UICommon::primary_pressed();
+    const int mx = UI::mouse_x();
+    const int my = UI::mouse_y();
+    const bool left = UI::primary_pressed();
     const bool released = previous_left && !left;
     previous_left = left;
     Widget *clicked = controls.handle_mouse(mx, my, left, released);
@@ -330,7 +330,7 @@ bool prompt_path(Kernel::Graphics::VirtualFramebuffer &vfb, const char *prompt,
     if (clicked == &confirm)
       return true;
 
-    if (!Kernel::Drivers::Keyboard::available()) {
+    if (!oslib::Keyboard::available()) {
       Kernel::Scheduler::thread_sleep_ms(8);
       continue;
     }
@@ -348,9 +348,9 @@ void draw_menu_item(Kernel::Graphics::VirtualFramebuffer &vfb, int x, int y,
                     int w, int h, const char *label, bool active) {
   if (active) {
     vfb.fill_rect(x, y, w, h, INVERT_BG);
-    Kernel::UICommon::text(vfb, x + 6, y + (h / 2) - 4, label, INVERT_FG);
+    UI::text(vfb, x + 6, y + (h / 2) - 4, label, INVERT_FG);
   } else {
-    Kernel::UICommon::text(vfb, x + 6, y + (h / 2) - 4, label, FG);
+    UI::text(vfb, x + 6, y + (h / 2) - 4, label, FG);
   }
 }
 
@@ -525,7 +525,7 @@ void run_shitty_pad() {
       draw_menu_item(vfb, btn_x[i], btn_y, btn_w[i], btn_h, btn_label[i],
                      active);
       if (i < 3)
-        Kernel::UICommon::text(vfb, btn_x[i] + btn_w[i] - 2, btn_y + (btn_h / 2) - 4, "|",
+        UI::text(vfb, btn_x[i] + btn_w[i] - 2, btn_y + (btn_h / 2) - 4, "|",
              MUTED);
     }
     vfb.draw_line(0, MENU_H, w, MENU_H, RULE);
@@ -546,9 +546,9 @@ void run_shitty_pad() {
       int ln_x = GUTTER_W - 4 - static_cast<int>(ln_len) * CHAR_W;
       if (ln_x < 2)
         ln_x = 2;
-      Kernel::UICommon::text(vfb, ln_x, ry, ln, MUTED);
+      UI::text(vfb, ln_x, ry, ln, MUTED);
 
-      Kernel::UICommon::text(vfb, text_x, ry, text_buf->lines[cur_r], FG);
+      UI::text(vfb, text_x, ry, text_buf->lines[cur_r], FG);
       if (cur_r == cursor_r) {
         int cx = text_x + cursor_pixel_offset(text_buf->lines[cur_r], cursor_c);
         vfb.fill_rect(cx, ry, 1, CURSOR_H, CURSOR);
@@ -573,14 +573,14 @@ void run_shitty_pad() {
     append(pos_str, sizeof(pos_str), p, "  Lines ");
     append(pos_str, sizeof(pos_str), p, n_str);
 
-    Kernel::UICommon::text(vfb, 6, ty + 5, pos_str, FG);
-    Kernel::UICommon::text(vfb, 210, ty + 5, status_msg, MUTED);
+    UI::text(vfb, 6, ty + 5, pos_str, FG);
+    UI::text(vfb, 210, ty + 5, status_msg, MUTED);
 
     size_t path_len = strlen(current_filepath);
     int path_x = w - 6 - static_cast<int>(path_len) * CHAR_W;
     if (path_x < 320)
       path_x = 320;
-    Kernel::UICommon::text(vfb, path_x, ty + 5, current_filepath, MUTED);
+    UI::text(vfb, path_x, ty + 5, current_filepath, MUTED);
 
     vfb.flush();
     delay(10);

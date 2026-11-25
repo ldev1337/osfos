@@ -1,4 +1,4 @@
-#include <kernel/drivers/keyboard.h>
+#include <oslib/keyboard.h>
 #include <kernel/graphics/vfb.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/media/jpeg.h>
@@ -630,8 +630,8 @@ void run() {
 
   while (running && !Scheduler::should_stop()) {
     bool changed = false;
-    while (Drivers::Keyboard::available()) {
-      const char key = Drivers::Keyboard::getchar();
+    while (oslib::Keyboard::available()) {
+      const char key = oslib::Keyboard::getchar();
       if (key == 27) {
         running = false;
         break;
@@ -696,8 +696,8 @@ void run() {
       }
     }
 
-    const bool up_pressed = Drivers::Keyboard::is_extended_pressed(0x48);
-    const bool down_pressed = Drivers::Keyboard::is_extended_pressed(0x50);
+    const bool up_pressed = oslib::Keyboard::is_extended_pressed(0x48);
+    const bool down_pressed = oslib::Keyboard::is_extended_pressed(0x50);
     if (count && up_pressed && !up_was_pressed) {
       if (selected > 0) {
         --selected;

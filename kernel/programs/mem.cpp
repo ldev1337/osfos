@@ -1,5 +1,5 @@
 #include <cstdint>
-#include <kernel/drivers/keyboard.h>
+#include <oslib/keyboard.h>
 #include <kernel/graphics/vfb.h>
 #include <kernel/lib/appcommon.h>
 #include <oslib/ui.h>
@@ -9,7 +9,7 @@
 namespace Kernel::Apps {
 namespace {
 using namespace Kernel::AppCommon;
-using Kernel::Drivers::Keyboard;
+using oslib::Keyboard;
 
 constexpr uint32_t BG_COLOR = 0x101820;
 constexpr uint32_t CARD_BG = 0x1A2634;
@@ -104,7 +104,7 @@ void draw_formatted_size(Kernel::Graphics::VirtualFramebuffer &vfb, int32_t x,
     append_str(buf, idx, sizeof(buf), " KiB");
   }
 
-  Kernel::UICommon::text(vfb, x, y, buf, color);
+  UI::text(vfb, x, y, buf, color);
 }
 
 void draw_stat_card(Kernel::Graphics::VirtualFramebuffer &vfb, int32_t x,
@@ -114,10 +114,10 @@ void draw_stat_card(Kernel::Graphics::VirtualFramebuffer &vfb, int32_t x,
   vfb.fill_rounded_rect(x, y, w, h, 6, CARD_BG);
   vfb.draw_rounded_rect(x, y, w, h, 6, CARD_BORDER);
 
-  Kernel::UICommon::text(vfb, x + 12, y + 10, title, TEXT_MUTED);
+  UI::text(vfb, x + 12, y + 10, title, TEXT_MUTED);
   draw_formatted_size(vfb, x + 12, y + 26, used_bytes, color);
 
-  Kernel::UICommon::text(vfb, x + 12, y + 42, "/", TEXT_MUTED);
+  UI::text(vfb, x + 12, y + 42, "/", TEXT_MUTED);
   draw_formatted_size(vfb, x + 24, y + 42, total_bytes, TEXT_MUTED);
 
   // Dynamic Progress Bar
@@ -187,8 +187,8 @@ void run_memory_analyzer() {
     vfb.clear(BG_COLOR);
 
     // Header Title & Controls
-    Kernel::UICommon::text(vfb, 16, 12, "SYSTEM MEMORY ANALYTICS LIVE", TEXT_MAIN);
-    Kernel::UICommon::text(vfb, w - 210, 12, "[R] VERIFY  [V] CHECK  [Q] QUIT",
+    UI::text(vfb, 16, 12, "SYSTEM MEMORY ANALYTICS LIVE", TEXT_MAIN);
+    UI::text(vfb, w - 210, 12, "[R] VERIFY  [V] CHECK  [Q] QUIT",
                            TEXT_MUTED);
 
     // Status Cards (reflecting live dynamic heap pool size & PMM usage)
@@ -203,30 +203,30 @@ void run_memory_analyzer() {
 
     // Heap Peak & True Recheck Panel
     vfb.fill_rounded_rect(16, 116, w - 32, 40, 4, CARD_BG);
-    Kernel::UICommon::text(vfb, 24, 122, "HEAP PEAK:", TEXT_MUTED);
+    UI::text(vfb, 24, 122, "HEAP PEAK:", TEXT_MUTED);
     draw_formatted_size(vfb, 112, 122, mem_info.heap_peak_size, COLOR_PEAK);
 
-    Kernel::UICommon::text(vfb, 234, 122, "POOL:", TEXT_MUTED);
+    UI::text(vfb, 234, 122, "POOL:", TEXT_MUTED);
     draw_formatted_size(vfb, 282, 122, mem_info.heap_total_size, COLOR_HEAP);
 
     if (has_heap_check) {
-      Kernel::UICommon::text(vfb, w - 120, 122,
+      UI::text(vfb, w - 120, 122,
                              heap_valid ? "HEAP: OK" : "HEAP: CORRUPT",
                              heap_valid ? COLOR_OK : COLOR_ERR);
     }
 
     if (has_verified_sample) {
-      Kernel::UICommon::text(vfb, 24, 140, "TRUE PMM:", TEXT_MUTED);
+      UI::text(vfb, 24, 140, "TRUE PMM:", TEXT_MUTED);
       draw_formatted_size(vfb, 104, 140, verified_info.pmm_used_memory,
                           COLOR_CHECK);
-      Kernel::UICommon::text(vfb, 218, 140, "TRUE HEAP:", TEXT_MUTED);
+      UI::text(vfb, 218, 140, "TRUE HEAP:", TEXT_MUTED);
       draw_formatted_size(vfb, 304, 140, verified_info.heap_used_size,
                           COLOR_CHECK);
-      Kernel::UICommon::text(vfb, 420, 140, "FREE RAM:", TEXT_MUTED);
+      UI::text(vfb, 420, 140, "FREE RAM:", TEXT_MUTED);
       draw_formatted_size(vfb, 502, 140, verified_info.pmm_free_memory,
                           COLOR_PMM);
     } else {
-      Kernel::UICommon::text(
+      UI::text(
           vfb, 24, 140,
           "PRESS [R] TO SCAN TRUE BITMAP/SEGMENT USAGE OR [V] TO VALIDATE",
           COLOR_CHECK);
@@ -287,10 +287,10 @@ void run_memory_analyzer() {
 
     // Graph Legend
     vfb.fill_rect(gx + 12, gy + gh - 18, 10, 8, COLOR_PMM);
-    Kernel::UICommon::text(vfb, gx + 26, gy + gh - 18, "PMM", COLOR_PMM);
+    UI::text(vfb, gx + 26, gy + gh - 18, "PMM", COLOR_PMM);
 
     vfb.fill_rect(gx + 70, gy + gh - 18, 10, 8, COLOR_HEAP);
-    Kernel::UICommon::text(vfb, gx + 84, gy + gh - 18, "HEAP", COLOR_HEAP);
+    UI::text(vfb, gx + 84, gy + gh - 18, "HEAP", COLOR_HEAP);
 
     vfb.flush();
     sample_tick++;

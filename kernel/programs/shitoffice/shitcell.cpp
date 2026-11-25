@@ -1,8 +1,8 @@
 #include <algorithm>
 #include <string.h>
 #include <cstdint>
-#include <kernel/drivers/keyboard.h>
-#include <kernel/drivers/mouse.h>
+#include <oslib/keyboard.h>
+#include <oslib/mouse.h>
 #include <kernel/fs/laziofs.h>
 #include <kernel/graphics/vfb.h>
 #include <kernel/lib/appcommon.h>
@@ -12,7 +12,7 @@
 namespace Kernel::Apps {
 namespace {
 using namespace Kernel::AppCommon;
-using Kernel::Drivers::Keyboard;
+using oslib::Keyboard;
 
 constexpr uint32_t SHITCELL_PRIMARY = 0x5C4033, SHITCELL_DARK = 0x3D2817;
 constexpr uint32_t SHITCELL_HEADER_BG = 0xE6E6E6,
@@ -540,24 +540,24 @@ void run_shitty_excel() {
   bool mouse_down_prev = false;
 
   // --- Instantiate UI Framework Widgets ---
-  Kernel::UICommon::Button btn_save(10, 31, 60, 18, "Save", 0xFF45475A,
+  UI::Button btn_save(10, 31, 60, 18, "Save", 0xFF45475A,
                                     0xFFFFFF, 0);
-  Kernel::UICommon::Button btn_open(75, 31, 60, 18, "Open", 0xFF45475A,
+  UI::Button btn_open(75, 31, 60, 18, "Open", 0xFF45475A,
                                     0xFFFFFF, 0);
-  Kernel::UICommon::Button btn_quit(140, 31, 50, 18, "Quit", 0xFFF38BA8,
+  UI::Button btn_quit(140, 31, 50, 18, "Quit", 0xFFF38BA8,
                                     0xFF1E1E2E, 0);
-  Kernel::UICommon::Button btn_clear(195, 31, 60, 18, "Clear", 0xFF45475A,
+  UI::Button btn_clear(195, 31, 60, 18, "Clear", 0xFF45475A,
                                      0xFFFFFF, 0);
-  Kernel::UICommon::Button btn_color(260, 31, 60, 18, "Color", 0xFF45475A,
+  UI::Button btn_color(260, 31, 60, 18, "Color", 0xFF45475A,
                                      0xFFFFFF, 0);
 
-  Kernel::UICommon::StatusBar status_bar(0, h - 22, w, 22, status_msg,
+  UI::StatusBar status_bar(0, h - 22, w, 22, status_msg,
                                          SHITCELL_STATUS_BG, 0x555555,
                                          SHITCELL_GRID_LINE);
-  Kernel::UICommon::TextInput cell_input(85, 53, w - 98, 18, edit_buf,
+  UI::TextInput cell_input(85, 53, w - 98, 18, edit_buf,
                                          sizeof(edit_buf));
   cell_input.set_font_size_pixels(12.0f);
-  Kernel::UICommon::WidgetGroup toolbar;
+  UI::WidgetGroup toolbar;
   toolbar.add(btn_save);
   toolbar.add(btn_open);
   toolbar.add(btn_quit);
@@ -568,21 +568,21 @@ void run_shitty_excel() {
   bool old_left = false;
 
   while (running && !Kernel::Scheduler::should_stop()) {
-    int mx = Kernel::UICommon::mouse_x();
-    int my = Kernel::UICommon::mouse_y();
-    bool m_left = Kernel::UICommon::primary_pressed();
+    int mx = UI::mouse_x();
+    int my = UI::mouse_y();
+    bool m_left = UI::primary_pressed();
     bool m_released = old_left && !m_left;
 
     int gx = 50, gy = 74, rh = 28, cw = 90;
     int v_rows = (h - gy - 22) / rh, v_cols = (w - gx - 10) / cw;
-    const Kernel::UICommon::Rect table_bounds{gx, gy, cw * v_cols,
+    const UI::Rect table_bounds{gx, gy, cw * v_cols,
                                                rh * (v_rows + 1)};
 
     if (m_left && !mouse_down_prev) {
       if (my >= gy + rh && mx >= gx) {
         const uint32_t row = static_cast<uint32_t>((my - gy) / rh);
         const uint32_t column = static_cast<uint32_t>((mx - gx) / cw);
-        const auto cell_bounds = Kernel::UICommon::FlexLayout::grid_cell(
+        const auto cell_bounds = UI::FlexLayout::grid_cell(
             table_bounds, row, column, v_rows + 1, v_cols);
         const int clicked_r = view_r + static_cast<int>(row) - 1;
         const int clicked_c = view_c + static_cast<int>(column);
@@ -599,10 +599,10 @@ void run_shitty_excel() {
     mouse_down_prev = m_left;
 
     // --- Widget Mouse Handling ---
-    Kernel::UICommon::Widget *clicked =
+    UI::Widget *clicked =
       toolbar.handle_mouse(mx, my, m_left, m_released);
     if (clicked == &btn_save) {
-      if (Kernel::UICommon::prompt_filename(vfb,
+      if (UI::prompt_filename(vfb,
                                             "Save filename:", current_filepath,
                                             sizeof(current_filepath))) {
         status_msg = save_to_vfs(grid, current_filepath)
@@ -613,7 +613,7 @@ void run_shitty_excel() {
       panel_redraw_needed = true;
     }
     if (clicked == &btn_open) {
-      if (Kernel::UICommon::prompt_filename(vfb,
+      if (UI::prompt_filename(vfb,
                                             "Open filename:", current_filepath,
                                             sizeof(current_filepath))) {
         status_msg = load_from_vfs(grid, current_filepath)
@@ -765,9 +765,9 @@ void run_shitty_excel() {
 
       vfb.clear(SHITCELL_GRID_BG);
       vfb.fill_rect(0, 0, w, 28, SHITCELL_PRIMARY);
-      Kernel::UICommon::text(vfb, 12, 10, "ShitCell - FeatureRich Spreadsheet [OSFOS]", 0xFFFFFF);
+      UI::text(vfb, 12, 10, "ShitCell - FeatureRich Spreadsheet [OSFOS]", 0xFFFFFF);
       vfb.fill_rect(0, 28, w, 22, SHITCELL_DARK);
-      Kernel::UICommon::text(vfb, 12, 34,
+      UI::text(vfb, 12, 34,
            "Mouse Click | Save | Open | Formulas: =A1*2, =A1*A2*0.5", 0xE0E0E0);
 
       // Draw UI Framework Buttons
@@ -789,14 +789,14 @@ void run_shitty_excel() {
 
       vfb.fill_rect(8, fy + 3, 46, 18, 0xFFFFFF);
       vfb.draw_rect(8, fy + 3, 46, 18, SHITCELL_GRID_LINE);
-      Kernel::UICommon::text(vfb, 12, fy + 8, cref, SHITCELL_HEADER_TEXT);
-      Kernel::UICommon::text(vfb, 62, fy + 8, "fx", 0x777777);
+      UI::text(vfb, 12, fy + 8, cref, SHITCELL_HEADER_TEXT);
+      UI::text(vfb, 62, fy + 8, "fx", 0x777777);
 
       CellData *ac = grid.find(sel_r, sel_c);
       if (editing) {
         cell_input.draw(vfb);
       } else {
-        Kernel::UICommon::text(vfb, 85, fy + 8, ac ? ac->text : "", SHITCELL_TEXT_COLOR);
+        UI::text(vfb, 85, fy + 8, ac ? ac->text : "", SHITCELL_TEXT_COLOR);
       }
 
       vfb.fill_rect(0, gy, gx, rh, SHITCELL_HEADER_BG);
@@ -804,7 +804,7 @@ void run_shitty_excel() {
 
       for (int c = 0; c < v_cols; ++c) {
         const int cur_c = view_c + c;
-        const auto cell_bounds = Kernel::UICommon::FlexLayout::grid_cell(
+        const auto cell_bounds = UI::FlexLayout::grid_cell(
             table_bounds, 0, c, v_rows + 1, v_cols);
         const int cx = cell_bounds.x;
         vfb.fill_rect(cx, cell_bounds.y, cell_bounds.width,
@@ -814,15 +814,15 @@ void run_shitty_excel() {
                       cell_bounds.height, SHITCELL_GRID_LINE);
         char cn[8];
         get_col_name(cur_c, cn, sizeof(cn));
-        const auto text_bounds = Kernel::UICommon::FlexLayout::center(
-            cell_bounds, Kernel::UICommon::text_width(cn), 14);
-        Kernel::UICommon::text(vfb, text_bounds.x, text_bounds.y, cn,
+        const auto text_bounds = UI::FlexLayout::center(
+            cell_bounds, UI::text_width(cn), 14);
+        UI::text(vfb, text_bounds.x, text_bounds.y, cn,
                                SHITCELL_HEADER_TEXT);
       }
 
       for (int r = 0; r < v_rows; ++r) {
         const int cur_r = view_r + r;
-        const auto row_bounds = Kernel::UICommon::FlexLayout::grid_cell(
+        const auto row_bounds = UI::FlexLayout::grid_cell(
             table_bounds, r + 1, 0, v_rows + 1, v_cols);
         const int ry = row_bounds.y;
         vfb.fill_rect(0, ry, gx, row_bounds.height,
@@ -830,11 +830,11 @@ void run_shitty_excel() {
         vfb.draw_rect(0, ry, gx, row_bounds.height, SHITCELL_GRID_LINE);
         char rn[16];
         int_to_str(cur_r + 1, rn, sizeof(rn));
-        Kernel::UICommon::text(vfb, 8, ry + 10, rn, SHITCELL_HEADER_TEXT);
+        UI::text(vfb, 8, ry + 10, rn, SHITCELL_HEADER_TEXT);
 
         for (int c = 0; c < v_cols; ++c) {
           const int cur_c = view_c + c;
-          const auto cell_bounds = Kernel::UICommon::FlexLayout::grid_cell(
+          const auto cell_bounds = UI::FlexLayout::grid_cell(
               table_bounds, r + 1, c, v_rows + 1, v_cols);
           const int cx = cell_bounds.x;
           bool sel = (cur_r == sel_r && cur_c == sel_c);
@@ -861,15 +861,15 @@ void run_shitty_excel() {
             }
             debuf[idx] = '|';
             debuf[idx + 1] = '\0';
-            Kernel::UICommon::text(vfb, cx + 8, ry + 10, debuf, SHITCELL_TEXT_COLOR);
+            UI::text(vfb, cx + 8, ry + 10, debuf, SHITCELL_TEXT_COLOR);
           } else if (cell) {
             if (cell->text[0] == '=') {
               char evaluated[32];
               evaluate_formula(grid, cur_r, cur_c, cell->text, evaluated,
                                sizeof(evaluated));
-              Kernel::UICommon::text(vfb, cx + 8, ry + 10, evaluated, fg);
+              UI::text(vfb, cx + 8, ry + 10, evaluated, fg);
             } else {
-              Kernel::UICommon::text(vfb, cx + 8, ry + 10, cell->text, fg);
+              UI::text(vfb, cx + 8, ry + 10, cell->text, fg);
             }
           }
         }
@@ -880,7 +880,7 @@ void run_shitty_excel() {
       vfb.fill_rect(10, h - 22 - 2, 70, 22, 0xFFFFFF);
       vfb.draw_rect(10, h - 22 - 2, 70, 22, SHITCELL_GRID_LINE);
       vfb.fill_rect(10, h - 22 + 18, 70, 2, SHITCELL_PRIMARY);
-      Kernel::UICommon::text(vfb, 22, h - 22 + 5, "Sheet1", SHITCELL_PRIMARY);
+      UI::text(vfb, 22, h - 22 + 5, "Sheet1", SHITCELL_PRIMARY);
 
       vfb.flush();
       panel_redraw_needed = false;

@@ -1,5 +1,5 @@
 #include <cstdint>
-#include <kernel/drivers/keyboard.h>
+#include <oslib/keyboard.h>
 #include <kernel/drivers/tsc_deadline.h>
 #include <kernel/graphics/vfb.h>
 #include <oslib/ui.h>
@@ -232,9 +232,9 @@ void render(int ox, int oy) {
   int sb_x = ox + board_w_px + 20;
   int sb_y = oy;
 
-  Kernel::UICommon::text(vfb, sb_x, sb_y, "TETRIS", 0x00FFFF);
+  UI::text(vfb, sb_x, sb_y, "TETRIS", 0x00FFFF);
   vfb.draw_line(sb_x, sb_y + 12, sb_x + 140, sb_y + 12, COLOR_BORDER);
-  Kernel::UICommon::text(vfb, sb_x, sb_y + 22, "SCORE:", COLOR_DIM_TEXT);
+  UI::text(vfb, sb_x, sb_y + 22, "SCORE:", COLOR_DIM_TEXT);
   char score_buf[32];
   int s = score;
   int idx = 0;
@@ -253,9 +253,9 @@ void render(int ox, int oy) {
     }
     score_buf[idx] = 0;
   }
-  Kernel::UICommon::text(vfb, sb_x, sb_y + 34, score_buf, COLOR_TEXT);
+  UI::text(vfb, sb_x, sb_y + 34, score_buf, COLOR_TEXT);
 
-  Kernel::UICommon::text(vfb, sb_x, sb_y + 58, "NEXT:", COLOR_DIM_TEXT);
+  UI::text(vfb, sb_x, sb_y + 58, "NEXT:", COLOR_DIM_TEXT);
   vfb.draw_rect(sb_x, sb_y + 72, 110, 80, COLOR_BORDER);
   vfb.fill_rect(sb_x + 1, sb_y + 73, 108, 78, COLOR_BOARD_BG);
 
@@ -273,12 +273,12 @@ void render(int ox, int oy) {
       }
     }
   }
-  Kernel::UICommon::text(vfb, sb_x, sb_y + 162, "LEVEL:", COLOR_DIM_TEXT);
+  UI::text(vfb, sb_x, sb_y + 162, "LEVEL:", COLOR_DIM_TEXT);
   char lvl_buf[16] = {static_cast<char>('0' + (level / 10)),
                       static_cast<char>('0' + (level % 10)), 0};
-  Kernel::UICommon::text(vfb, sb_x, sb_y + 174, lvl_buf, COLOR_TEXT);
+  UI::text(vfb, sb_x, sb_y + 174, lvl_buf, COLOR_TEXT);
 
-  Kernel::UICommon::text(vfb, sb_x, sb_y + 200, "LINES:", COLOR_DIM_TEXT);
+  UI::text(vfb, sb_x, sb_y + 200, "LINES:", COLOR_DIM_TEXT);
   char lns_buf[16];
   int l = lines;
   int li = 0;
@@ -297,21 +297,21 @@ void render(int ox, int oy) {
     }
     lns_buf[li] = 0;
   }
-  Kernel::UICommon::text(vfb, sb_x, sb_y + 212, lns_buf, COLOR_TEXT);
+  UI::text(vfb, sb_x, sb_y + 212, lns_buf, COLOR_TEXT);
 
   int ctrl_y = sb_y + 245;
-  Kernel::UICommon::text(vfb, sb_x, ctrl_y, "CONTROLS:", 0x8888AA);
-  Kernel::UICommon::text(vfb, sb_x, ctrl_y + 16, "LEFT/RIGHT: Move",
+  UI::text(vfb, sb_x, ctrl_y, "CONTROLS:", 0x8888AA);
+  UI::text(vfb, sb_x, ctrl_y + 16, "LEFT/RIGHT: Move",
                           COLOR_DIM_TEXT);
-  Kernel::UICommon::text(vfb, sb_x, ctrl_y + 30, "UP/X: Rotate CW",
+  UI::text(vfb, sb_x, ctrl_y + 30, "UP/X: Rotate CW",
                           COLOR_DIM_TEXT);
-  Kernel::UICommon::text(vfb, sb_x, ctrl_y + 44, "Z: Rotate CCW",
+  UI::text(vfb, sb_x, ctrl_y + 44, "Z: Rotate CCW",
                           COLOR_DIM_TEXT);
-  Kernel::UICommon::text(vfb, sb_x, ctrl_y + 58, "DOWN: Soft Drop",
+  UI::text(vfb, sb_x, ctrl_y + 58, "DOWN: Soft Drop",
                           COLOR_DIM_TEXT);
-  Kernel::UICommon::text(vfb, sb_x, ctrl_y + 72, "SPACE: Hard Drop",
+  UI::text(vfb, sb_x, ctrl_y + 72, "SPACE: Hard Drop",
                           COLOR_DIM_TEXT);
-  Kernel::UICommon::text(vfb, sb_x, ctrl_y + 86, "ESC: Quit", COLOR_DIM_TEXT);
+  UI::text(vfb, sb_x, ctrl_y + 86, "ESC: Quit", COLOR_DIM_TEXT);
 
   if (game_over) {
     int ov_w = 260;
@@ -320,10 +320,10 @@ void render(int ox, int oy) {
     int ov_y = oy + (board_h_px - ov_h) / 2;
     vfb.fill_rect(ov_x, ov_y, ov_w, ov_h, 0x1A1A26);
     vfb.draw_rect(ov_x, ov_y, ov_w, ov_h, 0xFF0000);
-    Kernel::UICommon::text(vfb, ov_x + 75, ov_y + 20, "GAME OVER", 0xFF4444);
-    Kernel::UICommon::text(vfb, ov_x + 35, ov_y + 50, "PRESS R TO RESTART",
+    UI::text(vfb, ov_x + 75, ov_y + 20, "GAME OVER", 0xFF4444);
+    UI::text(vfb, ov_x + 35, ov_y + 50, "PRESS R TO RESTART",
                             COLOR_TEXT);
-    Kernel::UICommon::text(vfb, ov_x + 35, ov_y + 70, "PRESS ESC TO EXIT",
+    UI::text(vfb, ov_x + 35, ov_y + 70, "PRESS ESC TO EXIT",
                             COLOR_DIM_TEXT);
   }
 
@@ -368,13 +368,13 @@ void run() {
       return;
     uint32_t current_tick = Kernel::Drivers::TSCDeadline::get_ticks();
 
-    if (Kernel::Drivers::Keyboard::is_pressed(0x01)) {
+    if (oslib::Keyboard::is_pressed(0x01)) {
       break;
     }
 
     if (game_over) {
       render(ox, oy);
-      if (Kernel::Drivers::Keyboard::is_pressed(0x13)) {
+      if (oslib::Keyboard::is_pressed(0x13)) {
         reset_board();
         score = 0;
         lines = 0;
@@ -392,7 +392,7 @@ void run() {
       bool moved = false;
       Piece test_p = current_piece;
 
-      if (Kernel::Drivers::Keyboard::is_extended_pressed(0x4B)) {
+      if (oslib::Keyboard::is_extended_pressed(0x4B)) {
         test_p.x--;
         if (!check_collision(test_p)) {
           current_piece = test_p;
@@ -400,7 +400,7 @@ void run() {
         }
       }
 
-      else if (Kernel::Drivers::Keyboard::is_extended_pressed(0x4D)) {
+      else if (oslib::Keyboard::is_extended_pressed(0x4D)) {
         test_p.x++;
         if (!check_collision(test_p)) {
           current_piece = test_p;
@@ -408,7 +408,7 @@ void run() {
         }
       }
 
-      else if (Kernel::Drivers::Keyboard::is_extended_pressed(0x50)) {
+      else if (oslib::Keyboard::is_extended_pressed(0x50)) {
         test_p.y++;
         if (!check_collision(test_p)) {
           current_piece = test_p;
@@ -419,8 +419,8 @@ void run() {
         }
       }
 
-      else if (Kernel::Drivers::Keyboard::is_extended_pressed(0x48) ||
-               Kernel::Drivers::Keyboard::is_pressed(0x2D)) {
+      else if (oslib::Keyboard::is_extended_pressed(0x48) ||
+               oslib::Keyboard::is_pressed(0x2D)) {
         test_p.rot = (test_p.rot + 1) % 4;
         if (!check_collision(test_p)) {
           current_piece = test_p;
@@ -441,7 +441,7 @@ void run() {
         }
       }
 
-      else if (Kernel::Drivers::Keyboard::is_pressed(0x2C)) {
+      else if (oslib::Keyboard::is_pressed(0x2C)) {
         test_p.rot = (test_p.rot + 3) % 4;
         if (!check_collision(test_p)) {
           current_piece = test_p;
@@ -449,7 +449,7 @@ void run() {
         }
       }
 
-      else if (Kernel::Drivers::Keyboard::is_pressed(0x39)) {
+      else if (oslib::Keyboard::is_pressed(0x39)) {
         int drop_dist = 0;
         while (!check_collision(test_p)) {
           test_p.y++;

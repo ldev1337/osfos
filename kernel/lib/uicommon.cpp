@@ -1,13 +1,14 @@
 #include <string.h>
-#include <kernel/drivers/keyboard.h>
-#include <kernel/drivers/mouse.h>
+#include <oslib/keyboard.h>
+#include <oslib/mouse.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/lib/math.h>
+#include <kernel/scheduler.h>
 #include <oslib/ui.h>
 
 #include <algorithm>
 
-namespace Kernel::UICommon {
+namespace UI {
 
 static int32_t font_height(float font_size_pixels) {
   return static_cast<int32_t>(font_size_pixels + 0.999f);
@@ -725,8 +726,8 @@ bool prompt_filename(Kernel::Graphics::VirtualFramebuffer &vfb,
       vfb.flush();
     }
 
-    if (Kernel::Drivers::Keyboard::available()) {
-      char c = Kernel::Drivers::Keyboard::getchar();
+    if (oslib::Keyboard::available()) {
+      char c = oslib::Keyboard::getchar();
       if (c == '\n')
         return true;
       if (c == 27)
@@ -746,4 +747,8 @@ bool prompt_filename(Kernel::Graphics::VirtualFramebuffer &vfb,
   }
 }
 
-} // namespace Kernel::UICommon
+} // namespace UI
+
+namespace Kernel::UICommon {
+using namespace UI;
+}

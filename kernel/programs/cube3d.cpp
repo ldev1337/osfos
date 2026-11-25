@@ -1,6 +1,6 @@
 #include <string.h>
-#include <kernel/drivers/keyboard.h>
-#include <kernel/drivers/mouse.h>
+#include <oslib/keyboard.h>
+#include <oslib/mouse.h>
 #include <kernel/graphics/k3d.h>
 #include <kernel/graphics/vfb.h>
 #include <kernel/lib/appcommon.h>
@@ -58,26 +58,26 @@ void run() {
                              1.732f}; // Bounding sphere for culling
 
   // --- UI Widgets in Control Panel ---
-  Kernel::UICommon::Button btn_auto(10, canvas_h + 8, 95, 24, "Toggle Auto");
-  Kernel::UICommon::Button btn_reset(115, canvas_h + 8, 85, 24, "Reset View");
-  Kernel::UICommon::Button btn_quit(210, canvas_h + 8, 65, 24, "Quit",
+  UI::Button btn_auto(10, canvas_h + 8, 95, 24, "Toggle Auto");
+  UI::Button btn_reset(115, canvas_h + 8, 85, 24, "Reset View");
+  UI::Button btn_quit(210, canvas_h + 8, 65, 24, "Quit",
                                     0xFFF38BA8, 0xFF1E1E2E, 0);
 
-  Kernel::UICommon::Label lbl_rotx(290, canvas_h + 14, "Rot X:");
-  Kernel::UICommon::Slider slider_rotx(335, canvas_h + 12, 110, 20, 0, 360, 45);
+  UI::Label lbl_rotx(290, canvas_h + 14, "Rot X:");
+  UI::Slider slider_rotx(335, canvas_h + 12, 110, 20, 0, 360, 45);
 
-  Kernel::UICommon::Label lbl_roty(460, canvas_h + 14, "Rot Y:");
-  Kernel::UICommon::Slider slider_roty(505, canvas_h + 12, 110, 20, 0, 360, 45);
+  UI::Label lbl_roty(460, canvas_h + 14, "Rot Y:");
+  UI::Slider slider_roty(505, canvas_h + 12, 110, 20, 0, 360, 45);
 
-  Kernel::UICommon::Label lbl_zoom(635, canvas_h + 14, "Zoom:");
-  Kernel::UICommon::Slider slider_zoom(680, canvas_h + 12, 110, 20, 10, 100,
+  UI::Label lbl_zoom(635, canvas_h + 14, "Zoom:");
+  UI::Slider slider_zoom(680, canvas_h + 12, 110, 20, 10, 100,
                                        45);
 
   char status_msg[64] =
       "3D Software Renderer Active. Frustum & Backface Culling Enabled";
-  Kernel::UICommon::StatusBar status_bar(10, canvas_h + 50, sw - 20, 28,
+  UI::StatusBar status_bar(10, canvas_h + 50, sw - 20, 28,
                                          status_msg);
-  Kernel::UICommon::WidgetGroup panel_widgets;
+  UI::WidgetGroup panel_widgets;
   panel_widgets.add(btn_auto);
   panel_widgets.add(btn_reset);
   panel_widgets.add(btn_quit);
@@ -100,11 +100,11 @@ void run() {
   float angle_y = 0.0f;
 
   while (running && !Kernel::Scheduler::should_stop()) {
-    int mx = Kernel::UICommon::mouse_x();
-    int my = Kernel::UICommon::mouse_y();
-    bool m_left = Kernel::UICommon::primary_pressed();
+    int mx = UI::mouse_x();
+    int my = UI::mouse_y();
+    bool m_left = UI::primary_pressed();
     bool m_released = old_left && !m_left;
-    Kernel::UICommon::Widget *active_widget =
+    UI::Widget *active_widget =
       panel_widgets.handle_mouse(mx, my, m_left, m_released);
 
     if (mx != prev_mx || my != prev_my) {
