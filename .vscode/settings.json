@@ -1,9 +1,0 @@
-{
-    "makefile.configureOnOpen": true,
-    "rust-analyzer.linkedProjects": [
-      "rust/net/Cargo.toml"
-  ],
-  "workbench.editorAssociations": {
-    "file:/home/baosudo/osfos/build/compiler-compare-20261110-214348/results.csv": "default"
-  }
-}
