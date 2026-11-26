@@ -3,6 +3,7 @@
 #include <kernel/graphics/lwm.h>
 #include <kernel/graphics/open_font.h>
 #include <kernel/lib/appcommon.h>
+#include <kernel/programs/terminal.h>
 #include <kernel/memory/heap.h>
 #include <kernel/scheduler.h>
 
@@ -25,6 +26,7 @@ namespace Kernel::AppCommon {
 [[noreturn]] void exit(int status) {
   (void)status;
   const uint64_t thread_id = Kernel::Scheduler::current_thread_id();
+  Kernel::Programs::Terminal::shutdown();
   Kernel::Graphics::WindowManager::unregister_window(thread_id);
   Kernel::Memory::g_kheap.free_thread_allocations(thread_id);
   Kernel::Scheduler::thread_exit();

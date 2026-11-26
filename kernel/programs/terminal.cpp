@@ -1,12 +1,13 @@
 #include <string.h>
 #include <kernel/drivers/framebuffer.h>
+#include <kernel/drivers/keyboard.h>
 #include <kernel/graphics/lwm.h>
 #include <kernel/graphics/open_font.h>
 #include <kernel/graphics/vfb.h>
+#include <kernel/memory/heap.h>
 #include <kernel/programs/terminal.h>
 #include <kernel/scheduler.h>
 #include <kernel/spinlock.h>
-
 #include <cstddef>
 #include <cstdint>
 
@@ -14,229 +15,514 @@ namespace Kernel::Programs::Terminal {
 namespace {
 constexpr uint32_t BG = 0x1B1111;
 constexpr uint32_t FG = 0xF4D6CD;
+constexpr uint32_t CURSOR = 0xFAB489;
 constexpr uint32_t CELL_W = 7;
 constexpr uint32_t LINE_H = 12;
 constexpr size_t MAX_COLS = 256;
 constexpr size_t MAX_ROWS = 64;
-
-Graphics::VirtualFramebuffer term_vfb;
-Spinlock terminal_lock;
-char screen[MAX_ROWS][MAX_COLS];
-uint32_t screen_fg[MAX_ROWS][MAX_COLS];
-size_t cols = 0;
-size_t row_count = 0;
-size_t col = 0;
-size_t row = 0;
-uint32_t screen_w = 0;
-uint32_t screen_h = 0;
+constexpr size_t MAX_TERMINALS = 32;
+constexpr size_t SCREEN_CELLS = MAX_COLS * MAX_ROWS;
+enum class ContextState : uint8_t { FREE, INITIALIZING, READY, CLOSING };
+struct TerminalContext {
+  ContextState state = ContextState::FREE;
+  uint64_t thread_id = 0;
+  Graphics::VirtualFramebuffer vfb;
+  Spinlock lock;
+  char *screen = nullptr;
+  uint32_t *screen_fg = nullptr;
+  char input_buffer[256]{};
+  unsigned char input_pushback[8]{};
+  size_t input_position = 0, input_length = 0, input_pushback_count = 0;
+  size_t cols = 0, row_count = 0, col = 0, row = 0;
+  uint32_t screen_w = 0, screen_h = 0;
+};
+TerminalContext contexts[MAX_TERMINALS];
+Spinlock registry_lock;
+uint64_t primary_thread_id = 0;
 
 Graphics::TrueTypeFont &terminal_font() {
   static Graphics::TrueTypeFont font;
-  static bool initialized = false;
-  if (!initialized)
-    initialized =
-        Graphics::OpenFont::load_preferred(font, "GeistMono.ttf", "Geist.ttf");
+  static bool attempted = false;
+  static Spinlock font_lock;
+  if (!__atomic_load_n(&attempted, __ATOMIC_ACQUIRE)) {
+    SpinlockGuard guard(font_lock);
+    if (!attempted) {
+      (void)Graphics::OpenFont::load_preferred(font, "GeistMono.ttf", "Geist.ttf");
+      __atomic_store_n(&attempted, true, __ATOMIC_RELEASE);
+    }
+  }
   return font;
 }
 
-void draw_glyph(uint32_t x, uint32_t y, char ch, uint32_t color) {
+TerminalContext *find_ready_locked(uint64_t thread_id) {
+  if (!thread_id)
+    return nullptr;
+  for (size_t i = 0; i < MAX_TERMINALS; ++i)
+    if (contexts[i].state == ContextState::READY && contexts[i].thread_id == thread_id)
+      return &contexts[i];
+  return nullptr;
+}
+
+TerminalContext *lock_context(bool allow_primary) {
+  const uint64_t tid = Scheduler::current_thread_id();
+  registry_lock.lock();
+  TerminalContext *context = find_ready_locked(tid);
+  if (!context && allow_primary)
+    context = find_ready_locked(primary_thread_id);
+  if (context)
+    context->lock.lock();
+  registry_lock.unlock();
+  return context;
+}
+
+void unlock_context(TerminalContext *context) {
+  if (context)
+    context->lock.unlock();
+}
+
+void draw_glyph(TerminalContext &context, uint32_t x, uint32_t y, char ch, uint32_t color) {
   auto &font = terminal_font();
   if (font.is_valid()) {
     char text[2] = {ch, '\0'};
-    term_vfb.draw_string(static_cast<int32_t>(x), static_cast<int32_t>(y),
-                         14.0f, text, color);
+    context.vfb.draw_string(static_cast<int32_t>(x), static_cast<int32_t>(y), 14.0f, text, color);
   } else {
-    term_vfb.draw_glyph_bg(static_cast<int32_t>(x), static_cast<int32_t>(y), ch,
-                           color, BG);
+    context.vfb.draw_glyph_bg(static_cast<int32_t>(x), static_cast<int32_t>(y), ch, color, BG);
   }
 }
 
-void draw_cell(size_t cell_col, size_t cell_row, char ch, uint32_t color) {
+void draw_cell(TerminalContext &context, size_t cell_col, size_t cell_row, char ch, uint32_t color) {
   const uint32_t x = static_cast<uint32_t>(cell_col) * CELL_W;
   const uint32_t y = static_cast<uint32_t>(cell_row) * LINE_H;
-  term_vfb.fill_rect(x, y, CELL_W, LINE_H, BG);
+  context.vfb.fill_rect(x, y, CELL_W, LINE_H, BG);
   if (ch != ' ')
-    draw_glyph(x, y, ch, color);
+    draw_glyph(context, x, y, ch, color);
 }
 
-void clear_row(size_t screen_row) {
-  for (size_t screen_col = 0; screen_col < cols; ++screen_col) {
-    screen[screen_row][screen_col] = ' ';
-    screen_fg[screen_row][screen_col] = FG;
+void clear_row(TerminalContext &context, size_t screen_row) {
+  for (size_t screen_col = 0; screen_col < context.cols; ++screen_col) {
+    context.screen[screen_row * MAX_COLS + screen_col] = ' ';
+    context.screen_fg[screen_row * MAX_COLS + screen_col] = FG;
   }
 }
 
-void redraw_terminal() {
-  for (size_t screen_row = 0; screen_row < row_count; ++screen_row)
-    for (size_t screen_col = 0; screen_col < cols; ++screen_col)
-      draw_cell(screen_col, screen_row, screen[screen_row][screen_col],
-                screen_fg[screen_row][screen_col]);
+void clear_unlocked(TerminalContext &context) {
+  for (size_t screen_row = 0; screen_row < context.row_count; ++screen_row)
+    clear_row(context, screen_row);
+  context.row = context.col = 0;
+  context.vfb.clear(BG);
 }
 
-void scroll_one_line() {
-  if (row_count == 0)
+void redraw_terminal(TerminalContext &context) {
+  for (size_t screen_row = 0; screen_row < context.row_count; ++screen_row)
+    for (size_t screen_col = 0; screen_col < context.cols; ++screen_col) {
+      const size_t index = screen_row * MAX_COLS + screen_col;
+      draw_cell(context, screen_col, screen_row, context.screen[index], context.screen_fg[index]);
+    }
+}
+
+void scroll_one_line(TerminalContext &context) {
+  if (!context.row_count)
     return;
-  memmove(&screen[0][0], &screen[1][0],
-          (row_count - 1) * MAX_COLS * sizeof(char));
-  memmove(&screen_fg[0][0], &screen_fg[1][0],
-          (row_count - 1) * MAX_COLS * sizeof(uint32_t));
-  clear_row(row_count - 1);
-  row = row_count - 1;
-  redraw_terminal();
+  memmove(context.screen, context.screen + MAX_COLS, (context.row_count - 1) * MAX_COLS);
+  memmove(context.screen_fg, context.screen_fg + MAX_COLS, (context.row_count - 1) * MAX_COLS * sizeof(uint32_t));
+  clear_row(context, context.row_count - 1);
+  context.row = context.row_count - 1;
+  redraw_terminal(context);
 }
 
-void next_line() {
-  col = 0;
-  if (row + 1 >= row_count)
-    scroll_one_line();
+void next_line(TerminalContext &context) {
+  context.col = 0;
+  if (context.row + 1 >= context.row_count)
+    scroll_one_line(context);
   else
-    ++row;
+    ++context.row;
 }
 
-void put_char_unlocked(char ch, uint32_t color) {
-  if (!cols || !row_count)
+void put_char_unlocked(TerminalContext &context, char ch, uint32_t color) {
+  if (!context.cols || !context.row_count)
     return;
+  if (ch == '\f') {
+    clear_unlocked(context);
+    return;
+  }
   if (ch == '\n') {
-    next_line();
+    next_line(context);
     return;
   }
   if (ch == '\r') {
-    col = 0;
+    context.col = 0;
     return;
   }
   if (ch == '\t') {
     for (int i = 0; i < 4; ++i) {
-      screen[row][col] = ' ';
-      screen_fg[row][col] = color;
-      draw_cell(col, row, ' ', color);
-      if (++col >= cols)
-        next_line();
+      const size_t index = context.row * MAX_COLS + context.col;
+      context.screen[index] = ' ';
+      context.screen_fg[index] = color;
+      draw_cell(context, context.col, context.row, ' ', color);
+      if (++context.col >= context.cols)
+        next_line(context);
     }
     return;
   }
   if (ch == '\b') {
-    if (col > 0)
-      --col;
-    else if (row > 0) {
-      --row;
-      col = cols - 1;
+    if (context.col > 0)
+      --context.col;
+    else if (context.row > 0) {
+      --context.row;
+      context.col = context.cols - 1;
     } else
       return;
-    screen[row][col] = ' ';
-    screen_fg[row][col] = FG;
-    draw_cell(col, row, ' ', FG);
+    const size_t index = context.row * MAX_COLS + context.col;
+    context.screen[index] = ' ';
+    context.screen_fg[index] = FG;
+    draw_cell(context, context.col, context.row, ' ', FG);
     return;
   }
-  if (static_cast<unsigned char>(ch) < 32 ||
-      static_cast<unsigned char>(ch) > 126)
+  if (static_cast<unsigned char>(ch) < 32 || static_cast<unsigned char>(ch) > 126)
     return;
-  screen[row][col] = ch;
-  screen_fg[row][col] = color;
-  draw_cell(col, row, ch, color);
-  if (++col >= cols)
-    next_line();
+  const size_t index = context.row * MAX_COLS + context.col;
+  context.screen[index] = ch;
+  context.screen_fg[index] = color;
+  draw_cell(context, context.col, context.row, ch, color);
+  if (++context.col >= context.cols)
+    next_line(context);
+}
+
+bool focused(uint64_t tid) {
+  return !Graphics::WindowManager::has_window(tid) || Graphics::WindowManager::has_keyboard_focus(tid);
 }
 } // namespace
 
 bool initialize() {
-  if (!Drivers::Framebuffer::valid())
+  const uint64_t tid = Scheduler::current_thread_id();
+  if (!tid || !Drivers::Framebuffer::valid())
     return false;
-  SpinlockGuard guard(terminal_lock);
-  screen_w = Drivers::Framebuffer::width();
-  screen_h = Drivers::Framebuffer::height();
-  const bool has_window =
-      Graphics::WindowManager::has_window(Scheduler::current_thread_id());
-  if (has_window) {
-    if (!term_vfb.open_window(screen_w > 48 ? screen_w - 48 : screen_w,
-                              screen_h > 100 ? screen_h - 100 : screen_h,
-                              CELL_W, LINE_H))
-      return false;
-    screen_w = term_vfb.width();
-    screen_h = term_vfb.height();
-  } else if (!term_vfb.init(0, 0, screen_w, screen_h)) {
-    return false;
+  registry_lock.lock();
+  if (find_ready_locked(tid)) {
+    registry_lock.unlock();
+    return true;
   }
-  if (screen_w == 0 || screen_h < LINE_H)
+  TerminalContext *context = nullptr;
+  for (size_t i = 0; i < MAX_TERMINALS; ++i) {
+    if (contexts[i].state == ContextState::FREE) {
+      context = &contexts[i];
+      context->state = ContextState::INITIALIZING;
+      context->thread_id = tid;
+      break;
+    }
+  }
+  registry_lock.unlock();
+  if (!context)
     return false;
 
-  cols = screen_w / CELL_W;
-  row_count = screen_h / LINE_H;
-  if (cols > MAX_COLS)
-    cols = MAX_COLS;
-  if (row_count > MAX_ROWS)
-    row_count = MAX_ROWS;
-  if (cols == 0 || row_count == 0)
-    return false;
+  context->lock.lock();
+  context->screen = static_cast<char *>(malloc(SCREEN_CELLS));
+  context->screen_fg = static_cast<uint32_t *>(malloc(SCREEN_CELLS * sizeof(uint32_t)));
+  bool ok = context->screen && context->screen_fg;
+  if (ok) {
+    context->screen_w = Drivers::Framebuffer::width();
+    context->screen_h = Drivers::Framebuffer::height();
+    if (Graphics::WindowManager::has_window(tid)) {
+      ok = context->vfb.open_window(context->screen_w > 48 ? context->screen_w - 48 : context->screen_w,
+                                    context->screen_h > 100 ? context->screen_h - 100 : context->screen_h,
+                                    CELL_W, LINE_H);
+      if (ok) {
+        context->screen_w = context->vfb.width();
+        context->screen_h = context->vfb.height();
+      }
+    } else {
+      ok = context->vfb.init(0, 0, context->screen_w, context->screen_h);
+    }
+  }
+  if (ok && context->screen_w && context->screen_h >= LINE_H) {
+    context->cols = context->screen_w / CELL_W;
+    context->row_count = context->screen_h / LINE_H;
+    if (context->cols > MAX_COLS) context->cols = MAX_COLS;
+    if (context->row_count > MAX_ROWS) context->row_count = MAX_ROWS;
+    ok = context->cols && context->row_count;
+  } else {
+    ok = false;
+  }
+  if (ok) {
+    memset(context->screen, ' ', SCREEN_CELLS);
+    for (size_t r = 0; r < context->row_count; ++r)
+      clear_row(*context, r);
+    context->row = context->col = 0;
+    context->vfb.clear(BG);
+    redraw_terminal(*context);
+    context->vfb.flush();
+  }
+  if (!ok) {
+    context->vfb.destroy();
+    free(context->screen);
+    free(context->screen_fg);
+    context->screen = nullptr;
+    context->screen_fg = nullptr;
+  }
+  context->lock.unlock();
 
-  memset(screen, ' ', sizeof(screen));
-  for (size_t screen_row = 0; screen_row < row_count; ++screen_row)
-    clear_row(screen_row);
-  row = col = 0;
-  term_vfb.clear(BG);
-  redraw_terminal();
-  term_vfb.flush();
-  return true;
+  registry_lock.lock();
+  if (ok) {
+    context->state = ContextState::READY;
+    if (!primary_thread_id)
+      primary_thread_id = tid;
+  } else {
+    context->state = ContextState::FREE;
+    context->thread_id = 0;
+    context->cols = context->row_count = context->col = context->row = 0;
+    context->screen_w = context->screen_h = 0;
+  }
+  registry_lock.unlock();
+  return ok;
 }
 
-size_t columns() { return cols; }
-size_t rows() { return row_count; }
-size_t cursor_column() { return col; }
-size_t cursor_row() { return row; }
+void shutdown() {
+  const uint64_t tid = Scheduler::current_thread_id();
+  registry_lock.lock();
+  TerminalContext *context = nullptr;
+  for (size_t i = 0; i < MAX_TERMINALS; ++i)
+    if (contexts[i].state == ContextState::READY && contexts[i].thread_id == tid) {
+      context = &contexts[i];
+      context->state = ContextState::CLOSING;
+      context->lock.lock();
+      break;
+    }
+  registry_lock.unlock();
+  if (!context)
+    return;
+  context->vfb.destroy();
+  free(context->screen);
+  free(context->screen_fg);
+  context->screen = nullptr;
+  context->screen_fg = nullptr;
+  context->cols = context->row_count = context->col = context->row = 0;
+  context->screen_w = context->screen_h = 0;
+  context->input_position = context->input_length = context->input_pushback_count = 0;
+  context->lock.unlock();
 
-bool has_focus() { return term_vfb.has_focus(); }
+  registry_lock.lock();
+  if (primary_thread_id == tid) {
+    primary_thread_id = 0;
+    for (size_t i = 0; i < MAX_TERMINALS; ++i)
+      if (contexts[i].state == ContextState::READY) {
+        primary_thread_id = contexts[i].thread_id;
+        break;
+      }
+  }
+  context->thread_id = 0;
+  context->state = ContextState::FREE;
+  registry_lock.unlock();
+}
+
+size_t columns() {
+  TerminalContext *context = lock_context(false);
+  const size_t value = context ? context->cols : 0;
+  unlock_context(context);
+  return value;
+}
+size_t rows() {
+  TerminalContext *context = lock_context(false);
+  const size_t value = context ? context->row_count : 0;
+  unlock_context(context);
+  return value;
+}
+size_t cursor_column() {
+  TerminalContext *context = lock_context(false);
+  const size_t value = context ? context->col : 0;
+  unlock_context(context);
+  return value;
+}
+size_t cursor_row() {
+  TerminalContext *context = lock_context(false);
+  const size_t value = context ? context->row : 0;
+  unlock_context(context);
+  return value;
+}
+bool has_focus() { return focused(Scheduler::current_thread_id()); }
 
 void clear() {
-  SpinlockGuard guard(terminal_lock);
-  for (size_t screen_row = 0; screen_row < row_count; ++screen_row)
-    clear_row(screen_row);
-  row = col = 0;
-  term_vfb.clear(BG);
+  TerminalContext *context = lock_context(false);
+  if (context) {
+    clear_unlocked(*context);
+    context->vfb.flush();
+  }
+  unlock_context(context);
 }
 
 void write_char(char ch, uint32_t color) {
-  SpinlockGuard guard(terminal_lock);
-  put_char_unlocked(ch, color);
+  TerminalContext *context = lock_context(true);
+  if (context)
+    put_char_unlocked(*context, ch, color);
+  unlock_context(context);
 }
 
-void write_at(size_t column, size_t screen_row, const char *text,
-              uint32_t color) {
-  if (!text || screen_row >= row_count || column >= cols)
+void write(const char *text, size_t length, uint32_t color) {
+  if (!text || !length)
     return;
-  SpinlockGuard guard(terminal_lock);
-  while (*text && column < cols) {
-    const unsigned char value = static_cast<unsigned char>(*text++);
-    screen[screen_row][column] =
-        value >= 32 && value <= 126 ? static_cast<char>(value) : ' ';
-    screen_fg[screen_row][column] = color;
-    ++column;
+  TerminalContext *context = lock_context(true);
+  if (context)
+    for (size_t i = 0; i < length; ++i)
+      put_char_unlocked(*context, text[i], color);
+  unlock_context(context);
+}
+
+void write_at(size_t column, size_t screen_row, const char *text, uint32_t color) {
+  if (!text)
+    return;
+  TerminalContext *context = lock_context(false);
+  if (!context)
+    return;
+  if (screen_row < context->row_count && column < context->cols) {
+    while (*text && column < context->cols) {
+      const unsigned char value = static_cast<unsigned char>(*text++);
+      const size_t index = screen_row * MAX_COLS + column;
+      context->screen[index] = value >= 32 && value <= 126 ? static_cast<char>(value) : ' ';
+      context->screen_fg[index] = color;
+      ++column;
+    }
   }
+  unlock_context(context);
 }
 
 void show_cursor(size_t column, size_t screen_row, uint32_t color) {
-  SpinlockGuard guard(terminal_lock);
-  if (column < cols && screen_row < row_count) {
+  TerminalContext *context = lock_context(false);
+  if (context && column < context->cols && screen_row < context->row_count) {
     const uint32_t x = static_cast<uint32_t>(column) * CELL_W;
     const uint32_t y = static_cast<uint32_t>(screen_row) * LINE_H + LINE_H - 1;
-    if (x + CELL_W <= screen_w)
-      term_vfb.fill_rect(x, y, CELL_W, 1, color);
-    term_vfb.flush();
+    if (x + CELL_W <= context->screen_w)
+      context->vfb.fill_rect(x, y, CELL_W, 1, color);
+    context->vfb.flush();
   }
+  unlock_context(context);
 }
 
 void hide_cursor(size_t column, size_t screen_row) {
-  SpinlockGuard guard(terminal_lock);
-  if (column < cols && screen_row < row_count) {
-    draw_cell(column, screen_row, screen[screen_row][column],
-              screen_fg[screen_row][column]);
-    term_vfb.flush();
+  TerminalContext *context = lock_context(false);
+  if (context && column < context->cols && screen_row < context->row_count) {
+    const size_t index = screen_row * MAX_COLS + column;
+    draw_cell(*context, column, screen_row, context->screen[index], context->screen_fg[index]);
+    context->vfb.flush();
   }
+  unlock_context(context);
 }
 
-void flush() { term_vfb.flush(); }
+namespace {
+int read_key() {
+  while (!Scheduler::should_stop()) {
+    if (Drivers::Keyboard::available())
+      return static_cast<unsigned char>(Drivers::Keyboard::getchar());
+    Scheduler::thread_sleep_ms(2);
+  }
+  return -1;
+}
+} // namespace
+
+int read_char() {
+  TerminalContext *context = lock_context(false);
+  if (!context)
+    return read_key();
+  if (context->input_pushback_count) {
+    const int value = context->input_pushback[--context->input_pushback_count];
+    unlock_context(context);
+    return value;
+  }
+  if (context->input_position < context->input_length) {
+    const int value = static_cast<unsigned char>(context->input_buffer[context->input_position++]);
+    if (context->input_position >= context->input_length)
+      context->input_position = context->input_length = 0;
+    unlock_context(context);
+    return value;
+  }
+  unlock_context(context);
+  char line[256];
+  const size_t length = read_line(line, sizeof(line));
+  if (!length)
+    return -1;
+  context = lock_context(false);
+  if (!context)
+    return -1;
+  memcpy(context->input_buffer, line, length);
+  context->input_position = 1;
+  context->input_length = length;
+  const int value = static_cast<unsigned char>(context->input_buffer[0]);
+  if (length == 1)
+    context->input_position = context->input_length = 0;
+  unlock_context(context);
+  return value;
+}
+
+
+bool push_input_char(int character) {
+  if (character < 0 || character > 255)
+    return false;
+  TerminalContext *context = lock_context(false);
+  if (!context)
+    return false;
+  const bool ok = context->input_pushback_count < sizeof(context->input_pushback);
+  if (ok)
+    context->input_pushback[context->input_pushback_count++] = static_cast<unsigned char>(character);
+  unlock_context(context);
+  return ok;
+}
+
+size_t read_line(char *buffer, size_t capacity) {
+  if (!buffer || !capacity)
+    return 0;
+  size_t length = 0;
+  while (length + 1 < capacity) {
+    while (!has_focus()) {
+      if (Scheduler::should_stop()) {
+        buffer[length] = '\0';
+        return length;
+      }
+      Scheduler::thread_sleep_ms(4);
+    }
+    const size_t old_col = cursor_column();
+    const size_t old_row = cursor_row();
+    show_cursor(old_col, old_row, CURSOR);
+    const int key = read_key();
+    hide_cursor(old_col, old_row);
+    if (key < 0) {
+      buffer[length] = '\0';
+      flush();
+      return length;
+    }
+    const char ch = static_cast<char>(key);
+    if (ch == '\r' || ch == '\n') {
+      buffer[length++] = '\n';
+      write_char('\n', FG);
+      break;
+    }
+    if (ch == '\b' || static_cast<unsigned char>(ch) == 127) {
+      if (length) {
+        --length;
+        write_char('\b', FG);
+      }
+      continue;
+    }
+    if (static_cast<unsigned char>(ch) >= 32 && static_cast<unsigned char>(ch) <= 126) {
+      buffer[length++] = ch;
+      write_char(ch, FG);
+    }
+  }
+  buffer[length] = '\0';
+  flush();
+  return length;
+}
+
+void flush() {
+  TerminalContext *context = lock_context(true);
+  if (context)
+    context->vfb.flush();
+  unlock_context(context);
+}
 
 void present() {
-  SpinlockGuard guard(terminal_lock);
-  redraw_terminal();
-  term_vfb.flush();
+  TerminalContext *context = lock_context(false);
+  if (context) {
+    redraw_terminal(*context);
+    context->vfb.flush();
+  }
+  unlock_context(context);
 }
 } // namespace Kernel::Programs::Terminal

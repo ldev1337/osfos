@@ -1,11 +1,11 @@
-#include <string.h>
-#include <oslib/keyboard.h>
 #include <kernel/graphics/vfb.h>
-#include <oslib/ui.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/scheduler.h>
+#include <oslib/keyboard.h>
+#include <oslib/ui.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 namespace Kernel::Apps::Calc {
 using oslib::Keyboard;
@@ -571,7 +571,7 @@ draw_highlighted_expression(Kernel::Graphics::VirtualFramebuffer &vfb,
 
 void run() {
   Kernel::Graphics::VirtualFramebuffer vfb;
-  if (!vfb.open_window(600, 460, 300, 200))
+  if (!vfb.open_window(600, 200, 300, 150))
     return;
   const int32_t w = static_cast<int32_t>(vfb.width());
   const int32_t h = static_cast<int32_t>(vfb.height());
@@ -671,10 +671,12 @@ void run() {
     }
 
     // Minimalist help guide
-    UI::text(vfb, 20, 100, "Functions: sin, cos, tan, sqrt, root, log10, logn, pi",
-         0xFF6C7086);
-    UI::text(vfb, 20, 118, "Exponents: ^-1, ^-2 | Enter: = | `: Clear | ESC: Quit",
-         0xFF6C7086);
+    UI::text(vfb, 20, 100,
+             "Functions: sin, cos, tan, sqrt, root, log10, logn, pi",
+             0xFF6C7086);
+    UI::text(vfb, 20, 118,
+             "Exponents: ^-1, ^-2 | Enter: = | `: Clear | ESC: Quit",
+             0xFF6C7086);
 
     vfb.flush();
     delay(10);
