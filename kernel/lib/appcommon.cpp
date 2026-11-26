@@ -23,12 +23,7 @@ Kernel::Graphics::TrueTypeFont &app_text_font() {
 namespace Kernel::AppCommon {
 
 [[noreturn]] void exit(int status) {
-  (void)status;
-  const uint64_t thread_id = Kernel::Scheduler::current_thread_id();
-  Kernel::Programs::Terminal::shutdown();
-  Kernel::Graphics::WindowManager::unregister_window(thread_id);
-  Kernel::Memory::g_kheap.free_thread_allocations(thread_id);
-  Kernel::Scheduler::thread_exit();
+  Kernel::Scheduler::process_exit(status);
 }
 
 void text(oslib::Win &win, int32_t x, int32_t y, const char *s, uint32_t color,

@@ -69,6 +69,10 @@ void run();
 namespace Cube3D {
 void run();
 }
+int cli_args_test(int argc, char **argv, void *context);
+int cli_exitcode_test(int argc, char **argv, void *context);
+int cli_stdio_test(int argc, char **argv, void *context);
+int cli_memory_lifetime_test(int argc, char **argv, void *context);
 } // namespace Kernel::Apps
 
 namespace Kernel::Shell {
@@ -77,57 +81,52 @@ namespace Kernel::Shell {
 constexpr size_t INPUT_SIZE = 256;
 
 namespace {
-struct AppLaunch {
-  void (*entry)();
-  char title[32];
+struct ProgramCommand {
+  const char *name;
+  const char *title;
+  void (*app_entry)();
+  int (*cli_entry)(int, char **, void *);
+  void *context;
+  bool graphical;
 };
 
-void app_thread_entry(void *argument) {
-  auto *launch = static_cast<AppLaunch *>(argument);
-  void (*entry)() = launch ? launch->entry : nullptr;
-  char title[32]{};
-  if (launch != nullptr) {
-    size_t index = 0;
-    while (index + 1 < sizeof(title) && (launch->title[index] != 0)) {
-      title[index] = launch->title[index];
-      ++index;
-    }
-    title[index] = '\0';
+int execute_program_process(int argc, char **argv, void *context) {
+  auto *program = static_cast<const ProgramCommand *>(context);
+  if (!program)
+    return 127;
+  Kernel::Scheduler::mark_current_thread_as_application(program->title);
+  if (program->graphical &&
+      Kernel::Graphics::WindowManager::register_window(
+          Kernel::Scheduler::current_thread_id(), program->title) < 0) {
+    printf("%s: could not create application window\n", program->name);
+    return 1;
   }
-  Kernel::Scheduler::mark_current_thread_as_application(title);
-  if (launch != nullptr)
-    free(launch);
-  while (!Kernel::Scheduler::should_stop() &&
-         !Kernel::Graphics::WindowManager::has_window(
-             Kernel::Scheduler::current_thread_id()))
-    Kernel::Scheduler::thread_sleep_ms(1);
-  if ((entry != nullptr) && !Kernel::Scheduler::should_stop())
-    entry();
-  Kernel::AppCommon::exit();
+  if (program->cli_entry)
+    return program->cli_entry(argc, argv, program->context);
+  if (program->app_entry)
+    program->app_entry();
+  if (program->graphical)
+    Kernel::AppCommon::exit(0);
+  return 0;
 }
 
-bool launch_app(const char *title, void (*entry)()) {
-  auto *launch = static_cast<AppLaunch *>(malloc(sizeof(AppLaunch)));
-  if (!launch)
-    return false;
-  launch->entry = entry;
-  size_t title_index = 0;
-  while (title_index + 1 < sizeof(launch->title) && title[title_index]) {
-    launch->title[title_index] = title[title_index];
-    ++title_index;
-  }
-  launch->title[title_index] = '\0';
-  int id = Kernel::Scheduler::thread_create(app_thread_entry, launch);
-  if (id < 0) {
-    free(launch);
+bool launch_program(const ProgramCommand &program, int argc, char **argv) {
+  const uint64_t pid = Kernel::Scheduler::process_spawn(
+      execute_program_process, argc, const_cast<const char *const *>(argv),
+      const_cast<ProgramCommand *>(&program), program.title);
+  if (!pid) {
+    printf("%s: process creation failed\n", program.name);
     return false;
   }
-  if (Kernel::Graphics::WindowManager::register_window(
-          static_cast<uint64_t>(id), title) < 0) {
-    Kernel::Scheduler::terminate_thread(static_cast<uint64_t>(id));
+  int status = 0;
+  if (Kernel::Scheduler::process_wait(pid, &status) != 0) {
+    printf("%s: wait failed for process %llu\n", program.name,
+           static_cast<unsigned long long>(pid));
     return false;
   }
-  return true;
+  if (status != 0)
+    printf("%s: exited with status %d\n", program.name, status);
+  return status == 0;
 }
 
 void run_spong() { Kernel::Games::Spong::run(2, true); }
@@ -192,50 +191,14 @@ void show_debug_info() {
 void prompt() { printf("root@osfos:~$ "); }
 
 void help() {
-  printf("Available commands:\n");
-  printf("  help                  Show this list\n");
-  printf("  clear                 Clear the terminal\n");
-  printf("  echo <text>           Print text\n");
-  printf("  ping <host>           Send ICMP echo requests\n");
-  printf("  netup                 Acquire network settings with DHCP\n");
-  printf("  netinfo               Show network interface settings\n");
-  printf("  fetch <url>           Fetch a bounded HTTP or verified "
-         "HTTPS response\n");
-  printf("  youtube               Search YouTube and show thumbnails\n");
-  printf("  tcp-echo <host> <port> <text>  Send text to a TCP echo service\n");
-  printf("  about                 Kernel shell information\n");
-  printf(
-      "  debug                 Show allocator health and recent kernel log\n");
-  printf("  smpinfo               Show detected and online CPUs\n");
-  printf("  mem                   Memory-manager test commands\n");
-  printf("  taskman               List running apps and task stats\n");
-  printf("  heap-test [bytes]     Allocate/free a heap block (default 64)\n");
-  printf("  pmm-test [pages]      Allocate/free physical pages (default 1)\n");
-  printf("  disk-init             Initialize LazIOfs disk\n");
-  printf(
-      "  xhci-init             Probe and initialize a USB xHCI controller\n");
-  printf("  disk-check <file>     Check if a file exists on disk and "
-         "print info\n");
-  printf("  spong                 Play Shitty Pong\n");
-  printf("  doom1                 Launch Doom I\n");
-  printf("  doom2                 Launch Doom II\n");
-  printf("  tetris                The Tetrominoes\n");
-  printf("  pacman                Play Pac-Man\n");
-  printf("  breakout              Play Breakout\n");
-  printf("  gtest                 Run Graphic test app suite\n");
-  printf("  stress                Run the stress test\n");
-  printf("  bench                 Run the system benchmark suite\n");
-  printf("  shitcell              Run The Shitty Excel spreadsheet\n");
-  printf("  shitpad               Run The Shitpad Editor\n");
-  printf("  pain                  Run THE PAIN PNG Image Viewer and "
-         "Paint shits\n");
-  printf("  c3d                   Run the 3D showoff\n");
-  printf("  calc                  Use your brain, a pen and a paper "
-         "before this\n");
-  printf("  fontview              Open the TrueType font viewer/check app\n");
-  printf("  fileview              Browse and read files on the disk\n");
-  printf("  fontcheck             List available TTF files and font status\n");
-  printf("  exit                  Explain how to leave the shell\n");
+  printf("OSFOS shell commands:\n");
+  printf("  help, clear, echo, exit, about, debug, smpinfo, taskman\n");
+  printf("  ping, netup, netinfo, tcp-echo, fetch, youtube, fontcheck\n");
+  printf("  heap-test, pmm-test, disk-init, disk-check, xhci-init, ls, cat\n");
+  printf("  spong, breakout, doom1, doom2, tetris, pacman, gtest, stress\n");
+  printf("  bench, shitcell, shitpad, pain, calc, c3d, fontview, fileview\n");
+  printf("  args [values...], exitcode [status], stdio-test, memlife\n");
+  printf("Programs run as child processes; the shell waits for each one.\n");
 }
 
 void run_heap_test(const char *args) {
@@ -581,138 +544,182 @@ void run_fetch(const char *url) {
     printf("\n");
 }
 
-void execute(char *line) {
-  while (*line == ' ')
-    ++line;
-  if (!*line)
-    return;
-
-  char *args = line;
-  while (*args && *args != ' ')
-    ++args;
-  if (*args) {
-    *args++ = '\0';
-    while (*args == ' ')
-      ++args;
+size_t parse_arguments(char *line, char **argv, size_t capacity) {
+  size_t argc = 0;
+  char *read = line;
+  char *write = line;
+  while (*read) {
+    while (*read == ' ' || *read == '\t')
+      ++read;
+    if (!*read)
+      break;
+    if (argc == capacity)
+      return 0;
+    argv[argc++] = write;
+    char quote = 0;
+    bool started = false;
+    while (*read) {
+      const char ch = *read++;
+      if (!quote && (ch == ' ' || ch == '\t'))
+        break;
+      if (ch == '\\' && quote != '\'') {
+        if (*read) {
+          *write++ = *read++;
+          started = true;
+        }
+        continue;
+      }
+      if (ch == '\'' || ch == '"') {
+        if (!quote) {
+          quote = ch;
+          started = true;
+          continue;
+        }
+        if (quote == ch) {
+          quote = 0;
+          started = true;
+          continue;
+        }
+      }
+      *write++ = ch;
+      started = true;
+    }
+    if (quote)
+      return 0;
+    (void)started;
+    *write++ = '\0';
   }
+  return argc;
+}
 
-  if (equals(line, "help"))
+void join_arguments(char **argv, size_t first, size_t argc, char *out,
+                    size_t capacity) {
+  size_t used = 0;
+  if (!capacity)
+    return;
+  out[0] = '\0';
+  for (size_t i = first; i < argc; ++i) {
+    if (i != first && used + 1 < capacity)
+      out[used++] = ' ';
+    for (const char *p = argv[i]; *p && used + 1 < capacity; ++p)
+      out[used++] = *p;
+  }
+  out[used] = '\0';
+}
+
+const ProgramCommand program_commands[] = {
+    {"spong", "Spong", run_spong, nullptr, nullptr, true},
+    {"breakout", "Breakout", run_breakout, nullptr, nullptr, true},
+    {"doom1", "Doom I", run_doom1, nullptr, nullptr, true},
+    {"doom2", "Doom II", run_doom2, nullptr, nullptr, true},
+    {"tetris", "Tetris", run_tetris, nullptr, nullptr, true},
+    {"pacman", "Pac-Man", run_pacman, nullptr, nullptr, true},
+    {"gtest", "Graphics Test", run_graphic_test, nullptr, nullptr, true},
+    {"stress", "Stress Test", run_stress_test, nullptr, nullptr, true},
+    {"bench", "Benchmark", run_benchmark, nullptr, nullptr, true},
+    {"shitcell", "Shitcell", run_shitty_excel, nullptr, nullptr, true},
+    {"shitpad", "Shitpad", run_shitpad, nullptr, nullptr, true},
+    {"pain", "Pain", run_pain, nullptr, nullptr, true},
+    {"calc", "Calculator", run_calc, nullptr, nullptr, true},
+    {"c3d", "Cube3D", run_c3d, nullptr, nullptr, true},
+    {"youtube", "YouTube", run_youtube, nullptr, nullptr, true},
+    {"fontview", "Font Viewer", Apps::font_viewer_run, nullptr, nullptr, true},
+    {"fileview", "File Viewer", Apps::file_viewer_run, nullptr, nullptr, true},
+    {"taskman", "Task Manager", Apps::task_manager_run, nullptr, nullptr, true},
+    {"mema", "Memory Analyzer", Apps::memory_analyzer_run, nullptr, nullptr, true},
+    {"args", "Argument Test", nullptr, Apps::cli_args_test, nullptr, false},
+    {"exitcode", "Exit Status Test", nullptr, Apps::cli_exitcode_test, nullptr, false},
+    {"stdio-test", "stdio Test", nullptr, Apps::cli_stdio_test, nullptr, false},
+    {"memlife", "Memory Lifetime Test", nullptr, Apps::cli_memory_lifetime_test, nullptr, false},
+};
+
+const ProgramCommand *find_program(const char *name) {
+  for (const auto &program : program_commands)
+    if (equals(name, program.name))
+      return &program;
+  return nullptr;
+}
+
+void execute(char *line) {
+  char *argv[32]{};
+  const size_t argc = parse_arguments(line, argv, sizeof(argv) / sizeof(argv[0]));
+  if (!argc) {
+    for (const char *p = line; *p; ++p)
+      if (*p != ' ' && *p != '\t') {
+        printf("syntax error or too many arguments\n");
+        break;
+      }
+    return;
+  }
+  char args[INPUT_SIZE]{};
+  join_arguments(argv, 1, argc, args, sizeof(args));
+  const char *command = argv[0];
+
+  if (equals(command, "help"))
     help();
-  else if (equals(line, "clear")) {
+  else if (equals(command, "clear"))
     printf("\f");
-  } else if (equals(line, "echo"))
+  else if (equals(command, "echo"))
     printf("%s\n", args);
-  else if (equals(line, "ping"))
-    run_ping(args);
-  else if (equals(line, "netup"))
+  else if (equals(command, "ping"))
+    run_ping(argc > 1 ? argv[1] : const_cast<char *>(""));
+  else if (equals(command, "netup"))
     run_netup(args);
-  else if (equals(line, "netinfo"))
+  else if (equals(command, "netinfo"))
     run_netinfo(args);
-  else if (equals(line, "tcp-echo"))
+  else if (equals(command, "tcp-echo"))
     run_tcp_echo(args);
-  else if (equals(line, "fetch"))
+  else if (equals(command, "fetch"))
     run_fetch(args);
-  else if (equals(line, "youtube")) {
-    if (!launch_app("YouTube", run_youtube))
-      printf("Could not launch YouTube.\n");
-  } else if (equals(line, "fontcheck"))
+  else if (equals(command, "fontcheck"))
     run_fontcheck(args);
-  else if (equals(line, "fontview")) {
-    if (!launch_app("Font Viewer", Apps::font_viewer_run))
-      printf("Could not launch Font Viewer.\n");
-  } else if (equals(line, "fileview")) {
-    if (!launch_app("File Viewer", Apps::file_viewer_run))
-      printf("Could not launch File Viewer.\n");
-  } else if (equals(line, "about"))
-    printf("OSFOS kernel shell\nFramebuffer text UI with Virtual "
-           "Framebuffer abstraction.\n");
-  else if (equals(line, "smpinfo"))
+  else if (equals(command, "about"))
+    printf("OSFOS kernel shell: ring-0 command interpreter with process wait.\n");
+  else if (equals(command, "smpinfo"))
     printf("Online processors: %u\n",
            static_cast<unsigned>(Kernel::SMP::online_cpu_count()));
-  else if (equals(line, "debug"))
+  else if (equals(command, "debug"))
     show_debug_info();
-  else if (equals(line, "mem"))
-    printf("Memory APIs available in this build:\n  KernelHeap::malloc/free\n  "
-           "PMM::allocate_page_block/free_page_block\n");
-  else if (equals(line, "taskman")) {
-    if (!launch_app("Task Manager", Apps::task_manager_run))
-      printf("Could not launch Task Manager.\n");
-  } else if (equals(line, "heap-test"))
+  else if (equals(command, "mem"))
+    printf("Memory APIs: KernelHeap::malloc/free and PMM page allocation.\n");
+  else if (equals(command, "heap-test"))
     run_heap_test(args);
-  else if (equals(line, "pmm-test"))
+  else if (equals(command, "pmm-test"))
     run_pmm_test(args);
-  else if (equals(line, "mema")) {
-    if (!launch_app("Memoery Analyzer", Apps::memory_analyzer_run))
-      printf("Could not launch graphics test.\n");
-  } else if (equals(line, "disk-init"))
+  else if (equals(command, "disk-init"))
     run_disk_init(args);
-  else if (equals(line, "xhci-init"))
+  else if (equals(command, "xhci-init"))
     run_xhci_init(args);
-  else if (equals(line, "disk-check"))
+  else if (equals(command, "disk-check"))
     run_disk_check(args);
-  else if (equals(line, "ls"))
+  else if (equals(command, "ls"))
     run_ls(args);
-  else if (equals(line, "cat"))
+  else if (equals(command, "cat"))
     run_cat(args);
-  else if (equals(line, "exit"))
-    printf("The kernel shell runs in ring 0; there is no userspace "
-           "process to exit.\n");
-  else if (equals(line, "spong")) {
-    if (!launch_app("Spong", run_spong))
-      printf("Could not launch Spong.\n");
-  } else if (equals(line, "breakout")) {
-    if (!launch_app("Breakout", run_breakout))
-      printf("Could not launch Breakout.\n");
-  } else if (equals(line, "doom1")) {
-    if (!launch_app("Doom I", run_doom1))
-      printf("Could not launch Doom I.\n");
-  } else if (equals(line, "doom2")) {
-    if (!launch_app("Doom II", run_doom2))
-      printf("Could not launch Doom II.\n");
-  } else if (equals(line, "tetris")) {
-    if (!launch_app("Tetris", run_tetris))
-      printf("Could not launch Tetris.\n");
-  } else if (equals(line, "pacman")) {
-    if (!launch_app("Pac-Man", run_pacman))
-      printf("Could not launch Pac-Man.\n");
-  } else if (equals(line, "gtest")) {
-    if (!launch_app("Graphics test", run_graphic_test))
-      printf("Could not launch graphics test.\n");
-  } else if (equals(line, "stress")) {
-    if (!launch_app("Stress test", run_stress_test))
-      printf("Could not launch stress test.\n");
-  } else if (equals(line, "bench")) {
-    if (!launch_app("System benchmark", run_benchmark))
-      printf("Could not launch system benchmark.\n");
-  } else if (equals(line, "shitcell")) {
-    if (!launch_app("Shitcell", run_shitty_excel))
-      printf("Could not launch Shitcell.\n");
-  } else if (equals(line, "pain")) {
-    if (!launch_app("Pain", run_pain))
-      printf("Could not launch Pain.\n");
-  } else if (equals(line, "calc")) {
-    if (!launch_app("Calculator", run_calc))
-      printf("Could not launch calculator.\n");
-  } else if (equals(line, "shitpad")) {
-    if (!launch_app("Shitpad Editor", run_shitpad))
-      printf("Could not launch calculator.\n");
-  } else if (equals(line, "c3d")) {
-    if (!launch_app("Cube3D", run_c3d))
-      printf("Could not launch calculator.\n");
-  } else
-    printf("command not found: %s\nType 'help' to list commands.\n", line);
+  else if (equals(command, "exit")) {
+    Kernel::Scheduler::process_exit(0);
+  } else if (const ProgramCommand *program = find_program(command)) {
+    (void)launch_program(*program, static_cast<int>(argc), argv);
+  } else {
+    printf("command not found: %s\nType 'help' to list commands.\n", command);
+  }
 }
 
 } // namespace
 
+int process_entry(int, char **, void *) {
+  run();
+  return 0;
+}
+
 void run() {
+  Kernel::Scheduler::mark_current_thread_as_application("Shell");
   Kernel::Graphics::WindowManager::register_window(
       Kernel::Scheduler::current_thread_id(), "Shell", true);
-  if (!Kernel::Programs::Terminal::initialize()) {
-    Kernel::Graphics::WindowManager::unregister_window(
-        Kernel::Scheduler::current_thread_id());
+  if (!Kernel::Programs::Terminal::initialize())
     return;
-  }
+  Kernel::Scheduler::process_set_terminal_thread_id(
+      Kernel::Scheduler::current_thread_id());
   if (Kernel::Debug::g_kernel_debug_info.init_reclaimed) {
     printf("Reclaimed %zu bytes (%zu pages) of init memory.\n",
            Kernel::Debug::g_kernel_debug_info.reclaimed_init_bytes,
@@ -735,7 +742,6 @@ void run() {
     execute(input);
     prompt();
   }
-  Kernel::Programs::Terminal::shutdown();
 }
 
 } // namespace Kernel::Shell

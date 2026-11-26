@@ -176,8 +176,10 @@ extern "C" void main(unsigned long multiboot_info_addr) {
     else
       Kernel::Debug::log("ERROR: compositor thread creation failed");
   }
-  if (Kernel::Scheduler::thread_create(Kernel::Shell::run) <= 0)
-    Kernel::Debug::log("ERROR: shell thread creation failed");
+  if (!Kernel::Scheduler::process_spawn(
+          Kernel::Shell::process_entry, 0, nullptr, nullptr, "Shell",
+          Kernel::Scheduler::ThreadPriority::NORMAL, nullptr, true))
+    Kernel::Debug::log("ERROR: shell process creation failed");
 
   {
     uintptr_t init_start_phys = reinterpret_cast<uintptr_t>(_os_init_start);

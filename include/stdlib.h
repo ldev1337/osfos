@@ -25,7 +25,10 @@ extern "C" {
 #endif
 #endif
 
+/* malloc is process-lifetime memory for application processes. */
 void *malloc(size_t size);
+/* Thread-lifetime allocation; reclaimed automatically when this thread exits. */
+void *thread_malloc(size_t size);
 void *calloc(size_t nmemb, size_t size);
 void *realloc(void *ptr, size_t size);
 void free(void *ptr);

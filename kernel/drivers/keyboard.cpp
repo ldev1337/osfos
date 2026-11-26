@@ -19,10 +19,16 @@ bool left_alt_pressed = false;
 bool right_alt_flag = false;
 uint8_t pause_bytes_remaining = 0;
 
+bool keyboard_focus_allows_input(uint64_t input_owner_thread_id) {
+  if (!input_owner_thread_id)
+    return false;
+  return !Kernel::Graphics::WindowManager::has_window(input_owner_thread_id) ||
+         Kernel::Graphics::WindowManager::has_keyboard_focus(
+             input_owner_thread_id);
+}
+
 bool keyboard_focus_allows_input() {
-  const uint64_t tid = Kernel::Scheduler::current_thread_id();
-  return !Kernel::Graphics::WindowManager::has_window(tid) ||
-         Kernel::Graphics::WindowManager::has_keyboard_focus(tid);
+  return keyboard_focus_allows_input(Kernel::Scheduler::current_thread_id());
 }
 
 } // namespace
@@ -30,9 +36,7 @@ bool keyboard_focus_allows_input() {
 bool Keyboard::rx_buffer_empty() {
   SpinlockGuard guard(keyboard_lock);
   const uint64_t thread_id = Kernel::Scheduler::current_thread_id();
-  if (rx_buffer_owner != 0 && rx_buffer_owner != thread_id)
-    rx_buffer.clear();
-  return rx_buffer.empty();
+  return rx_buffer_owner != thread_id || rx_buffer.empty();
 }
 
 Keyboard::RingBuffer Keyboard::rx_buffer = {{0}, 0, 0};
@@ -166,30 +170,37 @@ void __init Keyboard::init() {
 }
 
 bool Keyboard::available() {
-  if (!keyboard_focus_allows_input())
+  return available_for(Kernel::Scheduler::current_thread_id());
+}
+
+bool Keyboard::available_for(uint64_t input_owner_thread_id) {
+  if (!keyboard_focus_allows_input(input_owner_thread_id))
     return false;
   SpinlockGuard guard(keyboard_lock);
-  const uint64_t thread_id = Kernel::Scheduler::current_thread_id();
-  if (rx_buffer_owner != 0 && rx_buffer_owner != thread_id)
-    rx_buffer.clear();
-  return !rx_buffer.empty();
+  return rx_buffer_owner == input_owner_thread_id && !rx_buffer.empty();
+}
+
+bool Keyboard::try_getchar_for(uint64_t input_owner_thread_id, char *out) {
+  if (!out || !keyboard_focus_allows_input(input_owner_thread_id))
+    return false;
+  SpinlockGuard guard(keyboard_lock);
+  if (rx_buffer_owner != input_owner_thread_id || rx_buffer.empty())
+    return false;
+  *out = rx_buffer.pop();
+  return true;
 }
 
 char Keyboard::getchar() {
-  while (true) {
-    if (!keyboard_focus_allows_input()) {
+  const uint64_t input_owner_thread_id = Kernel::Scheduler::current_thread_id();
+  for (;;) {
+    if (!keyboard_focus_allows_input(input_owner_thread_id)) {
       Kernel::Scheduler::thread_sleep_ms(4);
       continue;
     }
     if (!Kernel::Scheduler::thread_block_if(rx_buffer_empty)) {
-      SpinlockGuard guard(keyboard_lock);
-      const uint64_t thread_id = Kernel::Scheduler::current_thread_id();
-      if (rx_buffer_owner != 0 && rx_buffer_owner != thread_id) {
-        rx_buffer.clear();
-        continue;
-      }
-      if (!rx_buffer.empty())
-        return rx_buffer.pop();
+      char value = 0;
+      if (try_getchar_for(input_owner_thread_id, &value))
+        return value;
     }
   }
 }

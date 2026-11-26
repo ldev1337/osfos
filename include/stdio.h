@@ -28,9 +28,14 @@ typedef long fpos_t;
 #define _IOFBF 0
 #define _IOLBF 1
 #define _IONBF 2
-extern FILE *stdin;
-extern FILE *stdout;
-extern FILE *stderr;
+FILE *__os_stdin(void);
+FILE *__os_stdout(void);
+FILE *__os_stderr(void);
+#ifndef OSFOS_STDIO_IMPLEMENTATION
+#define stdin (__os_stdin())
+#define stdout (__os_stdout())
+#define stderr (__os_stderr())
+#endif
 int remove(const char *filename);
 int rename(const char *old_name, const char *new_name);
 int printf(const char *format, ...);

@@ -46,14 +46,23 @@ private:
   void free_slab_locked(void *ptr, void *header, void *page);
   void free_locked(void *ptr);
   bool resize_large_locked(void *raw_block, size_t size);
+  void free_allocations_for_owner(uint64_t owner);
+  size_t get_allocated_size_for_owner(uint64_t owner) const;
 
 public:
   void init(void *heap_start_addr, size_t initial_size);
+  // kmalloc is process-owned for non-kernel processes; kernel threads retain
+  // thread-owned allocations. Explicit ownership is available for kernel data.
   void *kmalloc(size_t size);
+  void *kmalloc_owned(size_t size, uint64_t owner);
+  void *kmalloc_process(size_t size, uint64_t process_id);
   void *kmalloc_huge(size_t size);
+  void *kmalloc_huge_owned(size_t size, uint64_t owner);
   void kfree(void *ptr);
   void free_thread_allocations(uint64_t thread_id);
+  void free_process_allocations(uint64_t process_id);
   size_t get_thread_allocated_size(uint64_t thread_id) const;
+  size_t get_process_allocated_size(uint64_t process_id) const;
   void *krealloc(void *ptr, size_t size);
   void *kcalloc(size_t num, size_t size);
   void *kzalloc(size_t size);

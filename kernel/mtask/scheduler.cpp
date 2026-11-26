@@ -3,6 +3,7 @@
 #include <kernel/debug/debug.h>
 #include <kernel/drivers/tsc_deadline.h>
 #include <kernel/mtask/internal.h>
+#include <kernel/memory/heap.h>
 #include <stdlib.h>
 
 namespace Kernel::Scheduler {
@@ -29,6 +30,8 @@ ThreadControlBlock *reap_pending = nullptr;
 static ThreadControlBlock *sleep_queue = nullptr;
 static ThreadControlBlock *blocked_list_head = nullptr;
 uint64_t next_pid = 1;
+uint64_t next_tid = 1;
+ProcessControlBlock *kernel_process = nullptr;
 bool scheduler_initialized = false;
 static uint32_t bootstrap_cpu_id = 0;
 
@@ -388,17 +391,27 @@ void scheduler_init() {
 
   // Heap allocation happens before disabling interrupts; the critical section
   // below only publishes fully initialized scheduler state.
-  auto *main_tcb =
-      static_cast<ThreadControlBlock *>(malloc(sizeof(ThreadControlBlock)));
-  if (!main_tcb) {
-    Kernel::Debug::log("ERROR: scheduler init failed: main task allocation");
+  auto *main_tcb = static_cast<ThreadControlBlock *>(
+      Kernel::Memory::g_kheap.kmalloc_owned(sizeof(ThreadControlBlock), 0));
+  auto *main_process = static_cast<ProcessControlBlock *>(
+      Kernel::Memory::g_kheap.kmalloc_owned(sizeof(ProcessControlBlock), 0));
+  if (!main_tcb || !main_process) {
+    free(main_tcb);
+    free(main_process);
+    Kernel::Debug::log("ERROR: scheduler init failed: bootstrap allocation");
     return;
   }
 
   memset(main_tcb, 0, sizeof(ThreadControlBlock));
+  memset(main_process, 0, sizeof(ProcessControlBlock));
+  main_process->state = static_cast<uint32_t>(ProcessState::RUNNING);
+  main_process->active_threads = 1;
+  const char kernel_name[] = "kernel";
+  memcpy(main_process->name, kernel_name, sizeof(kernel_name));
   const size_t index = cpu_index();
   if (SCHED_UNLIKELY(index >= MAX_APIC_IDS)) {
     free(main_tcb);
+    free(main_process);
     Kernel::Debug::log("ERROR: scheduler init failed: APIC ID out of range");
     return;
   }
@@ -407,6 +420,7 @@ void scheduler_init() {
                           reinterpret_cast<uint64_t *>(idle_stack_mem[index]),
                           IDLE_STACK_SIZE, idle_loop, nullptr, nullptr)) {
     free(main_tcb);
+    free(main_process);
     Kernel::Debug::log("ERROR: scheduler init failed: idle context setup");
     return;
   }
@@ -416,7 +430,10 @@ void scheduler_init() {
 
   const uint64_t flags = irq_save();
   bootstrap_cpu_id = static_cast<uint32_t>(index);
-  main_tcb->id = next_pid++;
+  main_process->id = next_pid++;
+  kernel_process = main_process;
+  main_tcb->id = next_tid++;
+  main_tcb->process = main_process;
   main_tcb->state = ThreadState::RUNNING;
   main_tcb->priority = ThreadPriority::IDLE;
   main_tcb->preferred_cpu = UINT32_MAX;
@@ -435,8 +452,9 @@ void scheduler_init() {
   install_cpu_state(index);
   scheduler_initialized = true;
   irq_restore(flags);
-  Kernel::Debug::log("scheduler initialized; bootstrap task registered");
-  Kernel::Debug::log_dec("bootstrap_task_id", main_tcb->id);
+  Kernel::Debug::log("scheduler initialized; bootstrap process registered");
+  Kernel::Debug::log_dec("bootstrap_process_id", main_process->id);
+  Kernel::Debug::log_dec("bootstrap_thread_id", main_tcb->id);
 }
 
 void scheduler_cpu_early_init() {
@@ -542,6 +560,29 @@ void thread_block() {
   insert_blocked(current_thread);
   yield_holding_lock(state);
   irq_restore_flags(flags);
+}
+
+void thread_block_on(volatile uint32_t *word, uint32_t expected) {
+  if (!word)
+    return;
+  while (__atomic_load_n(word, __ATOMIC_ACQUIRE) == expected &&
+         !should_stop()) {
+    reap_deferred();
+    const uint64_t flags = irq_save();
+    CpuSchedulerState &state = cpu_state();
+    ThreadControlBlock *current_thread = state.current;
+    if (!current_thread || current_thread == state.idle ||
+        __atomic_load_n(word, __ATOMIC_ACQUIRE) != expected ||
+        __atomic_load_n(&current_thread->stop_requested, __ATOMIC_RELAXED)) {
+      irq_restore(flags);
+      return;
+    }
+    current_thread->state = ThreadState::BLOCKED;
+    current_thread->timed_wait = false;
+    insert_blocked(current_thread);
+    yield_holding_lock(state);
+    irq_restore_flags(flags);
+  }
 }
 
 auto thread_block_if(bool (*should_block)()) -> bool {

@@ -61,6 +61,8 @@ constexpr size_t INITIAL_EXPAND_PAGES = 64; // 256 KiB
 constexpr size_t MAX_EXPAND_PAGES = 1024;   // 4 MiB per growth step
 
 constexpr uint64_t HUGE_MAGIC = 0x4855474548554745ULL;
+constexpr uint64_t PROCESS_OWNER_MASK = 1ull << 63;
+constexpr uint32_t SLAB_PROCESS_OWNER_MASK = 1u << 31;
 constexpr uintptr_t SLAB_COOKIE = 0x534C41425041474EULL;
 
 // ---------------------------------------------------------------- slab ----
@@ -132,6 +134,24 @@ size_t g_slab_used = 0; // sum of class sizes of live slab objects
 
 inline uint32_t *slab_owners(SlabPage *p) {
   return reinterpret_cast<uint32_t *>(p + 1);
+}
+inline uint64_t process_owner_key(uint64_t process_id) {
+  return PROCESS_OWNER_MASK | (process_id & 0x7fffffffull);
+}
+inline uint32_t slab_owner_key(uint64_t owner) {
+  const uint32_t id = static_cast<uint32_t>(owner & 0x7fffffffull);
+  return (owner & PROCESS_OWNER_MASK) ? (SLAB_PROCESS_OWNER_MASK | id) : id;
+}
+inline uint64_t owner_from_slab_key(uint32_t owner) {
+  return (owner & SLAB_PROCESS_OWNER_MASK)
+             ? (PROCESS_OWNER_MASK | (owner & 0x7fffffffu))
+             : owner;
+}
+inline uint64_t current_allocation_owner() {
+  const uint64_t process_id = Kernel::Scheduler::current_process_id();
+  if (process_id && !Kernel::Scheduler::current_process_is_kernel())
+    return process_owner_key(process_id);
+  return Kernel::Scheduler::current_thread_id();
 }
 inline uintptr_t slab_base(const SlabPage *p) {
   return reinterpret_cast<uintptr_t>(p) + TABLES.info[p->cls].base;
@@ -660,7 +680,7 @@ void *KernelHeap::allocate_slab_locked(unsigned class_index, size_t,
   }
 
   page->used_bits[idx >> 6] |= 1ull << (idx & 63);
-  slab_owners(page)[idx] = static_cast<uint32_t>(owner);
+  slab_owners(page)[idx] = slab_owner_key(owner);
   ++page->used;
   if (page->used == page->capacity)
     remove_slab_free_page(page);
@@ -770,21 +790,20 @@ void KernelHeap::init(void *heap_start_addr, size_t initial_size) {
   }
 }
 
-void *KernelHeap::kmalloc_huge(size_t size) {
+void *KernelHeap::kmalloc_huge_owned(size_t size, uint64_t owner) {
   if (__builtin_expect(size > static_cast<size_t>(-1) -
                                   sizeof(HugeAllocHeader) - (PAGE - 1),
                        0))
     return nullptr;
   const size_t pages = (size + sizeof(HugeAllocHeader) + PAGE - 1) / PAGE;
-
-  void *base = g_pmm.allocate_page_block(pages); // contiguous run
+  void *base = g_pmm.allocate_page_block(pages);
   if (__builtin_expect(!base, 0))
     return nullptr;
 
   auto *h = static_cast<HugeAllocHeader *>(base);
   h->magic = HUGE_MAGIC;
   h->size = pages * PAGE;
-  h->owner = Kernel::Scheduler::current_thread_id();
+  h->owner = owner;
   h->pad = 0;
   {
     LockGuard guard;
@@ -797,16 +816,27 @@ void *KernelHeap::kmalloc_huge(size_t size) {
   return h + 1;
 }
 
-void *KernelHeap::kmalloc(size_t size) {
+void *KernelHeap::kmalloc_huge(size_t size) {
+  return kmalloc_huge_owned(size, current_allocation_owner());
+}
+
+void *KernelHeap::kmalloc_owned(size_t size, uint64_t owner) {
   if (__builtin_expect(!size, 0))
     return nullptr;
   if (__builtin_expect(size >= HUGE_THRESHOLD, 0))
-    return kmalloc_huge(size);
-  // Resolve the owner before taking the heap lock: no heap -> scheduler lock
-  // nesting and a shorter IRQ-off window.
-  const uint64_t owner = Kernel::Scheduler::current_thread_id();
+    return kmalloc_huge_owned(size, owner);
   LockGuard guard;
   return allocate_locked(size, owner);
+}
+
+void *KernelHeap::kmalloc_process(size_t size, uint64_t process_id) {
+  if (!process_id)
+    return nullptr;
+  return kmalloc_owned(size, process_owner_key(process_id));
+}
+
+void *KernelHeap::kmalloc(size_t size) {
+  return kmalloc_owned(size, current_allocation_owner());
 }
 
 void KernelHeap::kfree(void *ptr) {
@@ -827,9 +857,18 @@ void KernelHeap::kfree(void *ptr) {
 }
 
 void KernelHeap::free_thread_allocations(uint64_t thread_id) {
-  if (!thread_id)
+  free_allocations_for_owner(thread_id);
+}
+
+void KernelHeap::free_process_allocations(uint64_t process_id) {
+  if (process_id)
+    free_allocations_for_owner(process_owner_key(process_id));
+}
+
+void KernelHeap::free_allocations_for_owner(uint64_t owner) {
+  if (!owner)
     return;
-  const uint32_t tid32 = static_cast<uint32_t>(thread_id);
+  const uint32_t owner32 = slab_owner_key(owner);
   LockGuard guard;
 
   // Medium blocks: every used block in the arena is a medium allocation.
@@ -839,7 +878,7 @@ void KernelHeap::free_thread_allocations(uint64_t thread_id) {
     uintptr_t cur = seg->begin;
     while (cur < limit) {
       auto *b = reinterpret_cast<Block *>(cur);
-      if (bused(b) && b->owner == thread_id) {
+      if (bused(b) && b->owner == owner) {
         auto *merged = static_cast<Block *>(release_block(b));
         if (!merged)
           break; // segment returned to the PMM
@@ -854,7 +893,7 @@ void KernelHeap::free_thread_allocations(uint64_t thread_id) {
   // Huge allocations.
   for (HugeAllocHeader *h = g_huge_head; h;) {
     HugeAllocHeader *next = h->next;
-    if (h->owner == thread_id) {
+    if (h->owner == owner) {
       const size_t pages = h->size / PAGE;
       huge_unlink(h);
       g_pmm.free_page_block(h, pages);
@@ -875,7 +914,7 @@ void KernelHeap::free_thread_allocations(uint64_t thread_id) {
         while (bits) {
           const unsigned idx = w * 64 + __builtin_ctzll(bits);
           bits &= bits - 1;
-          if (owners[idx] != tid32)
+          if (owners[idx] != owner32)
             continue;
           const bool last = page->used == 1; // page may vanish below
           free_slab_locked(reinterpret_cast<void *>(
@@ -894,22 +933,30 @@ void KernelHeap::free_thread_allocations(uint64_t thread_id) {
 
 // Reports usable bytes (slot / block capacity), not the exact requested size.
 size_t KernelHeap::get_thread_allocated_size(uint64_t thread_id) const {
-  if (!thread_id)
+  return get_allocated_size_for_owner(thread_id);
+}
+
+size_t KernelHeap::get_process_allocated_size(uint64_t process_id) const {
+  return process_id ? get_allocated_size_for_owner(process_owner_key(process_id)) : 0;
+}
+
+size_t KernelHeap::get_allocated_size_for_owner(uint64_t owner) const {
+  if (!owner)
     return 0;
-  const uint32_t tid32 = static_cast<uint32_t>(thread_id);
+  const uint32_t owner32 = slab_owner_key(owner);
   LockGuard guard;
   size_t total = 0;
   for (HeapSegment *seg = g_segments_head; seg; seg = seg->next) {
     const uintptr_t limit = seg->end - HDR;
     for (uintptr_t cur = seg->begin; cur < limit;) {
       auto *b = reinterpret_cast<Block *>(cur);
-      if (bused(b) && b->owner == thread_id)
+      if (bused(b) && b->owner == owner)
         total += bsize(b) - HDR;
       cur += bsize(b);
     }
   }
   for (HugeAllocHeader *h = g_huge_head; h; h = h->next)
-    if (h->owner == thread_id)
+    if (h->owner == owner)
       total += h->size - sizeof(HugeAllocHeader);
   for (SlabPage *page = static_cast<SlabPage *>(slab_pages); page;
        page = page->all_next) {
@@ -920,7 +967,7 @@ size_t KernelHeap::get_thread_allocated_size(uint64_t thread_id) const {
       while (bits) {
         const unsigned idx = w * 64 + __builtin_ctzll(bits);
         bits &= bits - 1;
-        if (owners[idx] == tid32)
+        if (owners[idx] == owner32)
           total += sz;
       }
     }
@@ -959,11 +1006,7 @@ void *KernelHeap::krealloc(void *ptr, size_t size) {
     owner = h->owner;
     void *np;
     if (size >= HUGE_THRESHOLD) {
-      np = kmalloc_huge(size);
-      if (np) {
-        LockGuard guard;
-        huge_header(np)->owner = owner;
-      }
+      np = kmalloc_huge_owned(size, owner);
     } else {
       LockGuard guard;
       np = allocate_locked(size, owner);
@@ -984,7 +1027,7 @@ void *KernelHeap::krealloc(void *ptr, size_t size) {
       if (size <= csz && csz <= 2 * align_up_size(size, ALIGNMENT))
         return ptr; // fits and not wasteful
       old_usable = csz;
-      owner = slab_owners(page)[idx];
+      owner = owner_from_slab_key(slab_owners(page)[idx]);
     } else {
       if (reinterpret_cast<uintptr_t>(ptr) & (ALIGNMENT - 1))
         return nullptr;
@@ -1003,11 +1046,7 @@ void *KernelHeap::krealloc(void *ptr, size_t size) {
   }
 
   if (size >= HUGE_THRESHOLD) {
-    np = kmalloc_huge(size);
-    if (np) {
-      LockGuard guard;
-      huge_header(np)->owner = owner;
-    }
+    np = kmalloc_huge_owned(size, owner);
   }
   if (!np)
     return nullptr; // original block untouched
@@ -1250,6 +1289,10 @@ void *kcalloc(size_t num, size_t size) {
 }
 void *kzalloc(size_t size) { return Kernel::Memory::g_kheap.kzalloc(size); }
 void *malloc(size_t size) { return Kernel::Memory::g_kheap.kmalloc(size); }
+void *thread_malloc(size_t size) {
+  return Kernel::Memory::g_kheap.kmalloc_owned(
+      size, Kernel::Scheduler::current_thread_id());
+}
 void free(void *ptr) { Kernel::Memory::g_kheap.kfree(ptr); }
 void *realloc(void *ptr, size_t size) {
   return Kernel::Memory::g_kheap.krealloc(ptr, size);

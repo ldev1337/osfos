@@ -1,9 +1,9 @@
 #pragma once
 
-#include <string.h>
 #include <cstddef>
 #include <cstdint>
 #include <kernel/scheduler.h>
+#include <string.h>
 
 namespace Kernel::Scheduler {
 
@@ -69,6 +69,8 @@ extern ThreadControlBlock idle_thread_storage[MAX_APIC_IDS];
 extern ThreadControlBlock *thread_list_head;
 extern ThreadControlBlock *reap_pending;
 extern uint64_t next_pid;
+extern uint64_t next_tid;
+extern ProcessControlBlock *kernel_process;
 extern bool scheduler_initialized;
 
 extern "C" void thread_start_wrapper(void (*)());

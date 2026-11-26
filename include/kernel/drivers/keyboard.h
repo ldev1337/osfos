@@ -9,7 +9,11 @@ class Keyboard {
 public:
   static void init();
 
+  // Read input belonging to the focused terminal owner, even when a child
+  // process/thread is the caller (stdin inheritance).
   static bool available();
+  static bool available_for(uint64_t input_owner_thread_id);
+  static bool try_getchar_for(uint64_t input_owner_thread_id, char *out);
 
   static char getchar();
 

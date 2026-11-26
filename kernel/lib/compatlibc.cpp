@@ -1,31 +1,45 @@
 #include <kernel/fs/laziofs.h>
+#include <kernel/memory/heap.h>
 #include <kernel/programs/terminal.h>
+#include <kernel/scheduler.h>
+#include <kernel/spinlock.h>
 #include <limits.h>
+#include <new>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
+#define OSFOS_STDIO_IMPLEMENTATION
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+struct StdioContext;
 struct __FILE {
   void *stream;
   unsigned char is_stdout, is_stderr, is_stdin;
   unsigned char eof, error, unget_count;
   unsigned char unget_buffer[8];
   int descriptor;
+  StdioContext *owner;
+  FILE *next;
 };
 
+struct StdioContext {
+  FILE standard[3];
+  FILE *open_files = nullptr;
+  int next_descriptor = 3;
+  Spinlock lock;
+};
+
+namespace {
+int bootstrap_errno = 0;
+}
+
 extern "C" {
-static FILE __stdin_file = {nullptr, 0, 0, 1, 0, 0, 0, {0}, 0};
-static FILE __stdout_file = {nullptr, 1, 0, 0, 0, 0, 0, {0}, 1};
-static FILE __stderr_file = {nullptr, 0, 1, 0, 0, 0, 0, {0}, 2};
-FILE *stdin = &__stdin_file;
-FILE *stdout = &__stdout_file;
-FILE *stderr = &__stderr_file;
-static int errno_val = 0;
-static int next_descriptor = 3;
-int *__errno_location(void) { return &errno_val; }
+int *__errno_location(void) {
+  int *value = Kernel::Scheduler::current_errno_location();
+  return value ? value : &bootstrap_errno;
+}
 
 static const uint16_t ctype_b[384] = {0};
 static const int32_t ctype_toupper[384] = {0};
@@ -39,10 +53,63 @@ const int32_t **__ctype_toupper_loc(void) {
 }
 }
 
+#define errno_val (*__errno_location())
+
 namespace {
 namespace Terminal = Kernel::Programs::Terminal;
 constexpr size_t STACK_FORMAT_SIZE = 512;
+Spinlock stdio_context_lock;
+StdioContext fallback_stdio_context;
+bool fallback_stdio_initialized = false;
 
+void initialize_stdio_context(StdioContext *context) {
+  context->standard[0] = FILE{};
+  context->standard[1] = FILE{};
+  context->standard[2] = FILE{};
+  context->standard[0].is_stdin = 1;
+  context->standard[1].is_stdout = 1;
+  context->standard[2].is_stderr = 1;
+  for (int i = 0; i < 3; ++i) {
+    context->standard[i].descriptor = i;
+    context->standard[i].owner = context;
+  }
+  context->open_files = nullptr;
+  context->next_descriptor = 3;
+}
+
+StdioContext *current_stdio_context() {
+  if (void *existing = Kernel::Scheduler::process_stdio_context())
+    return static_cast<StdioContext *>(existing);
+  SpinlockGuard guard(stdio_context_lock);
+  if (void *existing = Kernel::Scheduler::process_stdio_context())
+    return static_cast<StdioContext *>(existing);
+  if (!Kernel::Scheduler::current_process_id()) {
+    if (!fallback_stdio_initialized) {
+      initialize_stdio_context(&fallback_stdio_context);
+      fallback_stdio_initialized = true;
+    }
+    return &fallback_stdio_context;
+  }
+  void *memory = Kernel::Memory::g_kheap.kmalloc_process(
+      sizeof(StdioContext), Kernel::Scheduler::current_process_id());
+  if (!memory) {
+    errno_val = 12;
+    return nullptr;
+  }
+  auto *context = new (memory) StdioContext();
+  initialize_stdio_context(context);
+  Kernel::Scheduler::process_set_stdio_context(context);
+  return context;
+}
+
+FILE *standard_stream(unsigned index) {
+  StdioContext *context = current_stdio_context();
+  return context && index < 3 ? &context->standard[index] : nullptr;
+}
+bool belongs_to_current_process(FILE *stream) {
+  return stream && stream->owner &&
+         stream->owner == current_stdio_context();
+}
 bool is_stdout_stream(FILE *stream) { return stream && stream->is_stdout; }
 bool is_stderr_stream(FILE *stream) { return stream && stream->is_stderr; }
 bool is_stdin_stream(FILE *stream) { return stream && stream->is_stdin; }
@@ -50,8 +117,8 @@ bool is_console_output(FILE *stream) {
   return is_stdout_stream(stream) || is_stderr_stream(stream);
 }
 bool is_file_stream(FILE *stream) {
-  return stream && stream->stream && !is_console_output(stream) &&
-         !is_stdin_stream(stream);
+  return belongs_to_current_process(stream) && stream->stream &&
+         !is_console_output(stream) && !is_stdin_stream(stream);
 }
 bool is_space_char(int c) {
   return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' ||
@@ -404,7 +471,7 @@ int format_to_buffer(char *buffer, size_t size, const char *format,
 }
 
 int stream_write(FILE *stream, const void *buffer, size_t bytes) {
-  if (!stream || (!buffer && bytes)) {
+  if (!belongs_to_current_process(stream) || (!buffer && bytes)) {
     errno_val = 9;
     return -1;
   }
@@ -412,8 +479,15 @@ int stream_write(FILE *stream, const void *buffer, size_t bytes) {
     return 0;
   if (is_stdout_stream(stream) || is_stderr_stream(stream)) {
     const uint32_t color = is_stderr_stream(stream) ? 0xF38BA8u : 0xF4D6CDu;
-    Terminal::write(static_cast<const char *>(buffer), bytes, color);
-    Terminal::flush();
+    const uint64_t terminal_id = Kernel::Scheduler::process_terminal_thread_id();
+    if (terminal_id) {
+      Terminal::write_to(terminal_id, static_cast<const char *>(buffer), bytes,
+                         color);
+      Terminal::flush_to(terminal_id);
+    } else {
+      Terminal::write(static_cast<const char *>(buffer), bytes, color);
+      Terminal::flush();
+    }
     return static_cast<int>(bytes);
   }
   if (is_file_stream(stream)) {
@@ -430,14 +504,16 @@ int stream_write(FILE *stream, const void *buffer, size_t bytes) {
 }
 
 int stream_get(FILE *stream) {
-  if (!stream) {
+  if (!belongs_to_current_process(stream)) {
     errno_val = 9;
     return EOF;
   }
   if (stream->unget_count)
     return stream->unget_buffer[--stream->unget_count];
   if (is_stdin_stream(stream)) {
-    return Terminal::read_char();
+    const uint64_t terminal_id = Kernel::Scheduler::process_terminal_thread_id();
+    return terminal_id ? Terminal::read_char_from(terminal_id)
+                       : Terminal::read_char();
   }
   if (is_file_stream(stream)) {
     unsigned char ch = 0;
@@ -478,6 +554,97 @@ void scan_unget(ScanInput &input, int c) {
     --input.position;
   if (input.consumed)
     --input.consumed;
+}
+bool scan_decimal_float(ScanInput &input, int width, double &result,
+                        bool &input_failure) {
+  if (width <= 0)
+    return false;
+  int c = scan_get(input);
+  int sign_char = 0;
+  bool negative = false;
+  if (c == '+' || c == '-') {
+    sign_char = c;
+    negative = c == '-';
+    --width;
+    c = width ? scan_get(input) : EOF;
+  }
+
+  double whole = 0.0;
+  double fraction = 0.0;
+  double fraction_scale = 0.1;
+  unsigned digits = 0;
+  while (width > 0 && c >= '0' && c <= '9') {
+    whole = whole * 10.0 + static_cast<double>(c - '0');
+    ++digits;
+    --width;
+    c = width ? scan_get(input) : EOF;
+  }
+  if (width > 0 && c == '.') {
+    --width;
+    c = width ? scan_get(input) : EOF;
+    while (width > 0 && c >= '0' && c <= '9') {
+      fraction += static_cast<double>(c - '0') * fraction_scale;
+      fraction_scale *= 0.1;
+      ++digits;
+      --width;
+      c = width ? scan_get(input) : EOF;
+    }
+  }
+  if (!digits) {
+    if (c != EOF)
+      scan_unget(input, c);
+    if (sign_char)
+      scan_unget(input, sign_char);
+    if (c == EOF)
+      input_failure = true;
+    return false;
+  }
+
+  int exponent = 0;
+  bool exponent_negative = false;
+  bool exponent_rolled_back = false;
+  if (width > 0 && (c == 'e' || c == 'E')) {
+    const int exponent_marker = c;
+    --width;
+    int exponent_sign = 0;
+    c = width ? scan_get(input) : EOF;
+    if (c == '+' || c == '-') {
+      exponent_sign = c;
+      exponent_negative = c == '-';
+      --width;
+      c = width ? scan_get(input) : EOF;
+    }
+    unsigned exponent_digits = 0;
+    while (width > 0 && c >= '0' && c <= '9') {
+      if (exponent < 1000)
+        exponent = exponent * 10 + (c - '0');
+      ++exponent_digits;
+      --width;
+      c = width ? scan_get(input) : EOF;
+    }
+    if (!exponent_digits) {
+      if (c != EOF)
+        scan_unget(input, c);
+      if (exponent_sign)
+        scan_unget(input, exponent_sign);
+      scan_unget(input, exponent_marker);
+      exponent_rolled_back = true;
+    }
+  }
+  if (c != EOF && !exponent_rolled_back)
+    scan_unget(input, c);
+
+  double value = whole + fraction;
+  if (exponent) {
+    for (int i = 0; i < exponent && i < 400; ++i) {
+      if (exponent_negative)
+        value *= 0.1;
+      else
+        value *= 10.0;
+    }
+  }
+  result = negative ? -value : value;
+  return true;
 }
 bool scanset_contains(const bool set[256], int c, bool invert) {
   if (c < 0 || c > 255)
@@ -559,6 +726,9 @@ int scan_format(ScanInput &input, const char *format, va_list args) {
     } else if (*format == 'j') {
       ++format;
       length = LengthMod::J;
+    } else if (*format == 'L') {
+      ++format;
+      length = LengthMod::BIG_L;
     }
     const char conversion = *format ? *format++ : '\0';
     if (conversion != 'c' && conversion != '[' && conversion != 'n') {
@@ -662,6 +832,22 @@ int scan_format(ScanInput &input, const char *format, va_list args) {
         dest[count] = '\0';
       if (!suppress)
         ++assigned;
+      continue;
+    }
+    if (conversion == 'f' || conversion == 'F' || conversion == 'e' ||
+        conversion == 'E' || conversion == 'g' || conversion == 'G') {
+      double value = 0.0;
+      if (!scan_decimal_float(input, width, value, input_failure))
+        break;
+      if (!suppress) {
+        if (length == LengthMod::BIG_L)
+          *va_arg(args, long double *) = static_cast<long double>(value);
+        else if (length == LengthMod::L)
+          *va_arg(args, double *) = value;
+        else
+          *va_arg(args, float *) = static_cast<float>(value);
+        ++assigned;
+      }
       continue;
     }
     if (conversion == 'd' || conversion == 'i' || conversion == 'u' ||
@@ -801,7 +987,32 @@ int scan_format(ScanInput &input, const char *format, va_list args) {
   }
   return assigned ? assigned : (input_failure ? EOF : 0);
 }
-} // namespace
+ } // namespace
+
+extern "C" FILE *__os_stdin(void) { return standard_stream(0); }
+extern "C" FILE *__os_stdout(void) { return standard_stream(1); }
+extern "C" FILE *__os_stderr(void) { return standard_stream(2); }
+
+extern "C" void os_stdio_process_cleanup(void *opaque_context) {
+  auto *context = static_cast<StdioContext *>(opaque_context);
+  if (!context || context == &fallback_stdio_context)
+    return;
+  context->lock.lock();
+  FILE *file = context->open_files;
+  context->open_files = nullptr;
+  context->lock.unlock();
+  while (file) {
+    FILE *next = file->next;
+    if (file->stream)
+      (void)Kernel::FS::VFS::vfs_close(file->stream);
+    free(file);
+    file = next;
+  }
+  if (Kernel::FS::VFS::is_mounted())
+    (void)Kernel::FS::VFS::vfs_sync();
+  context->~StdioContext();
+  free(context);
+}
 
 extern "C" {
 int vsnprintf(char *buffer, size_t size, const char *format, va_list args) {
@@ -869,18 +1080,18 @@ int fprintf(FILE *stream, const char *format, ...) {
   return result;
 }
 int vprintf(const char *format, va_list args) {
-  return vfprintf(stdout, format, args);
+  return vfprintf(standard_stream(1), format, args);
 }
 int printf(const char *format, ...) {
   va_list args;
   va_start(args, format);
-  const int result = vfprintf(stdout, format, args);
+  const int result = vfprintf(standard_stream(1), format, args);
   va_end(args);
   return result;
 }
 int puts(const char *text) {
-  if (fputs(text ? text : "(null)", stdout) == EOF ||
-      fputc('\n', stdout) == EOF)
+  if (fputs(text ? text : "(null)", standard_stream(1)) == EOF ||
+      fputc('\n', standard_stream(1)) == EOF)
     return EOF;
   return 0;
 }
@@ -896,15 +1107,19 @@ int fputc(int character, FILE *stream) {
   return stream_write(stream, &ch, 1) == 1 ? ch : EOF;
 }
 int putc(int character, FILE *stream) { return fputc(character, stream); }
-int putchar(int character) { return fputc(character, stdout); }
+int putchar(int character) { return fputc(character, standard_stream(1)); }
 int fgetc(FILE *stream) { return stream_get(stream); }
 int getc(FILE *stream) { return fgetc(stream); }
-int getchar(void) { return fgetc(stdin); }
+int getchar(void) { return fgetc(standard_stream(0)); }
 int ungetc(int character, FILE *stream) {
-  if (!stream || character == EOF)
+  if (!belongs_to_current_process(stream) || character == EOF)
     return EOF;
-  if (is_stdin_stream(stream) && Terminal::push_input_char(character))
-    return static_cast<unsigned char>(character);
+  if (is_stdin_stream(stream)) {
+    const uint64_t terminal_id = Kernel::Scheduler::process_terminal_thread_id();
+    if ((terminal_id && Terminal::push_input_char_to(terminal_id, character)) ||
+        (!terminal_id && Terminal::push_input_char(character)))
+      return static_cast<unsigned char>(character);
+  }
   if (stream->unget_count >= sizeof(stream->unget_buffer))
     return EOF;
   stream->unget_buffer[stream->unget_count++] =
@@ -942,12 +1157,16 @@ FILE *fopen(const char *filename, const char *mode) {
     errno_val = 22;
     return nullptr;
   }
+  StdioContext *context = current_stdio_context();
+  if (!context)
+    return nullptr;
   void *handle = Kernel::FS::VFS::vfs_open(filename, mode);
   if (!handle) {
     errno_val = 2;
     return nullptr;
   }
-  FILE *file = static_cast<FILE *>(malloc(sizeof(FILE)));
+  FILE *file = static_cast<FILE *>(Kernel::Memory::g_kheap.kmalloc_process(
+      sizeof(FILE), Kernel::Scheduler::current_process_id()));
   if (!file) {
     Kernel::FS::VFS::vfs_close(handle);
     errno_val = 12;
@@ -955,21 +1174,40 @@ FILE *fopen(const char *filename, const char *mode) {
   }
   *file = FILE{};
   file->stream = handle;
-  file->descriptor = __atomic_fetch_add(&next_descriptor, 1, __ATOMIC_RELAXED);
+  file->owner = context;
+  context->lock.lock();
+  file->descriptor = context->next_descriptor++;
+  file->next = context->open_files;
+  context->open_files = file;
+  context->lock.unlock();
   return file;
 }
 int fclose(FILE *stream) {
-  if (!stream || is_stdout_stream(stream) || is_stderr_stream(stream) ||
-      is_stdin_stream(stream)) {
+  if (!belongs_to_current_process(stream) || is_stdout_stream(stream) ||
+      is_stderr_stream(stream) || is_stdin_stream(stream)) {
     errno_val = 9;
     return EOF;
   }
+  StdioContext *context = stream->owner;
+  context->lock.lock();
+  FILE **link = &context->open_files;
+  while (*link && *link != stream)
+    link = &(*link)->next;
+  if (*link != stream) {
+    context->lock.unlock();
+    errno_val = 9;
+    return EOF;
+  }
+  *link = stream->next;
+  context->lock.unlock();
   const int result = Kernel::FS::VFS::vfs_close(stream->stream);
+  stream->stream = nullptr;
   free(stream);
   return result == 0 ? 0 : EOF;
 }
 size_t fread(void *buffer, size_t size, size_t count, FILE *stream) {
-  if (!stream || (!buffer && size && count) || !size || !count)
+  if (!belongs_to_current_process(stream) || (!buffer && size && count) ||
+      !size || !count)
     return 0;
   if (count > static_cast<size_t>(-1) / size) {
     stream->error = 1;
@@ -1002,7 +1240,11 @@ size_t fread(void *buffer, size_t size, size_t count, FILE *stream) {
   return bytes / size;
 }
 size_t fwrite(const void *buffer, size_t size, size_t count, FILE *stream) {
-  if (!stream || (!buffer && size && count) || !size || !count)
+  if (!belongs_to_current_process(stream) || (!buffer && size && count)) {
+    errno_val = 9;
+    return 0;
+  }
+  if (!size || !count)
     return 0;
   if (count > static_cast<size_t>(-1) / size) {
     stream->error = 1;
@@ -1015,12 +1257,24 @@ size_t fwrite(const void *buffer, size_t size, size_t count, FILE *stream) {
 }
 int fflush(FILE *stream) {
   if (!stream) {
-    Terminal::flush();
+    const uint64_t terminal_id = Kernel::Scheduler::process_terminal_thread_id();
+    if (terminal_id)
+      Terminal::flush_to(terminal_id);
+    else
+      Terminal::flush();
     return !Kernel::FS::VFS::is_mounted() || Kernel::FS::VFS::vfs_sync() ? 0
                                                                          : EOF;
   }
+  if (!belongs_to_current_process(stream)) {
+    errno_val = 9;
+    return EOF;
+  }
   if (is_stdout_stream(stream) || is_stderr_stream(stream)) {
-    Terminal::flush();
+    const uint64_t terminal_id = Kernel::Scheduler::process_terminal_thread_id();
+    if (terminal_id)
+      Terminal::flush_to(terminal_id);
+    else
+      Terminal::flush();
     return 0;
   }
   if (is_file_stream(stream))
@@ -1029,7 +1283,7 @@ int fflush(FILE *stream) {
   return EOF;
 }
 int fseek(FILE *stream, long offset, int whence) {
-  if (!is_file_stream(stream) ||
+  if (!belongs_to_current_process(stream) || !is_file_stream(stream) ||
       (whence != SEEK_SET && whence != SEEK_CUR && whence != SEEK_END)) {
     errno_val = 9;
     return EOF;
@@ -1042,7 +1296,7 @@ int fseek(FILE *stream, long offset, int whence) {
   return result;
 }
 long ftell(FILE *stream) {
-  if (!is_file_stream(stream)) {
+  if (!belongs_to_current_process(stream) || !is_file_stream(stream)) {
     errno_val = 9;
     return -1;
   }
@@ -1071,16 +1325,23 @@ int fsetpos(FILE *stream, const fpos_t *position) {
   }
   return fseek(stream, static_cast<long>(*position), SEEK_SET);
 }
-int feof(FILE *stream) { return stream ? stream->eof != 0 : 0; }
-int ferror(FILE *stream) { return stream ? stream->error != 0 : 1; }
+int feof(FILE *stream) {
+  return belongs_to_current_process(stream) ? stream->eof != 0 : 0;
+}
+int ferror(FILE *stream) {
+  return belongs_to_current_process(stream) ? stream->error != 0 : 1;
+}
 void clearerr(FILE *stream) {
-  if (stream)
+  if (belongs_to_current_process(stream))
     stream->eof = stream->error = 0;
 }
-int fileno(FILE *stream) { return stream ? stream->descriptor : -1; }
+int fileno(FILE *stream) {
+  return belongs_to_current_process(stream) ? stream->descriptor : -1;
+}
 int isatty(int descriptor) { return descriptor >= 0 && descriptor <= 2; }
 int setvbuf(FILE *stream, char *, int mode, size_t) {
-  if (!stream || (mode != _IOFBF && mode != _IOLBF && mode != _IONBF)) {
+  if (!belongs_to_current_process(stream) ||
+      (mode != _IOFBF && mode != _IOLBF && mode != _IONBF)) {
     errno_val = 22;
     return EOF;
   }
@@ -1093,7 +1354,7 @@ int setvbuf(FILE *stream, char *, int mode, size_t) {
 void setbuf(FILE *stream, char *) { (void)setvbuf(stream, nullptr, _IONBF, 0); }
 
 int vfscanf(FILE *stream, const char *format, va_list args) {
-  if (!stream) {
+  if (!belongs_to_current_process(stream)) {
     errno_val = 9;
     return EOF;
   }
@@ -1110,12 +1371,12 @@ int fscanf(FILE *stream, const char *format, ...) {
 int scanf(const char *format, ...) {
   va_list args;
   va_start(args, format);
-  const int result = vfscanf(stdin, format, args);
+  const int result = vfscanf(standard_stream(0), format, args);
   va_end(args);
   return result;
 }
 int vscanf(const char *format, va_list args) {
-  return vfscanf(stdin, format, args);
+  return vfscanf(standard_stream(0), format, args);
 }
 int vsscanf(const char *text, const char *format, va_list args) {
   if (!text)
@@ -1139,9 +1400,9 @@ int __isoc99_sscanf(const char *text, const char *format, ...) {
 }
 void perror(const char *prefix) {
   if (prefix && *prefix)
-    fprintf(stderr, "%s: error %d\n", prefix, errno_val);
+    fprintf(standard_stream(2), "%s: error %d\n", prefix, errno_val);
   else
-    fprintf(stderr, "error %d\n", errno_val);
+    fprintf(standard_stream(2), "error %d\n", errno_val);
 }
 
 long strtol(const char *nptr, char **endptr, int base) {
@@ -1240,6 +1501,6 @@ double fabs(double x) { return (x < 0.0) ? -x : x; }
 extern "C" void kprintf(const char *format, ...) {
   va_list args;
   va_start(args, format);
-  (void)vfprintf(stdout, format, args);
+  (void)vfprintf(standard_stream(1), format, args);
   va_end(args);
 }
