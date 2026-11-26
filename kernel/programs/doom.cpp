@@ -1,11 +1,11 @@
 #include <cstddef>
 #include <cstdint>
-#include <oslib/keyboard.h>
 #include <kernel/drivers/tsc_deadline.h>
 #include <kernel/fs/laziofs.h>
-#include <oslib/win.h>
-#include <oslib/ui.h>
 #include <kernel/scheduler.h>
+#include <oslib/keyboard.h>
+#include <oslib/ui.h>
+#include <oslib/win.h>
 
 #define fopen(path, mode) kernel_vfs_open(path, mode)
 #define fread(ptr, size, nmemb, stream)                                        \
@@ -227,22 +227,90 @@ int DG_GetKey(int *pressed, unsigned char *doomKey) {
 
   // E0-prefixed Set 1 scancodes -> DOOM keycode
   static constexpr unsigned char extended_keymap[128] = {
-      /* 0x1C */ [0x1C] = KEYP_ENTER,
-      /* 0x1D */ [0x1D] = KEY_RCTRL,
-      /* 0x35 */ [0x35] = KEYP_DIVIDE,
-      /* 0x37 */ [0x37] = KEY_PRTSCR,
-      /* 0x38 */ [0x38] = KEY_RALT,
-      /* 0x47 */ [0x47] = KEY_HOME,
-      /* 0x48 */ [0x48] = KEY_UPARROW,
-      /* 0x49 */ [0x49] = KEY_PGUP,
-      /* 0x4B */ [0x4B] = KEY_LEFTARROW,
-      /* 0x4D */ [0x4D] = KEY_RIGHTARROW,
-      /* 0x4F */ [0x4F] = KEY_END,
-      /* 0x50 */ [0x50] = KEY_DOWNARROW,
-      /* 0x51 */ [0x51] = KEY_PGDN,
-      /* 0x52 */ [0x52] = KEY_INS,
-      /* 0x53 */ [0x53] = KEY_DEL,
-  };
+      /* 0x00-0x1B */ 0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      /* 0x1C-0x1F */ KEYP_ENTER,
+      KEY_RCTRL,
+      0,
+      0,
+      /* 0x20-0x34 */ 0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      /* 0x35-0x3A */ KEYP_DIVIDE,
+      0,
+      KEY_PRTSCR,
+      0,
+      KEY_RALT,
+      0,
+      /* 0x3B-0x46 */ 0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      /* 0x47-0x53 */ KEY_HOME,
+      KEY_UPARROW,
+      KEY_PGUP,
+      0,
+      KEY_LEFTARROW,
+      0,
+      KEY_RIGHTARROW,
+      0,
+      KEY_END,
+      KEY_DOWNARROW,
+      KEY_PGDN,
+      KEY_INS,
+      KEY_DEL};
 
   static bool last_states[128] = {false};
   static bool last_ext_states[128] = {false};

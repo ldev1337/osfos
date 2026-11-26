@@ -1,104 +1,93 @@
 NASM = nasm
-GCC = gcc
-GXX = g++
-ifeq ($(COMPILER),gcc)
-  CC   = gcc
-  CC++ = g++
+
+ifeq ($(COMPILER),clang)
+CC = clang
+CC++ = clang++
 else
-  CC   = clang
-  CC++ = clang++
+CC = gcc
+CC++ = g++
 endif
 
-C_STD   = -std=c11
+C_STD = -std=c11
 CPP_STD = -std=c++20
 
 INCLUDES = -Iinclude -Ikernel/programs/doomgeneric -Ithird_party/bearssl/inc \
-  -Ithird_party/bearssl/src -Ithird_party/stb
+-Ithird_party/bearssl/src -Ithird_party/stb
 
 RED_ZONE_FLAG = -mred-zone
 
-ifeq ($(COMPILER),gcc)
-LTO_FLAGS = -flto
-SIZE_OPT_FLAG = -Os
-else
+ifeq ($(COMPILER),clang)
 LTO_FLAGS = -flto=full
 SIZE_OPT_FLAG = -Oz
+GOLD_FLAGS = 
+LINKER_FLAGS = -fuse-ld=lld
+LESS_EXTR_FLAGS = -mllvm -enable-gvn-hoist=true \
+-mllvm -enable-gvn-sink=true \
+-fno-semantic-interposition \
+-mllvm -enable-interleaved-mem-accesses=true
+else
+LTO_FLAGS = -flto
+SIZE_OPT_FLAG = -Os
+GOLD_FLAGS = -Wl,--threads \
+-Wl,--sort-common=descending \
+-Wl,--no-warn-mismatch \
+-Wl,--as-needed
+LINKER_FLAGS = -fuse-ld=gold
+LESS_EXTR_FLAGS = -ftree-loop-vectorize -ftree-vectorize \
+-fallow-store-data-races -fno-semantic-interposition \
+-fipa-pta -fipa-reorder-for-locality -mtune=generic
 endif
+ALIGN_FLAGS = -falign-functions=64:16
+ICF_FLAG = -Wl,--icf=all
 
-# DEBUG_ELF=1 adds DWARF information and preserves the ELF symbol table.
-# The debug build uses a separate BUILD_DIR, so production objects are untouched.
 DEBUG_ELF ?= 0
 ifeq ($(DEBUG_ELF),1)
-  DEBUG_INFO_FLAGS = -g
-  STRIP_LDFLAG =
+DEBUG_INFO_FLAGS = -g
+STRIP_LDFLAG =
 else
-  DEBUG_INFO_FLAGS =
-  STRIP_LDFLAG = -Wl,--strip-all
+DEBUG_INFO_FLAGS =
+STRIP_LDFLAG = -Wl,--strip-all
 endif
 
 COMMON_FLAGS = -march=x86-64-v3 -mavx2 -mavx -msse2 -msse -ffast-math \
-  -ffreestanding -Wall -Wextra -w $(RED_ZONE_FLAG) -m64 \
-  -fno-exceptions -fno-stack-protector -fno-rtti \
-  -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fvisibility=hidden \
-  $(LTO_FLAGS) -ffunction-sections -fdata-sections -fmerge-all-constants $(INCLUDES) $(DEBUG_INFO_FLAGS)
+-ffreestanding -w $(RED_ZONE_FLAG) -m64 \
+-fno-exceptions -fno-stack-protector -fno-rtti \
+-fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident \
+-fvisibility=hidden $(LTO_FLAGS) \
+-ffunction-sections -fdata-sections -fmerge-all-constants \
+$(INCLUDES) $(DEBUG_INFO_FLAGS)
 
-ifeq ($(COMPILER),gcc)
-	LESS_EXTR_FLAGS = \
-		-ftree-loop-vectorize \
-		-ftree-vectorize \
-		-fallow-store-data-races \
-		-fno-semantic-interposition
-  LTO_LINK_FLAG    = -flto=auto
-else
-  LESS_EXTR_FLAGS = -mllvm -enable-gvn-hoist=true \
-    -mllvm -enable-gvn-sink=true \
-		-fno-semantic-interposition \
-    -mllvm -enable-interleaved-mem-accesses=true
-  LTO_LINK_FLAG    = -flto=full -fuse-ld=lld
-endif
-
-CFLAGS_C        = $(COMMON_FLAGS) -O2 $(LESS_EXTR_FLAGS) $(C_STD)
-CFLAGS_CPP      = $(COMMON_FLAGS) -O2 $(LESS_EXTR_FLAGS) $(CPP_STD)
-CFLAGS_C_PERF   = $(COMMON_FLAGS) -O3 $(LESS_EXTR_FLAGS) $(C_STD)
-CFLAGS_CPP_PERF = $(COMMON_FLAGS) -O3 $(LESS_EXTR_FLAGS) $(CPP_STD)
-CFLAGS_C_SIZE   = $(COMMON_FLAGS) -O1 $(LESS_EXTR_FLAGS) $(C_STD)
-CFLAGS_CPP_SIZE = $(COMMON_FLAGS) -O1 $(LESS_EXTR_FLAGS) $(CPP_STD)
-CFLAGS_C_OZ     = $(COMMON_FLAGS) $(SIZE_OPT_FLAG) $(C_STD)
-CFLAGS_CPP_OZ   = $(COMMON_FLAGS) $(SIZE_OPT_FLAG) $(CPP_STD)
-CFLAGS_BEARSSL  = $(COMMON_FLAGS) -O2 $(LESS_EXTR_FLAGS) $(C_STD) \
-  -DBR_USE_URANDOM=0 -DBR_USE_UNIX_TIME=0 -DBR_USE_WIN32_RAND=0 -DBR_RDRAND=0
-
-ifeq ($(COMPILER),gcc)
-LTO_FLAGS = -flto
-LINKER_FLAGS =
-else
-LTO_FLAGS = -flto=full
-LINKER_FLAGS = -fuse-ld=lld
-endif
+CFLAGS_C = $(COMMON_FLAGS) -O2 $(LESS_EXTR_FLAGS) $(C_STD)
+CFLAGS_CPP = $(COMMON_FLAGS) -O2 $(LESS_EXTR_FLAGS) $(CPP_STD)
+CFLAGS_C_PERF = $(COMMON_FLAGS) -O3 $(LESS_EXTR_FLAGS) $(ALIGN_FLAGS) $(C_STD)
+CFLAGS_CPP_PERF = $(COMMON_FLAGS) -O3 $(LESS_EXTR_FLAGS) $(ALIGN_FLAGS) $(CPP_STD)
+CFLAGS_C_OZ = $(COMMON_FLAGS) $(SIZE_OPT_FLAG) $(C_STD)
+CFLAGS_CPP_OZ = $(COMMON_FLAGS) $(SIZE_OPT_FLAG) $(CPP_STD)
+CFLAGS_BEARSSL = $(COMMON_FLAGS) -O2 $(LESS_EXTR_FLAGS) $(C_STD) \
+-DBR_USE_URANDOM=0 -DBR_USE_UNIX_TIME=0 -DBR_USE_WIN32_RAND=0 -DBR_RDRAND=0
 
 LDFLAGS = -static -ffreestanding -nostdlib $(LTO_FLAGS) $(LINKER_FLAGS) \
+$(GOLD_FLAGS) \
 -Wl,-O3 -Wl,-n \
 -Wl,--gc-sections \
-$(STRIP_LDFLAG) -Wl,--build-id=none \
+$(ICF_FLAG) $(STRIP_LDFLAG) \
+-Wl,--build-id=none \
 -Wl,-z,max-page-size=0x1000 \
--Wl,-T,arch/linker.ld \
--Wl,--icf=all
+-Wl,-T,arch/linker.ld
 
 ASM_SRCS = $(shell find arch kernel -name '*.asm' $(EXCLUDE))
 GAS_SRCS = $(shell find arch kernel -name '*.S' $(EXCLUDE))
-C_SRCS   = $(shell find arch kernel -name '*.c' $(EXCLUDE))
+C_SRCS = $(shell find arch kernel -name '*.c' $(EXCLUDE))
 C++_SRCS = $(shell find arch kernel -name '*.cpp' $(EXCLUDE))
 
-# Build intermediates in tmpfs (RAM). Set RAM_BUILD=0 to use the on-disk ./build.
 RAM_BUILD ?= 1
 ifeq ($(RAM_BUILD),1)
-  RAM_BUILD_ROOT ?= /dev/shm
-  BUILD_DIR ?= $(RAM_BUILD_ROOT)/osfos-build-$(shell id -u)
+RAM_BUILD_ROOT ?= /dev/shm
+BUILD_DIR ?= $(RAM_BUILD_ROOT)/osfos-build-$(shell id -u)
 else
-  BUILD_DIR ?= build
+BUILD_DIR ?= build
 endif
 
-# Separate location for the debug ELF and all of its intermediate objects.
 DEBUG_BUILD_DIR ?= $(BUILD_DIR)/debug
 
 DISK_IMAGE ?= disk.img
@@ -110,64 +99,62 @@ RUST_NET_SOURCES = $(shell find rust/net/src -type f -name '*.rs')
 BEARSSL_SOURCES = $(shell find third_party/bearssl/src -type f -name '*.c')
 BEARSSL_OBJS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(BEARSSL_SOURCES))
 
-KERNEL_LIB_C_OBJS       = $(patsubst %.c,$(BUILD_DIR)/%.o,$(shell find kernel/lib -name '*.c' 2>/dev/null))
-KERNEL_LIB_CPP_OBJS     = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(shell find kernel/lib -name '*.cpp' 2>/dev/null))
-KERNEL_NET_C_OBJS       = $(patsubst %.c,$(BUILD_DIR)/%.o,$(shell find kernel/net -name '*.c' 2>/dev/null))
-KERNEL_NET_CPP_OBJS     = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(shell find kernel/net -name '*.cpp' 2>/dev/null))
-KERNEL_MEMORY_C_OBJS    = $(patsubst %.c,$(BUILD_DIR)/%.o,$(shell find kernel/memory -name '*.c' 2>/dev/null))
-KERNEL_MEMORY_CPP_OBJS  = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(shell find kernel/memory -name '*.cpp' 2>/dev/null))
-KERNEL_FS_C_OBJS        = $(patsubst %.c,$(BUILD_DIR)/%.o,$(shell find kernel/fs -name '*.c' 2>/dev/null))
-KERNEL_FS_CPP_OBJS      = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(shell find kernel/fs -name '*.cpp' 2>/dev/null))
+KERNEL_LIB_C_OBJS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(shell find kernel/lib -name '*.c' 2>/dev/null))
+KERNEL_LIB_CPP_OBJS = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(shell find kernel/lib -name '*.cpp' 2>/dev/null))
+KERNEL_NET_C_OBJS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(shell find kernel/net -name '*.c' 2>/dev/null))
+KERNEL_NET_CPP_OBJS = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(shell find kernel/net -name '*.cpp' 2>/dev/null))
+KERNEL_MEMORY_C_OBJS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(shell find kernel/memory -name '*.c' 2>/dev/null))
+KERNEL_MEMORY_CPP_OBJS = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(shell find kernel/memory -name '*.cpp' 2>/dev/null))
+KERNEL_FS_C_OBJS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(shell find kernel/fs -name '*.c' 2>/dev/null))
+KERNEL_FS_CPP_OBJS = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(shell find kernel/fs -name '*.cpp' 2>/dev/null))
 
-KERNEL_O3_C_OBJS   = $(KERNEL_LIB_C_OBJS) $(KERNEL_NET_C_OBJS) $(KERNEL_MEMORY_C_OBJS) $(KERNEL_FS_C_OBJS)
+KERNEL_O3_C_OBJS = $(KERNEL_LIB_C_OBJS) $(KERNEL_NET_C_OBJS) $(KERNEL_MEMORY_C_OBJS) $(KERNEL_FS_C_OBJS)
 KERNEL_O3_CPP_OBJS = $(KERNEL_LIB_CPP_OBJS) $(KERNEL_NET_CPP_OBJS) $(KERNEL_MEMORY_CPP_OBJS) $(KERNEL_FS_CPP_OBJS)
 
-PROGRAM_C_OBJS   = $(patsubst %.c,$(BUILD_DIR)/%.o,$(shell find kernel/programs -name '*.c' 2>/dev/null))
+PROGRAM_C_OBJS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(shell find kernel/programs -name '*.c' 2>/dev/null))
 PROGRAM_CPP_OBJS = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(shell find kernel/programs -name '*.cpp' 2>/dev/null))
 
-GRAPHICS_OBJS    = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(wildcard kernel/graphics/*.cpp))
+GRAPHICS_OBJS = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(wildcard kernel/graphics/*.cpp))
 ARCH_PERF_C_OBJS = $(BUILD_DIR)/arch/x86_64/memory.o $(BUILD_DIR)/arch/x86_64/string.o
 
-DRIVER_C_OBJS    = $(patsubst %.c,$(BUILD_DIR)/%.o,$(shell find kernel/drivers -name '*.c'))
-DRIVER_CPP_OBJS  = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(shell find kernel/drivers -name '*.cpp'))
-DRIVER_OBJS      = $(DRIVER_C_OBJS) $(DRIVER_CPP_OBJS)
+DRIVER_C_OBJS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(shell find kernel/drivers -name '*.c'))
+DRIVER_CPP_OBJS = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(shell find kernel/drivers -name '*.cpp'))
 
 OBJS = $(sort \
-  $(patsubst %.asm,$(BUILD_DIR)/%.o,$(ASM_SRCS)) \
-  $(patsubst %.S,$(BUILD_DIR)/%.o,$(GAS_SRCS)) \
-  $(patsubst %.c,$(BUILD_DIR)/%.o,$(C_SRCS)) \
-  $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(C++_SRCS)) \
-  $(BEARSSL_OBJS) \
-  $(PROGRAM_CPP_OBJS) \
-  $(PROGRAM_C_OBJS) \
-  $(GRAPHICS_OBJS) \
-  $(ARCH_PERF_C_OBJS) \
-  $(KERNEL_O3_C_OBJS) \
-  $(KERNEL_O3_CPP_OBJS) \
-  $(DRIVER_C_OBJS) \
-  $(DRIVER_CPP_OBJS) \
-)
+$(patsubst %.asm,$(BUILD_DIR)/%.o,$(ASM_SRCS)) \
+$(patsubst %.S,$(BUILD_DIR)/%.o,$(GAS_SRCS)) \
+$(patsubst %.c,$(BUILD_DIR)/%.o,$(C_SRCS)) \
+$(patsubst %.cpp,$(BUILD_DIR)/%.o,$(C++_SRCS)) \
+$(BEARSSL_OBJS) \
+$(PROGRAM_CPP_OBJS) \
+$(PROGRAM_C_OBJS) \
+$(GRAPHICS_OBJS) \
+$(ARCH_PERF_C_OBJS) \
+$(KERNEL_O3_C_OBJS) \
+$(KERNEL_O3_CPP_OBJS) \
+$(DRIVER_C_OBJS) \
+$(DRIVER_CPP_OBJS))
 
-$(PROGRAM_C_OBJS):      CFLAGS_C   = $(CFLAGS_C_OZ)
-$(PROGRAM_CPP_OBJS):    CFLAGS_CPP = $(CFLAGS_CPP_OZ)
-$(KERNEL_O3_C_OBJS):    CFLAGS_C   = $(CFLAGS_C_PERF)
-$(KERNEL_O3_CPP_OBJS):  CFLAGS_CPP = $(CFLAGS_CPP_PERF)
-$(GRAPHICS_OBJS):       CFLAGS_CPP = $(CFLAGS_CPP_PERF)
-$(ARCH_PERF_C_OBJS):    CFLAGS_C   = $(CFLAGS_C_PERF)
-$(BEARSSL_OBJS):        CFLAGS_C   = $(CFLAGS_BEARSSL)
-$(DRIVER_C_OBJS):       CFLAGS_C   = $(CFLAGS_C_PERF)
-$(DRIVER_CPP_OBJS):     CFLAGS_CPP = $(CFLAGS_CPP_PERF)
+$(PROGRAM_C_OBJS): CFLAGS_C = $(CFLAGS_C_OZ)
+$(PROGRAM_CPP_OBJS): CFLAGS_CPP = $(CFLAGS_CPP_OZ)
+$(KERNEL_O3_C_OBJS): CFLAGS_C = $(CFLAGS_C_PERF)
+$(KERNEL_O3_CPP_OBJS): CFLAGS_CPP = $(CFLAGS_CPP_PERF)
+$(GRAPHICS_OBJS): CFLAGS_CPP = $(CFLAGS_CPP_PERF)
+$(ARCH_PERF_C_OBJS): CFLAGS_C = $(CFLAGS_C_PERF)
+$(BEARSSL_OBJS): CFLAGS_C = $(CFLAGS_BEARSSL)
+$(DRIVER_C_OBJS): CFLAGS_C = $(CFLAGS_C_PERF)
+$(DRIVER_CPP_OBJS): CFLAGS_CPP = $(CFLAGS_CPP_PERF)
 
 opt_flag = $(lastword $(filter -O%,$(1)))
-opt_tag  = $(patsubst -%,%,$(call opt_flag,$(1)))
+opt_tag = $(patsubst -%,%,$(call opt_flag,$(1)))
 
-TAG_C   = [CC  $(call opt_tag,$(CFLAGS_C))]
+TAG_C = [CC $(call opt_tag,$(CFLAGS_C))]
 TAG_CPP = [C++ $(call opt_tag,$(CFLAGS_CPP))]
 
 ifeq ($(V),1)
-  Q =
+Q =
 else
-  Q = @
+Q = @
 endif
 
 TERM_COLS ?= $(shell tput cols 2>/dev/null || echo 80)
@@ -210,14 +197,12 @@ compare-compiler:
 	@python3 tools/compare-compiler.py --runs "$(RUNS)" --jobs "$(JOBS)" \
 	  --boot-timeout "$(BOOT_TIMEOUT)" --qemu "$(QEMU)"
 
-# Build a fully separate optimized debug ELF; production objects are untouched.
 debug-elf:
 	$(Q)$(MAKE) --no-print-directory \
 		BUILD_DIR="$(DEBUG_BUILD_DIR)" \
 		DEBUG_ELF=1 \
 		"$(DEBUG_BUILD_DIR)/os-debug.elf"
 
-# Locate any .ttf font files in the project asset tree and add them to the disk image.
 FONT_FILES := $(sort $(wildcard *.ttf) $(wildcard fonts/*.ttf) $(wildcard assets/*.ttf) $(wildcard assets/fonts/*.ttf))
 FONT_ADD_ARGS := $(foreach font,$(FONT_FILES),--add /fonts/$(notdir $(font))=$(font))
 
@@ -225,7 +210,6 @@ DOOM1_WAD = $(firstword $(wildcard doom1.wad doom.wad))
 DOOM2_WAD = $(wildcard doom2.wad)
 DOOM_WADS = $(DOOM1_WAD) $(DOOM2_WAD)
 
-# Build a bootable hybrid disk with its automounted filesystem appended as a partition.
 DISK_DEPS = Makefile $(BUILD_DIR)/os.bin grub.cfg tools/mklaziofs.py $(DOOM_WADS) $(FONT_FILES)
 
 $(DISK_IMAGE): $(DISK_DEPS)
@@ -246,7 +230,7 @@ $(BUILD_DIR)/%.o: %.asm Makefile
 	@$(NASM) -Ox -f elf64 $< -o $@
 ifeq ($(V),1)
 else
-	@$(call PRINT_TUI, [ASM   ], $<)
+	@$(call PRINT_TUI,[ASM],$<)
 endif
 
 $(BUILD_DIR)/%.o: %.S Makefile
@@ -254,7 +238,7 @@ $(BUILD_DIR)/%.o: %.S Makefile
 	@$(CC) $(COMMON_FLAGS) -c -x assembler-with-cpp $< -o $@
 ifeq ($(V),1)
 else
-	@$(call PRINT_TUI, [GAS   ], $<)
+	@$(call PRINT_TUI,[GAS],$<)
 endif
 
 $(BUILD_DIR)/%.o: %.c Makefile
@@ -268,7 +252,7 @@ else
 endif
 ifeq ($(V),1)
 else
-	@$(call PRINT_TUI, $(TAG_C), $<)
+	@$(call PRINT_TUI,$(TAG_C),$<)
 endif
 
 $(BUILD_DIR)/%.o: %.cpp Makefile
@@ -286,7 +270,7 @@ else
 endif
 ifeq ($(V),1)
 else
-	@$(call PRINT_TUI, $(TAG_CPP), $<)
+	@$(call PRINT_TUI,$(TAG_CPP),$<)
 endif
 
 $(BUILD_DIR)/os.bin: $(OBJS) $(RUST_NET_LIB) arch/linker.ld
@@ -295,16 +279,15 @@ $(BUILD_DIR)/os.bin: $(OBJS) $(RUST_NET_LIB) arch/linker.ld
 	$(Q)llvm-strip --strip-all --remove-section=.comment --remove-section=.note $@ 2>/dev/null || true
 ifeq ($(V),1)
 else
-	$(Q)$(call PRINT_TUI, [LD    ], $@)
+	$(Q)$(call PRINT_TUI,[LD],$@)
 endif
 
-# Unlike os.bin, this target is never stripped after linking.
 $(BUILD_DIR)/os-debug.elf: $(OBJS) $(RUST_NET_LIB) arch/linker.ld
 	$(Q)mkdir -p $(@D)
 	$(Q)$(CC) $(LDFLAGS) $(OBJS) $(RUST_NET_LIB) -o $@
 ifeq ($(V),1)
 else
-	$(Q)$(call PRINT_TUI, [LD DEBUG], $@)
+	$(Q)$(call PRINT_TUI,[LD DEBUG],$@)
 endif
 
 $(RUST_NET_LIB): rust/net/Cargo.toml rust/net/Cargo.lock $(RUST_NET_SOURCES) Makefile
@@ -315,7 +298,7 @@ $(RUST_NET_LIB): rust/net/Cargo.toml rust/net/Cargo.lock $(RUST_NET_SOURCES) Mak
 	$(Q)test -f $@
 ifeq ($(V),1)
 else
-	$(Q)$(call PRINT_TUI, [RUST  ], rust/net/src/lib.rs)
+	$(Q)$(call PRINT_TUI,[RUST],rust/net/src/lib.rs)
 endif
 
 simd: $(BUILD_DIR)/os.bin
@@ -368,7 +351,7 @@ filesimd:
 	fi
 
 clean:
-	$(Q)rm -rf $(BUILD_DIR) os.bin disk.img kernel.profdata kernel.afdo perf.data
+	$(Q)rm -rf $(BUILD_DIR) os.bin disk.img kernel.profdata kernel.afdo perf.data rm -rf /dev/shm/osfos-build-1000
 	$(Q)cargo clean --manifest-path rust/kernel_heap/Cargo.toml 2>/dev/null || true
 ifeq ($(V),1)
 else
