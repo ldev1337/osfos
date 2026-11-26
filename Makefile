@@ -1,3 +1,4 @@
+COMPILER ?= gcc
 NASM = nasm
 
 ifeq ($(COMPILER),clang)
@@ -351,9 +352,17 @@ filesimd:
 	fi
 
 clean:
-	$(Q)rm -rf $(BUILD_DIR) os.bin disk.img kernel.profdata kernel.afdo perf.data rm -rf /dev/shm/osfos-build-1000
+	$(Q)rm -rf $(BUILD_DIR) os.bin disk.img kernel.profdata kernel.afdo perf.data
+	$(Q)for d in "$(RAM_BUILD_ROOT)"/osfos-build-*; do \
+		[ -e "$$d" ] || continue; \
+		[ -O "$$d" ] || continue; \
+		case "$$d" in \
+			"$(BUILD_DIR)") ;; \
+			*) rm -rf "$$d" ;; \
+		esac; \
+	done
 	$(Q)cargo clean --manifest-path rust/kernel_heap/Cargo.toml 2>/dev/null || true
 ifeq ($(V),1)
 else
-	@printf "\033[1;31m  [CLEAN] \033[0m\033[37mAll build artifacts purged successfully.\033[0m\n"
+	@printf "\033[1;31m[CLEAN] \033[0m\033[37mAll build artifacts purged successfully.\033[0m\n"
 endif

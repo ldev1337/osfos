@@ -8,15 +8,14 @@
 #include <kernel/drivers/tsc_deadline.h>
 #include <kernel/fs/laziofs.h>
 #include <kernel/graphics/lwm.h>
-#include <kernel/lib/random.h>
 #include <kernel/memory/heap.h>
 #include <kernel/memory/init.h>
 #include <kernel/memory/pmm.h>
 #include <kernel/net/smoltcp.h>
-#include <kernel/programs/welcome.h>
 #include <kernel/scheduler.h>
 #include <kernel/shell/shell.h>
 #include <kernel/smp.h>
+#include <oslib/random.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -140,8 +139,8 @@ extern "C" void main(unsigned long multiboot_info_addr) {
     }
     uint8_t mac[6];
     Kernel::Drivers::Net::get_mac_address(mac);
-    uint64_t seed = Kernel::Lib::Random::rdtsc() ^
-                    Kernel::Drivers::TSCDeadline::get_ticks();
+    uint64_t seed =
+        oslib::Random::rdtsc() ^ Kernel::Drivers::TSCDeadline::get_ticks();
     for (unsigned char iii : mac) {
       seed = (seed << 8) ^ iii;
     }
@@ -165,8 +164,7 @@ extern "C" void main(unsigned long multiboot_info_addr) {
   } else {
     kprintf("SMP: no usable ACPI processor topology; continuing on BSP.\n");
   }
-  Kernel::Debug::log("boot initialization complete; showing welcome screen");
-  Kernel::Programs::show();
+  Kernel::Debug::log("boot initialization complete");
 
   if (window_manager_ready) {
     const int compositor_id = Kernel::Scheduler::thread_create(

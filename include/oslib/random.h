@@ -3,7 +3,7 @@
 
 #include <cstdint>
 
-namespace Kernel::Lib {
+namespace oslib {
 
 class Random {
 private:
@@ -65,6 +65,6 @@ public:
   }
 };
 
-} // namespace Kernel::Lib
+} // namespace oslib
 
 #endif

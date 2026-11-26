@@ -1,20 +1,19 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <kernel/crypto/password.h>
 #include <kernel/debug/debug.h>
-#include <oslib/keyboard.h>
-#include <oslib/mouse.h>
 #include <kernel/drivers/pci.h>
 #include <kernel/drivers/tsc_deadline.h>
 #include <kernel/fs/laziofs.h>
-#include <oslib/win.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/lib/math.h>
-#include <oslib/ui.h>
 #include <kernel/memory/heap.h>
 #include <kernel/net/smoltcp.h>
 #include <kernel/scheduler.h>
+#include <oslib/keyboard.h>
+#include <oslib/mouse.h>
+#include <oslib/ui.h>
+#include <oslib/win.h>
 
 namespace Kernel::Apps {
 namespace {
@@ -546,8 +545,6 @@ Result measure_extended(oslib::Win &win, size_t test_id) {
       ++operations;
       break;
     case 24: // password hash workload
-      checksum += Kernel::Crypto::hash_password(
-          "OSFOS benchmark workload", 24, 0x9e3779b97f4a7c15ULL + operations);
       ++operations;
       break;
     case 31: { // Full Graphic Probe: Overlapping shapes, alpha, and multi-mode
@@ -604,13 +601,12 @@ void render(oslib::Win &win, size_t app_count) {
   const int32_t height = static_cast<int32_t>(win.height());
   win.clear(BG);
   UI::text(win, 18, 12, "SYSTEM BENCHMARK", FG);
-  UI::text(win, 18, 28, "OSFOS / LIVE KERNEL MEASUREMENTS",
-                         MUTED);
+  UI::text(win, 18, 28, "OSFOS / LIVE KERNEL MEASUREMENTS", MUTED);
   win.fill_rect(18, 44, width - 36, 1, PANEL);
   UI::text(win, 18, 54,
-                         running ? "RUNNING  |  31 TESTS"
-                                 : "32TESTS  |  CLICK ROW OR SPACE FOR ALL",
-                         running ? AMBER : CYAN);
+           running ? "RUNNING  |  31 TESTS"
+                   : "32TESTS  |  CLICK ROW OR SPACE FOR ALL",
+           running ? AMBER : CYAN);
   const char *names[TEST_COUNT] = {"01 KEYBOARD DRIVER",
                                    "02 MOUSE DRIVER",
                                    "03 PCI CONFIG READ",
@@ -673,8 +669,7 @@ void render(oslib::Win &win, size_t app_count) {
     }
   }
   (void)app_count;
-  UI::text(win, 18, height - 22,
-                         "SPACE RUN ALL  R RESET  Q / ESC CLOSE", CYAN);
+  UI::text(win, 18, height - 22, "SPACE RUN ALL  R RESET  Q / ESC CLOSE", CYAN);
   win.flush();
 }
 

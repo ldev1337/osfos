@@ -1,11 +1,11 @@
 #include <algorithm>
 #include <cstdint>
-#include <oslib/keyboard.h>
-#include <oslib/win.h>
-#include <oslib/ui.h>
 #include <kernel/lib/appcommon.h>
-#include <kernel/lib/random.h>
 #include <kernel/scheduler.h>
+#include <oslib/keyboard.h>
+#include <oslib/random.h>
+#include <oslib/ui.h>
+#include <oslib/win.h>
 
 namespace Kernel::Games::Spong {
 namespace {
@@ -33,7 +33,7 @@ struct Game {
   int32_t ai_target;
   int32_t ai_timer;
   bool ai;
-  Kernel::Lib::Random rng{};
+  oslib::Random rng{};
 };
 
 void reset_ball(Game &g, int32_t direction) {
@@ -58,13 +58,13 @@ void render(const Game &g, oslib::Win &win) {
   win.fill_rect(g.w - 20 - PW, g.p2, PW, g.paddle_h, RED);
   win.fill_rect(g.bx, g.by, BW, BW, FG);
 
-  const auto title_bounds = UI::FlexLayout::center(
-      {0, 20, g.w, 16}, UI::text_width("SPONG"), 16);
+  const auto title_bounds =
+      UI::FlexLayout::center({0, 20, g.w, 16}, UI::text_width("SPONG"), 16);
   UI::text(win, title_bounds.x, title_bounds.y, "SPONG", BLUE);
   UI::number(win, 16, 20, g.score1, GREEN);
   UI::number(win, g.w - 48, 20, g.score2, RED);
-  UI::text(win, 16, g.h - 20, g.ai ? "W/S   AI   Q: QUIT" : "W/S   I/K   Q: QUIT",
-       FG);
+  UI::text(win, 16, g.h - 20,
+           g.ai ? "W/S   AI   Q: QUIT" : "W/S   I/K   Q: QUIT", FG);
   win.flush();
 }
 
@@ -137,9 +137,9 @@ void run(uint32_t speed, bool ai) {
   g.ai = ai;
   g.p1 = g.p2 = (g.h - g.paddle_h) / 2;
   g.score1 = g.score2 = 0;
-  g.rng = Kernel::Lib::Random(Kernel::Lib::Random::rdtsc() ^
-                              (static_cast<uint64_t>(g.w) << 32) ^
-                              static_cast<uint64_t>(g.h));
+  g.rng = oslib::Random(oslib::Random::rdtsc() ^
+                        (static_cast<uint64_t>(g.w) << 32) ^
+                        static_cast<uint64_t>(g.h));
 
   reset_ball(g, 1);
 

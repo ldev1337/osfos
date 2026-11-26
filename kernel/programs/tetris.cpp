@@ -1,18 +1,18 @@
 #include <cstdint>
-#include <oslib/keyboard.h>
 #include <kernel/drivers/tsc_deadline.h>
-#include <oslib/win.h>
-#include <oslib/ui.h>
 #include <kernel/lib/appcommon.h>
-#include <kernel/lib/random.h>
 #include <kernel/scheduler.h>
+#include <oslib/keyboard.h>
+#include <oslib/random.h>
+#include <oslib/ui.h>
+#include <oslib/win.h>
 
 #include <algorithm>
 
 namespace Kernel::Games::Tetris {
 namespace {
 static oslib::Win win;
-static Kernel::Lib::Random rng(Kernel::Lib::Random::rdtsc());
+static oslib::Random rng(oslib::Random::rdtsc());
 constexpr int BOARD_W = 10;
 constexpr int BOARD_H = 20;
 int block_size = 26;
@@ -301,16 +301,11 @@ void render(int ox, int oy) {
 
   int ctrl_y = sb_y + 245;
   UI::text(win, sb_x, ctrl_y, "CONTROLS:", 0x8888AA);
-  UI::text(win, sb_x, ctrl_y + 16, "LEFT/RIGHT: Move",
-                          COLOR_DIM_TEXT);
-  UI::text(win, sb_x, ctrl_y + 30, "UP/X: Rotate CW",
-                          COLOR_DIM_TEXT);
-  UI::text(win, sb_x, ctrl_y + 44, "Z: Rotate CCW",
-                          COLOR_DIM_TEXT);
-  UI::text(win, sb_x, ctrl_y + 58, "DOWN: Soft Drop",
-                          COLOR_DIM_TEXT);
-  UI::text(win, sb_x, ctrl_y + 72, "SPACE: Hard Drop",
-                          COLOR_DIM_TEXT);
+  UI::text(win, sb_x, ctrl_y + 16, "LEFT/RIGHT: Move", COLOR_DIM_TEXT);
+  UI::text(win, sb_x, ctrl_y + 30, "UP/X: Rotate CW", COLOR_DIM_TEXT);
+  UI::text(win, sb_x, ctrl_y + 44, "Z: Rotate CCW", COLOR_DIM_TEXT);
+  UI::text(win, sb_x, ctrl_y + 58, "DOWN: Soft Drop", COLOR_DIM_TEXT);
+  UI::text(win, sb_x, ctrl_y + 72, "SPACE: Hard Drop", COLOR_DIM_TEXT);
   UI::text(win, sb_x, ctrl_y + 86, "ESC: Quit", COLOR_DIM_TEXT);
 
   if (game_over) {
@@ -321,10 +316,8 @@ void render(int ox, int oy) {
     win.fill_rect(ov_x, ov_y, ov_w, ov_h, 0x1A1A26);
     win.draw_rect(ov_x, ov_y, ov_w, ov_h, 0xFF0000);
     UI::text(win, ov_x + 75, ov_y + 20, "GAME OVER", 0xFF4444);
-    UI::text(win, ov_x + 35, ov_y + 50, "PRESS R TO RESTART",
-                            COLOR_TEXT);
-    UI::text(win, ov_x + 35, ov_y + 70, "PRESS ESC TO EXIT",
-                            COLOR_DIM_TEXT);
+    UI::text(win, ov_x + 35, ov_y + 50, "PRESS R TO RESTART", COLOR_TEXT);
+    UI::text(win, ov_x + 35, ov_y + 70, "PRESS ESC TO EXIT", COLOR_DIM_TEXT);
   }
 
   win.flush();
