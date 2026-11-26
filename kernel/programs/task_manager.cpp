@@ -3,9 +3,8 @@
 #include <oslib/keyboard.h>
 #include <kernel/drivers/tsc_deadline.h>
 #include <kernel/graphics/open_font.h>
-#include <kernel/graphics/vfb.h>
+#include <oslib/win.h>
 #include <oslib/ui.h>
-#include <kernel/lib/appcommon.h>
 #include <kernel/memory/heap.h>
 #include <kernel/scheduler.h>
 
@@ -58,8 +57,8 @@ void format_uptime(uint32_t elapsed_ms, char *output, size_t capacity) {
 }
 
 void run_task_manager() {
-  Kernel::Graphics::VirtualFramebuffer vfb;
-  if (!vfb.open_window(640, 480, 480, 360))
+  oslib::Win win;
+  if (!win.open(640, 480, 480, 360))
     return;
 
   Kernel::Scheduler::ApplicationTaskInfo tasks[MAX_TASKS]{};
@@ -82,25 +81,25 @@ void run_task_manager() {
       heap_usage[i] = Kernel::Memory::g_kheap.get_thread_allocated_size(
           tasks[i].id);
 
-    vfb.clear(COLOR_BACKGROUND);
+    win.clear(COLOR_BACKGROUND);
     if (ui_font_loaded) {
-      UI::text(vfb, 12, 12, 18.0f, ui_font, "TASK MANAGER", COLOR_TEXT);
-      UI::text(vfb, 12, 34, 12.0f, ui_font, "PID", COLOR_MUTED);
-      UI::text(vfb, 68, 34, 12.0f, ui_font, "NAME", COLOR_MUTED);
-      UI::text(vfb, 250, 34, 12.0f, ui_font, "HEAP KiB", COLOR_MUTED);
-      UI::text(vfb, 390, 34, 12.0f, ui_font, "UPTIME", COLOR_MUTED);
+      UI::text(win, 12, 12, 18.0f, ui_font, "TASK MANAGER", COLOR_TEXT);
+      UI::text(win, 12, 34, 12.0f, ui_font, "PID", COLOR_MUTED);
+      UI::text(win, 68, 34, 12.0f, ui_font, "NAME", COLOR_MUTED);
+      UI::text(win, 250, 34, 12.0f, ui_font, "HEAP KiB", COLOR_MUTED);
+      UI::text(win, 390, 34, 12.0f, ui_font, "UPTIME", COLOR_MUTED);
     } else {
-      UI::text(vfb, 12, 10, "TASK MANAGER", COLOR_TEXT);
-      UI::text(vfb, 12, 30, "PID", COLOR_MUTED);
-      UI::text(vfb, 68, 30, "NAME", COLOR_MUTED);
-      UI::text(vfb, 250, 30, "HEAP KiB", COLOR_MUTED);
-      UI::text(vfb, 390, 30, "UPTIME", COLOR_MUTED);
+      UI::text(win, 12, 10, "TASK MANAGER", COLOR_TEXT);
+      UI::text(win, 12, 30, "PID", COLOR_MUTED);
+      UI::text(win, 68, 30, "NAME", COLOR_MUTED);
+      UI::text(win, 250, 30, "HEAP KiB", COLOR_MUTED);
+      UI::text(win, 390, 30, "UPTIME", COLOR_MUTED);
     }
-    vfb.fill_rect(12, 44, static_cast<int32_t>(vfb.width()) - 24, 1,
+    win.fill_rect(12, 44, static_cast<int32_t>(win.width()) - 24, 1,
                   COLOR_HEADER);
 
     const size_t visible_rows =
-        (vfb.height() > 52) ? (vfb.height() - 52) / ROW_HEIGHT : 0;
+        (win.height() > 52) ? (win.height() - 52) / ROW_HEIGHT : 0;
     const size_t shown_tasks = task_count < visible_rows ? task_count
                                                          : visible_rows;
     const uint32_t now = Kernel::Drivers::TSCDeadline::get_ticks();
@@ -115,19 +114,19 @@ void run_task_manager() {
                     sizeof(uptime_text));
 
       if (ui_font_loaded) {
-        UI::text(vfb, 12, y, 12.0f, ui_font, id_text, COLOR_TEXT);
-        UI::text(vfb, 68, y, 12.0f, ui_font, tasks[i].name, COLOR_TEXT);
-        UI::text(vfb, 250, y, 12.0f, ui_font, heap_text, COLOR_TEXT);
-        UI::text(vfb, 390, y, 12.0f, ui_font, uptime_text, COLOR_TEXT);
+        UI::text(win, 12, y, 12.0f, ui_font, id_text, COLOR_TEXT);
+        UI::text(win, 68, y, 12.0f, ui_font, tasks[i].name, COLOR_TEXT);
+        UI::text(win, 250, y, 12.0f, ui_font, heap_text, COLOR_TEXT);
+        UI::text(win, 390, y, 12.0f, ui_font, uptime_text, COLOR_TEXT);
       } else {
-        UI::text(vfb, 12, y, id_text, COLOR_TEXT);
-        UI::text(vfb, 68, y, tasks[i].name, COLOR_TEXT);
-        UI::text(vfb, 250, y, heap_text, COLOR_TEXT);
-        UI::text(vfb, 390, y, uptime_text, COLOR_TEXT);
+        UI::text(win, 12, y, id_text, COLOR_TEXT);
+        UI::text(win, 68, y, tasks[i].name, COLOR_TEXT);
+        UI::text(win, 250, y, heap_text, COLOR_TEXT);
+        UI::text(win, 390, y, uptime_text, COLOR_TEXT);
       }
     }
 
-    vfb.flush();
+    win.flush();
     Kernel::Scheduler::thread_sleep_ms(1000);
   }
 }

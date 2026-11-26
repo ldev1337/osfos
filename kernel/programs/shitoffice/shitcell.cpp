@@ -1,13 +1,13 @@
 #include <algorithm>
-#include <string.h>
 #include <cstdint>
+#include <kernel/fs/laziofs.h>
+#include <kernel/lib/appcommon.h>
+#include <kernel/scheduler.h>
 #include <oslib/keyboard.h>
 #include <oslib/mouse.h>
-#include <kernel/fs/laziofs.h>
-#include <kernel/graphics/vfb.h>
-#include <kernel/lib/appcommon.h>
 #include <oslib/ui.h>
-#include <kernel/scheduler.h>
+#include <oslib/win.h>
+#include <string.h>
 
 namespace Kernel::Apps {
 namespace {
@@ -488,11 +488,11 @@ auto load_from_vfs(SparseGrid &grid, const char *filepath) -> bool {
 }
 
 void run_shitty_excel() {
-  Kernel::Graphics::VirtualFramebuffer vfb;
-  if (!vfb.open_window(1024, 720, 400, 300))
+  oslib::Win win;
+  if (!win.open(1024, 720, 400, 300))
     return;
-  const auto w = static_cast<int32_t>(vfb.width());
-  const auto h = static_cast<int32_t>(vfb.height());
+  const auto w = static_cast<int32_t>(win.width());
+  const auto h = static_cast<int32_t>(win.height());
 
   SparseGrid grid;
   grid.set_text(0, 0, "Item");
@@ -540,22 +540,15 @@ void run_shitty_excel() {
   bool mouse_down_prev = false;
 
   // --- Instantiate UI Framework Widgets ---
-  UI::Button btn_save(10, 31, 60, 18, "Save", 0xFF45475A,
-                                    0xFFFFFF, 0);
-  UI::Button btn_open(75, 31, 60, 18, "Open", 0xFF45475A,
-                                    0xFFFFFF, 0);
-  UI::Button btn_quit(140, 31, 50, 18, "Quit", 0xFFF38BA8,
-                                    0xFF1E1E2E, 0);
-  UI::Button btn_clear(195, 31, 60, 18, "Clear", 0xFF45475A,
-                                     0xFFFFFF, 0);
-  UI::Button btn_color(260, 31, 60, 18, "Color", 0xFF45475A,
-                                     0xFFFFFF, 0);
+  UI::Button btn_save(10, 31, 60, 18, "Save", 0xFF45475A, 0xFFFFFF, 0);
+  UI::Button btn_open(75, 31, 60, 18, "Open", 0xFF45475A, 0xFFFFFF, 0);
+  UI::Button btn_quit(140, 31, 50, 18, "Quit", 0xFFF38BA8, 0xFF1E1E2E, 0);
+  UI::Button btn_clear(195, 31, 60, 18, "Clear", 0xFF45475A, 0xFFFFFF, 0);
+  UI::Button btn_color(260, 31, 60, 18, "Color", 0xFF45475A, 0xFFFFFF, 0);
 
-  UI::StatusBar status_bar(0, h - 22, w, 22, status_msg,
-                                         SHITCELL_STATUS_BG, 0x555555,
-                                         SHITCELL_GRID_LINE);
-  UI::TextInput cell_input(85, 53, w - 98, 18, edit_buf,
-                                         sizeof(edit_buf));
+  UI::StatusBar status_bar(0, h - 22, w, 22, status_msg, SHITCELL_STATUS_BG,
+                           0x555555, SHITCELL_GRID_LINE);
+  UI::TextInput cell_input(85, 53, w - 98, 18, edit_buf, sizeof(edit_buf));
   cell_input.set_font_size_pixels(12.0f);
   UI::WidgetGroup toolbar;
   toolbar.add(btn_save);
@@ -575,8 +568,7 @@ void run_shitty_excel() {
 
     int gx = 50, gy = 74, rh = 28, cw = 90;
     int v_rows = (h - gy - 22) / rh, v_cols = (w - gx - 10) / cw;
-    const UI::Rect table_bounds{gx, gy, cw * v_cols,
-                                               rh * (v_rows + 1)};
+    const UI::Rect table_bounds{gx, gy, cw * v_cols, rh * (v_rows + 1)};
 
     if (m_left && !mouse_down_prev) {
       if (my >= gy + rh && mx >= gx) {
@@ -599,12 +591,10 @@ void run_shitty_excel() {
     mouse_down_prev = m_left;
 
     // --- Widget Mouse Handling ---
-    UI::Widget *clicked =
-      toolbar.handle_mouse(mx, my, m_left, m_released);
+    UI::Widget *clicked = toolbar.handle_mouse(mx, my, m_left, m_released);
     if (clicked == &btn_save) {
-      if (UI::prompt_filename(vfb,
-                                            "Save filename:", current_filepath,
-                                            sizeof(current_filepath))) {
+      if (UI::prompt_filename(win, "Save filename:", current_filepath,
+                              sizeof(current_filepath))) {
         status_msg = save_to_vfs(grid, current_filepath)
                          ? "Saved file successfully"
                          : "Save failed";
@@ -613,9 +603,8 @@ void run_shitty_excel() {
       panel_redraw_needed = true;
     }
     if (clicked == &btn_open) {
-      if (UI::prompt_filename(vfb,
-                                            "Open filename:", current_filepath,
-                                            sizeof(current_filepath))) {
+      if (UI::prompt_filename(win, "Open filename:", current_filepath,
+                              sizeof(current_filepath))) {
         status_msg = load_from_vfs(grid, current_filepath)
                          ? "Loaded file successfully"
                          : "Load failed";
@@ -763,19 +752,21 @@ void run_shitty_excel() {
         btn_clear.is_dirty() || btn_color.is_dirty() || status_bar.is_dirty() ||
         panel_redraw_needed) {
 
-      vfb.clear(SHITCELL_GRID_BG);
-      vfb.fill_rect(0, 0, w, 28, SHITCELL_PRIMARY);
-      UI::text(vfb, 12, 10, "ShitCell - FeatureRich Spreadsheet [OSFOS]", 0xFFFFFF);
-      vfb.fill_rect(0, 28, w, 22, SHITCELL_DARK);
-      UI::text(vfb, 12, 34,
-           "Mouse Click | Save | Open | Formulas: =A1*2, =A1*A2*0.5", 0xE0E0E0);
+      win.clear(SHITCELL_GRID_BG);
+      win.fill_rect(0, 0, w, 28, SHITCELL_PRIMARY);
+      UI::text(win, 12, 10, "ShitCell - FeatureRich Spreadsheet [OSFOS]",
+               0xFFFFFF);
+      win.fill_rect(0, 28, w, 22, SHITCELL_DARK);
+      UI::text(win, 12, 34,
+               "Mouse Click | Save | Open | Formulas: =A1*2, =A1*A2*0.5",
+               0xE0E0E0);
 
       // Draw UI Framework Buttons
-      toolbar.draw(vfb, false);
+      toolbar.draw(win, false);
 
       int fy = 50;
-      vfb.fill_rect(0, fy, w, 24, SHITCELL_FORMULA_BG);
-      vfb.draw_line(0, fy + 23, w, fy + 23, SHITCELL_GRID_LINE);
+      win.fill_rect(0, fy, w, 24, SHITCELL_FORMULA_BG);
+      win.draw_line(0, fy + 23, w, fy + 23, SHITCELL_GRID_LINE);
 
       char cstr[8], rstr[16], cref[32] = "";
       get_col_name(sel_c, cstr, sizeof(cstr));
@@ -787,37 +778,35 @@ void run_shitty_excel() {
         cref[ci++] = rstr[k];
       cref[ci] = '\0';
 
-      vfb.fill_rect(8, fy + 3, 46, 18, 0xFFFFFF);
-      vfb.draw_rect(8, fy + 3, 46, 18, SHITCELL_GRID_LINE);
-      UI::text(vfb, 12, fy + 8, cref, SHITCELL_HEADER_TEXT);
-      UI::text(vfb, 62, fy + 8, "fx", 0x777777);
+      win.fill_rect(8, fy + 3, 46, 18, 0xFFFFFF);
+      win.draw_rect(8, fy + 3, 46, 18, SHITCELL_GRID_LINE);
+      UI::text(win, 12, fy + 8, cref, SHITCELL_HEADER_TEXT);
+      UI::text(win, 62, fy + 8, "fx", 0x777777);
 
       CellData *ac = grid.find(sel_r, sel_c);
       if (editing) {
-        cell_input.draw(vfb);
+        cell_input.draw(win);
       } else {
-        UI::text(vfb, 85, fy + 8, ac ? ac->text : "", SHITCELL_TEXT_COLOR);
+        UI::text(win, 85, fy + 8, ac ? ac->text : "", SHITCELL_TEXT_COLOR);
       }
 
-      vfb.fill_rect(0, gy, gx, rh, SHITCELL_HEADER_BG);
-      vfb.draw_rect(0, gy, gx, rh, SHITCELL_GRID_LINE);
+      win.fill_rect(0, gy, gx, rh, SHITCELL_HEADER_BG);
+      win.draw_rect(0, gy, gx, rh, SHITCELL_GRID_LINE);
 
       for (int c = 0; c < v_cols; ++c) {
         const int cur_c = view_c + c;
-        const auto cell_bounds = UI::FlexLayout::grid_cell(
-            table_bounds, 0, c, v_rows + 1, v_cols);
+        const auto cell_bounds =
+            UI::FlexLayout::grid_cell(table_bounds, 0, c, v_rows + 1, v_cols);
         const int cx = cell_bounds.x;
-        vfb.fill_rect(cx, cell_bounds.y, cell_bounds.width,
-                      cell_bounds.height,
+        win.fill_rect(cx, cell_bounds.y, cell_bounds.width, cell_bounds.height,
                       (cur_c == sel_c) ? 0xE8DED5 : SHITCELL_HEADER_BG);
-        vfb.draw_rect(cx, cell_bounds.y, cell_bounds.width,
-                      cell_bounds.height, SHITCELL_GRID_LINE);
+        win.draw_rect(cx, cell_bounds.y, cell_bounds.width, cell_bounds.height,
+                      SHITCELL_GRID_LINE);
         char cn[8];
         get_col_name(cur_c, cn, sizeof(cn));
-        const auto text_bounds = UI::FlexLayout::center(
-            cell_bounds, UI::text_width(cn), 14);
-        UI::text(vfb, text_bounds.x, text_bounds.y, cn,
-                               SHITCELL_HEADER_TEXT);
+        const auto text_bounds =
+            UI::FlexLayout::center(cell_bounds, UI::text_width(cn), 14);
+        UI::text(win, text_bounds.x, text_bounds.y, cn, SHITCELL_HEADER_TEXT);
       }
 
       for (int r = 0; r < v_rows; ++r) {
@@ -825,12 +814,12 @@ void run_shitty_excel() {
         const auto row_bounds = UI::FlexLayout::grid_cell(
             table_bounds, r + 1, 0, v_rows + 1, v_cols);
         const int ry = row_bounds.y;
-        vfb.fill_rect(0, ry, gx, row_bounds.height,
+        win.fill_rect(0, ry, gx, row_bounds.height,
                       (cur_r == sel_r) ? 0xE8DED5 : SHITCELL_HEADER_BG);
-        vfb.draw_rect(0, ry, gx, row_bounds.height, SHITCELL_GRID_LINE);
+        win.draw_rect(0, ry, gx, row_bounds.height, SHITCELL_GRID_LINE);
         char rn[16];
         int_to_str(cur_r + 1, rn, sizeof(rn));
-        UI::text(vfb, 8, ry + 10, rn, SHITCELL_HEADER_TEXT);
+        UI::text(win, 8, ry + 10, rn, SHITCELL_HEADER_TEXT);
 
         for (int c = 0; c < v_cols; ++c) {
           const int cur_c = view_c + c;
@@ -843,13 +832,13 @@ void run_shitty_excel() {
                             : (cell ? cell->bg_color : SHITCELL_GRID_BG);
           uint32_t fg = cell ? cell->text_color : SHITCELL_TEXT_COLOR;
 
-          vfb.fill_rect(cx, ry, cell_bounds.width, cell_bounds.height, bg);
-          vfb.draw_rect(cx, ry, cell_bounds.width, cell_bounds.height,
+          win.fill_rect(cx, ry, cell_bounds.width, cell_bounds.height, bg);
+          win.draw_rect(cx, ry, cell_bounds.width, cell_bounds.height,
                         SHITCELL_GRID_LINE);
           if (sel) {
-            vfb.draw_rect(cx, ry, cw, rh, SHITCELL_SEL_BORDER);
-            vfb.draw_rect(cx + 1, ry + 1, cw - 2, rh - 2, SHITCELL_SEL_BORDER);
-            vfb.fill_rect(cx + cw - 4, ry + rh - 4, 4, 4, SHITCELL_SEL_BORDER);
+            win.draw_rect(cx, ry, cw, rh, SHITCELL_SEL_BORDER);
+            win.draw_rect(cx + 1, ry + 1, cw - 2, rh - 2, SHITCELL_SEL_BORDER);
+            win.fill_rect(cx + cw - 4, ry + rh - 4, 4, 4, SHITCELL_SEL_BORDER);
           }
 
           if (sel && editing) {
@@ -861,28 +850,28 @@ void run_shitty_excel() {
             }
             debuf[idx] = '|';
             debuf[idx + 1] = '\0';
-            UI::text(vfb, cx + 8, ry + 10, debuf, SHITCELL_TEXT_COLOR);
+            UI::text(win, cx + 8, ry + 10, debuf, SHITCELL_TEXT_COLOR);
           } else if (cell) {
             if (cell->text[0] == '=') {
               char evaluated[32];
               evaluate_formula(grid, cur_r, cur_c, cell->text, evaluated,
                                sizeof(evaluated));
-              UI::text(vfb, cx + 8, ry + 10, evaluated, fg);
+              UI::text(win, cx + 8, ry + 10, evaluated, fg);
             } else {
-              UI::text(vfb, cx + 8, ry + 10, cell->text, fg);
+              UI::text(win, cx + 8, ry + 10, cell->text, fg);
             }
           }
         }
       }
 
       // Draw Status Bar using UI Framework widget
-      status_bar.draw(vfb);
-      vfb.fill_rect(10, h - 22 - 2, 70, 22, 0xFFFFFF);
-      vfb.draw_rect(10, h - 22 - 2, 70, 22, SHITCELL_GRID_LINE);
-      vfb.fill_rect(10, h - 22 + 18, 70, 2, SHITCELL_PRIMARY);
-      UI::text(vfb, 22, h - 22 + 5, "Sheet1", SHITCELL_PRIMARY);
+      status_bar.draw(win);
+      win.fill_rect(10, h - 22 - 2, 70, 22, 0xFFFFFF);
+      win.draw_rect(10, h - 22 - 2, 70, 22, SHITCELL_GRID_LINE);
+      win.fill_rect(10, h - 22 + 18, 70, 2, SHITCELL_PRIMARY);
+      UI::text(win, 22, h - 22 + 5, "Sheet1", SHITCELL_PRIMARY);
 
-      vfb.flush();
+      win.flush();
       panel_redraw_needed = false;
     } else {
       Kernel::Scheduler::thread_sleep_ms(10);

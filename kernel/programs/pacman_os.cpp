@@ -3,8 +3,7 @@
 
 #include <oslib/keyboard.h>
 #include <kernel/drivers/tsc_deadline.h>
-#include <kernel/graphics/lwm.h>
-#include <kernel/graphics/vfb.h>
+#include <oslib/win.h>
 #include <kernel/scheduler.h>
 
 extern "C" {
@@ -26,7 +25,7 @@ constexpr uint32_t kWindowHeight = 576;
 
 alignas(64) uint32_t
     g_window_pixels[static_cast<size_t>(kWindowWidth) * kWindowHeight];
-Kernel::Graphics::VirtualFramebuffer window;
+oslib::Win window;
 
 bool key_down(uint8_t scancode, bool extended = false) {
   return extended ? oslib::Keyboard::is_extended_pressed(scancode)
@@ -43,7 +42,7 @@ extern "C" bool pacman_os_present(const uint32_t *pixels, uint32_t width,
 
   const uint32_t target_width = window.width();
   const uint32_t target_height = window.height();
-  uint32_t *target = window.buffer();
+  uint32_t *target = window.pixels();
   if (!target || target_width == 0 || target_height == 0)
     return false;
 
@@ -58,32 +57,29 @@ extern "C" bool pacman_os_present(const uint32_t *pixels, uint32_t width,
     }
   }
 
-  return Kernel::Graphics::WindowManager::present(
-      Kernel::Scheduler::current_thread_id(), target, target_width,
-      target_height, target_width * sizeof(uint32_t));
+  return window.present_pixels(target, target_width, target_height,
+                               target_width * sizeof(uint32_t));
 }
 
 void run() {
-  if (!window.open_window(kWindowWidth, kWindowHeight))
+  if (!window.open(kWindowWidth, kWindowHeight))
     return;
 
-  const uint64_t tid = Kernel::Scheduler::current_thread_id();
   const uint32_t w = window.width();
   const uint32_t h = window.height();
   const size_t needed_pixels = static_cast<size_t>(w) * h;
   if (w == 0 || h == 0 ||
       needed_pixels > sizeof(g_window_pixels) / sizeof(g_window_pixels[0]) ||
-      !window.attach(g_window_pixels, 0, 0, w, h)) {
-    Kernel::Graphics::WindowManager::unregister_window(tid);
-    window.destroy();
+      !window.attach_pixels(g_window_pixels, 0, 0, w, h)) {
+    window.unregister();
+    window.close();
     return;
   }
 
   pacman_game_init();
   uint32_t last_tick = Kernel::Drivers::TSCDeadline::get_ticks();
 
-  while (!Kernel::Scheduler::should_stop() &&
-         Kernel::Graphics::WindowManager::has_window(tid)) {
+  while (!Kernel::Scheduler::should_stop() && window.exists()) {
     const uint32_t current_tick = Kernel::Drivers::TSCDeadline::get_ticks();
     const uint64_t delta_ns =
         static_cast<uint64_t>(current_tick - last_tick) * 1000000ULL;
@@ -109,7 +105,7 @@ void run() {
   }
 
   pacman_game_shutdown();
-  Kernel::Graphics::WindowManager::unregister_window(tid);
-  window.destroy();
+  window.unregister();
+  window.close();
 }
 } // namespace Kernel::Games::Pacman

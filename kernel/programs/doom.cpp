@@ -1,11 +1,9 @@
-#include "doomgeneric/doomkeys.h"
 #include <cstddef>
 #include <cstdint>
 #include <oslib/keyboard.h>
 #include <kernel/drivers/tsc_deadline.h>
 #include <kernel/fs/laziofs.h>
-#include <kernel/graphics/lwm.h>
-#include <kernel/graphics/vfb.h>
+#include <oslib/win.h>
 #include <oslib/ui.h>
 #include <kernel/scheduler.h>
 
@@ -96,26 +94,25 @@ static volatile bool doom_quit_requested = false;
 
 void DG_RequestQuit() { doom_quit_requested = true; }
 
-static Kernel::Graphics::VirtualFramebuffer *doom_window = nullptr;
+static oslib::Win *doom_win = nullptr;
 static uint32_t doom_width = 640, doom_height = 400;
 
 void DG_Init() {
-  if (doom_window && doom_window->open_window(640, 400)) {
-    doom_width = doom_window->width();
-    doom_height = doom_window->height();
+  if (doom_win && doom_win->open(640, 400)) {
+    doom_width = doom_win->width();
+    doom_height = doom_win->height();
   }
 }
 
 void DG_DrawFrame() {
-  if (doom_window && doom_window->valid()) {
+  if (doom_win && doom_win->valid()) {
     if (doom_width == 640 && doom_height == 400 &&
-        Kernel::Graphics::WindowManager::present(
-            Kernel::Scheduler::current_thread_id(), DG_ScreenBuffer, 640, 400,
-            640 * sizeof(uint32_t))) {
+        doom_win->present_pixels(DG_ScreenBuffer, 640, 400,
+                                 640 * sizeof(uint32_t))) {
       return;
     }
 
-    uint32_t *dst = doom_window->buffer();
+    uint32_t *dst = doom_win->pixels();
     for (uint32_t y = 0; y < doom_height; ++y) {
       const auto sy =
           static_cast<uint32_t>(static_cast<uint64_t>(y) * 400 / doom_height);
@@ -126,7 +123,7 @@ void DG_DrawFrame() {
             DG_ScreenBuffer[static_cast<size_t>(sy) * 640 + sx];
       }
     }
-    doom_window->flush();
+    doom_win->flush();
   }
 }
 void DG_SleepMs(uint32_t ms) { Kernel::Scheduler::thread_sleep_ms(ms); }
@@ -283,12 +280,12 @@ void DG_SetWindowTitle(const char * /*unused*/) {}
 }
 
 static void show_startup_error(bool disk_not_initialized) {
-  if (!doom_window || !doom_window->open_window(640, 400)) {
+  if (!doom_win || !doom_win->open(640, 400)) {
     return;
   }
 
-  doom_window->fill(0xFF17191D);
-  doom_window->fill_rect(24, 72, 4, 56, 0xFFE05A47);
+  doom_win->fill(0xFF17191D);
+  doom_win->fill_rect(24, 72, 4, 56, 0xFFE05A47);
 
   const char *title = "DOOM COULD NOT START";
   const char *message = disk_not_initialized ? "Disk is not initialized."
@@ -297,22 +294,22 @@ static void show_startup_error(bool disk_not_initialized) {
   UI::TextObject message_text(44, 100, message, 0xFFE8E8E8);
   title_text.set_font_size_pixels(16.0f);
   message_text.set_font_size_pixels(14.0f);
-  title_text.draw(*doom_window);
-  message_text.draw(*doom_window);
+  title_text.draw(*doom_win);
+  message_text.draw(*doom_win);
 
-  doom_window->flush();
+  doom_win->flush();
 }
 
 namespace Kernel::Games::Doom {
 void run(const char *wad) {
-  Kernel::Graphics::VirtualFramebuffer window;
-  doom_window = &window;
+  oslib::Win window;
+  doom_win = &window;
   if (!Kernel::FS::VFS::is_mounted()) {
     show_startup_error(true);
     while (!Kernel::Scheduler::should_stop()) {
       Kernel::Scheduler::thread_sleep_ms(50);
     }
-    doom_window = nullptr;
+    doom_win = nullptr;
     return;
   }
 
@@ -323,7 +320,7 @@ void run(const char *wad) {
     while (!Kernel::Scheduler::should_stop()) {
       Kernel::Scheduler::thread_sleep_ms(50);
     }
-    doom_window = nullptr;
+    doom_win = nullptr;
     return;
   }
   kernel_vfs_close(wad_file);
@@ -345,6 +342,6 @@ void run(const char *wad) {
   }
   I_Quit();
   doomgeneric_Shutdown();
-  doom_window = nullptr;
+  doom_win = nullptr;
 }
 } // namespace Kernel::Games::Doom

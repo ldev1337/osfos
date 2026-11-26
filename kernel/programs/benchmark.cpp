@@ -8,7 +8,7 @@
 #include <kernel/drivers/pci.h>
 #include <kernel/drivers/tsc_deadline.h>
 #include <kernel/fs/laziofs.h>
-#include <kernel/graphics/vfb.h>
+#include <oslib/win.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/lib/math.h>
 #include <oslib/ui.h>
@@ -18,7 +18,7 @@
 
 namespace Kernel::Apps {
 namespace {
-using Kernel::Graphics::VirtualFramebuffer;
+using oslib::Win;
 
 constexpr uint32_t BG = 0x171b22;
 constexpr uint32_t PANEL = 0x222a33;
@@ -119,14 +119,14 @@ void all_driver_probe() {
   pci_probe();
 }
 
-void draw_probe(VirtualFramebuffer &vfb, uint32_t frame) {
-  const int32_t width = static_cast<int32_t>(vfb.width());
-  const int32_t height = static_cast<int32_t>(vfb.height());
+void draw_probe(oslib::Win &win, uint32_t frame) {
+  const int32_t width = static_cast<int32_t>(win.width());
+  const int32_t height = static_cast<int32_t>(win.height());
   const int32_t x = 20 + static_cast<int32_t>(frame % 9) * 13;
   const int32_t y = 110 + static_cast<int32_t>(frame % 7) * 11;
-  vfb.fill_rect(x, y, 34, 20, CYAN);
-  vfb.draw_line(x, y + 24, x + 42, y + 8, AMBER);
-  vfb.fill_circle_alpha(width - 48, height / 2, 15, GREEN, 170);
+  win.fill_rect(x, y, 34, 20, CYAN);
+  win.draw_line(x, y + 24, x + 42, y + 8, AMBER);
+  win.fill_circle_alpha(width - 48, height / 2, 15, GREEN, 170);
 }
 
 void context_worker() {
@@ -231,14 +231,14 @@ Result measure_vfs() {
   return result;
 }
 
-Result measure_graphics(VirtualFramebuffer &vfb) {
+Result measure_graphics(oslib::Win &win) {
   Result result{};
   const uint32_t start = Kernel::Drivers::TSCDeadline::get_ticks();
   uint64_t batches = 0;
   while (Kernel::Drivers::TSCDeadline::get_ticks() - start < RUN_MS &&
          !Kernel::Scheduler::should_stop()) {
-    draw_probe(vfb, static_cast<uint32_t>(batches));
-    vfb.flush();
+    draw_probe(win, static_cast<uint32_t>(batches));
+    win.flush();
     ++batches;
   }
   result.elapsed_ms = elapsed_since(start);
@@ -441,7 +441,7 @@ Result measure_bearssl_https() {
 
 // Extended microbenchmarks use bounded working sets and avoid persistent I/O.
 // Each case runs for the same wall-clock interval as the original suite.
-Result measure_extended(VirtualFramebuffer &vfb, size_t test_id) {
+Result measure_extended(oslib::Win &win, size_t test_id) {
   Result result{};
   const uint32_t start = Kernel::Drivers::TSCDeadline::get_ticks();
   uint64_t operations = 0;
@@ -495,53 +495,53 @@ Result measure_extended(VirtualFramebuffer &vfb, size_t test_id) {
       break;
     }
     case 12: // framebuffer fill bandwidth
-      vfb.fill(static_cast<uint32_t>(operations));
-      operations += vfb.width() * vfb.height();
+      win.fill(static_cast<uint32_t>(operations));
+      operations += win.width() * win.height();
       break;
     case 13: // clipped rectangle rasterization
-      vfb.fill_rect(-20, 20, static_cast<int32_t>(vfb.width()), 80, CYAN);
+      win.fill_rect(-20, 20, static_cast<int32_t>(win.width()), 80, CYAN);
       ++operations;
       break;
     case 14: // line rasterization
-      vfb.draw_line(0, operations % vfb.height(), vfb.width() - 1,
-                    (operations * 7) % vfb.height(), AMBER);
+      win.draw_line(0, operations % win.height(), win.width() - 1,
+                    (operations * 7) % win.height(), AMBER);
       ++operations;
       break;
     case 15: // circle rasterization
-      vfb.fill_circle(vfb.width() / 2, vfb.height() / 2, 60, GREEN);
+      win.fill_circle(win.width() / 2, win.height() / 2, 60, GREEN);
       ++operations;
       break;
     case 16: // alpha blend rectangle
-      vfb.fill_rect_alpha(30, 30, 300, 180, RED, operations % 256);
+      win.fill_rect_alpha(30, 30, 300, 180, RED, operations % 256);
       ++operations;
       break;
     case 17: // glyph rendering
-      vfb.draw_glyph(operations % (vfb.width() - 8), 80, 'A' + operations % 26,
+      win.draw_glyph(operations % (win.width() - 8), 80, 'A' + operations % 26,
                      FG);
       ++operations;
       break;
     case 18: // opaque blit
-      vfb.blit(pixels, 0, 0, 16, 16, 16);
+      win.blit(pixels, 0, 0, 16, 16, 16);
       operations += 256;
       break;
     case 19: // transparent blit
-      vfb.blit_transparent(pixels, 0, 0, 16, 16, 16, 0);
+      win.blit_transparent(pixels, 0, 0, 16, 16, 16, 0);
       operations += 256;
       break;
     case 20: // alpha blit
-      vfb.blit_alpha(pixels, 0, 0, 16, 16, 16, 128);
+      win.blit_alpha(pixels, 0, 0, 16, 16, 16, 128);
       operations += 256;
       break;
     case 21: // triangle fill
-      vfb.fill_triangle(20, 20, 300, 100, 100, 300, CYAN);
+      win.fill_triangle(20, 20, 300, 100, 100, 300, CYAN);
       ++operations;
       break;
     case 22: // rounded rectangles
-      vfb.fill_rounded_rect(20, 20, 240, 120, 24, AMBER);
+      win.fill_rounded_rect(20, 20, 240, 120, 24, AMBER);
       ++operations;
       break;
     case 23: // sectors and arcs
-      vfb.fill_sector(200, 150, 100, operations % 180, operations % 180 + 120,
+      win.fill_sector(200, 150, 100, operations % 180, operations % 180 + 120,
                       GREEN);
       ++operations;
       break;
@@ -552,30 +552,30 @@ Result measure_extended(VirtualFramebuffer &vfb, size_t test_id) {
       break;
     case 31: { // Full Graphic Probe: Overlapping shapes, alpha, and multi-mode
                // blits
-      const int32_t w = static_cast<int32_t>(vfb.width());
-      const int32_t h = static_cast<int32_t>(vfb.height());
+      const int32_t w = static_cast<int32_t>(win.width());
+      const int32_t h = static_cast<int32_t>(win.height());
 
       // 1. Base background fill
-      vfb.fill(BG);
+      win.fill(BG);
 
       // 2. Overlapping Alpha Rectangles
-      vfb.fill_rect_alpha(20, 20, 200, 120, CYAN, 180);
-      vfb.fill_rect_alpha(100, 80, 220, 140, AMBER, 128);
-      vfb.fill_rect_alpha(180, 40, 160, 180, RED, 200);
+      win.fill_rect_alpha(20, 20, 200, 120, CYAN, 180);
+      win.fill_rect_alpha(100, 80, 220, 140, AMBER, 128);
+      win.fill_rect_alpha(180, 40, 160, 180, RED, 200);
 
       // 3. Overlapping Alpha Circles & Sectors
-      vfb.fill_circle_alpha(w / 2, h / 2, 70, GREEN, 160);
-      vfb.fill_circle_alpha(w / 2 + 30, h / 2 - 20, 50, CYAN, 140);
-      vfb.fill_sector(w / 2, h / 2, 90, 0, (operations * 15) % 360, AMBER);
+      win.fill_circle_alpha(w / 2, h / 2, 70, GREEN, 160);
+      win.fill_circle_alpha(w / 2 + 30, h / 2 - 20, 50, CYAN, 140);
+      win.fill_sector(w / 2, h / 2, 90, 0, (operations * 15) % 360, AMBER);
 
       // 4. Triangles & Rounded Rectangles
-      vfb.fill_triangle(40, h - 60, 180, h - 20, 100, h - 140, RED);
-      vfb.fill_rounded_rect(w - 260, 40, 200, 100, 16, GREEN);
+      win.fill_triangle(40, h - 60, 180, h - 20, 100, h - 140, RED);
+      win.fill_rounded_rect(w - 260, 40, 200, 100, 16, GREEN);
 
       // 5. Multi-mode Blit operations (Opaque, Transparent Key, Alpha Blit)
-      vfb.blit(pixels, 20, h - 100, 16, 16, 16);
-      vfb.blit_transparent(pixels, 50, h - 100, 16, 16, 16, 0);
-      vfb.blit_alpha(pixels, 80, h - 100, 16, 16, 16, 120);
+      win.blit(pixels, 20, h - 100, 16, 16, 16);
+      win.blit_transparent(pixels, 50, h - 100, 16, 16, 16, 0);
+      win.blit_alpha(pixels, 80, h - 100, 16, 16, 16, 120);
 
       ++operations;
       break;
@@ -599,15 +599,15 @@ Result measure_extended(VirtualFramebuffer &vfb, size_t test_id) {
   return result;
 }
 
-void render(VirtualFramebuffer &vfb, size_t app_count) {
-  const int32_t width = static_cast<int32_t>(vfb.width());
-  const int32_t height = static_cast<int32_t>(vfb.height());
-  vfb.clear(BG);
-  UI::text(vfb, 18, 12, "SYSTEM BENCHMARK", FG);
-  UI::text(vfb, 18, 28, "OSFOS / LIVE KERNEL MEASUREMENTS",
+void render(oslib::Win &win, size_t app_count) {
+  const int32_t width = static_cast<int32_t>(win.width());
+  const int32_t height = static_cast<int32_t>(win.height());
+  win.clear(BG);
+  UI::text(win, 18, 12, "SYSTEM BENCHMARK", FG);
+  UI::text(win, 18, 28, "OSFOS / LIVE KERNEL MEASUREMENTS",
                          MUTED);
-  vfb.fill_rect(18, 44, width - 36, 1, PANEL);
-  UI::text(vfb, 18, 54,
+  win.fill_rect(18, 44, width - 36, 1, PANEL);
+  UI::text(win, 18, 54,
                          running ? "RUNNING  |  31 TESTS"
                                  : "32TESTS  |  CLICK ROW OR SPACE FOR ALL",
                          running ? AMBER : CYAN);
@@ -658,24 +658,24 @@ void render(VirtualFramebuffer &vfb, size_t app_count) {
   const int32_t bar_width = width - 36;
   for (size_t i = 0; i < TEST_COUNT; ++i) {
     const int32_t row_y = 78 + static_cast<int32_t>(i) * 12;
-    UI::text(vfb, 18, row_y, names[i], FG);
+    UI::text(win, 18, row_y, names[i], FG);
     if (results[i].complete) {
       char value[32];
       format_rate(results[i].rate, value, sizeof(value));
       const int32_t value_x = width - 72;
-      UI::text(vfb, value_x, row_y, value, colors[i]);
+      UI::text(win, value_x, row_y, value, colors[i]);
       const uint64_t scaled =
           results[i].rate * static_cast<uint64_t>(bar_width) / max_rate;
-      vfb.fill_rect(18, row_y + 9, static_cast<int32_t>(scaled ? scaled : 1), 2,
+      win.fill_rect(18, row_y + 9, static_cast<int32_t>(scaled ? scaled : 1), 2,
                     colors[i]);
     } else {
-      UI::text(vfb, width - 42, row_y, "--", MUTED);
+      UI::text(win, width - 42, row_y, "--", MUTED);
     }
   }
   (void)app_count;
-  UI::text(vfb, 18, height - 22,
+  UI::text(win, 18, height - 22,
                          "SPACE RUN ALL  R RESET  Q / ESC CLOSE", CYAN);
-  vfb.flush();
+  win.flush();
 }
 
 void clear_results() {
@@ -683,9 +683,9 @@ void clear_results() {
     results[i] = Result{};
 }
 
-void run_selected(VirtualFramebuffer &vfb, size_t test_id, size_t app_count) {
+void run_selected(oslib::Win &win, size_t test_id, size_t app_count) {
   running = true;
-  render(vfb, app_count);
+  render(win, app_count);
   if (test_id == 0)
     results[test_id] = measure_driver(keyboard_probe);
   else if (test_id == 1)
@@ -693,7 +693,7 @@ void run_selected(VirtualFramebuffer &vfb, size_t test_id, size_t app_count) {
   else if (test_id == 2)
     results[test_id] = measure_driver(pci_probe);
   else if (test_id == 3)
-    results[test_id] = measure_graphics(vfb);
+    results[test_id] = measure_graphics(win);
   else if (test_id == 4)
     results[test_id] = measure_context();
   else if (test_id == 5)
@@ -713,7 +713,7 @@ void run_selected(VirtualFramebuffer &vfb, size_t test_id, size_t app_count) {
   else if (test_id == 30)
     results[test_id] = measure_bearssl_https();
   else
-    results[test_id] = measure_extended(vfb, test_id);
+    results[test_id] = measure_extended(win, test_id);
   const char *names[TEST_COUNT] = {
       "keyboard",      "mouse",
       "pci",           "graphics",
@@ -736,8 +736,8 @@ void run_selected(VirtualFramebuffer &vfb, size_t test_id, size_t app_count) {
 }
 
 void run_benchmark() {
-  VirtualFramebuffer vfb;
-  if (!vfb.open_window(800, 600, 560, 450))
+  oslib::Win win;
+  if (!win.open(800, 600, 560, 450))
     return;
 
   bool previous_mouse = false;
@@ -746,7 +746,7 @@ void run_benchmark() {
         app_tasks[Kernel::Scheduler::MAX_APPLICATION_TASKS]{};
     const size_t app_count = Kernel::Scheduler::get_application_tasks(
         app_tasks, Kernel::Scheduler::MAX_APPLICATION_TASKS);
-    render(vfb, app_count);
+    render(win, app_count);
 
     bool run_all = false;
     int selected = -1;
@@ -772,7 +772,7 @@ void run_benchmark() {
               Kernel::Scheduler::current_thread_id(), &window_x, &window_y)) {
         const int32_t mouse_x = UI::mouse_x() - window_x;
         const int32_t mouse_y = UI::mouse_y() - window_y;
-        if (mouse_x >= 18 && mouse_x < static_cast<int32_t>(vfb.width()) - 18 &&
+        if (mouse_x >= 18 && mouse_x < static_cast<int32_t>(win.width()) - 18 &&
             mouse_y >= 78 &&
             mouse_y < 78 + static_cast<int32_t>(TEST_COUNT) * 12)
           selected = (mouse_y - 78) / 12;
@@ -784,10 +784,10 @@ void run_benchmark() {
       clear_results();
       for (size_t i = 0; i < TEST_COUNT && !Kernel::Scheduler::should_stop();
            ++i) {
-        run_selected(vfb, i, app_count);
+        run_selected(win, i, app_count);
       }
     } else if (selected >= 0 && selected < static_cast<int>(TEST_COUNT)) {
-      run_selected(vfb, static_cast<size_t>(selected), app_count);
+      run_selected(win, static_cast<size_t>(selected), app_count);
     }
     Kernel::Scheduler::thread_sleep_ms(30);
   }

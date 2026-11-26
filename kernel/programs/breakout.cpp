@@ -1,5 +1,5 @@
 #include <oslib/keyboard.h>
-#include <kernel/graphics/vfb.h>
+#include <oslib/win.h>
 #include <oslib/ui.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/scheduler.h>
@@ -8,7 +8,7 @@
 namespace Kernel::Games::Breakout {
 namespace {
 using oslib::Keyboard;
-static Kernel::Graphics::VirtualFramebuffer vfb;
+static oslib::Win win;
 
 constexpr uint32_t BG = 0x1B1111;
 constexpr uint32_t PANEL = 0x2E1E1E;
@@ -93,7 +93,7 @@ static void text_center(int y, const char *s, uint32_t color) {
   const int width = UI::text_width(s);
   const auto bounds = UI::FlexLayout::center(
       {0, y, sw, 14}, width, 14);
-  UI::text(vfb, bounds.x, bounds.y, s, color);
+  UI::text(win, bounds.x, bounds.y, s, color);
 }
 
 static bool overlaps_rect(int cx, int cy, int radius, int rx, int ry, int rw,
@@ -158,15 +158,15 @@ static bool hit_brick(Ball &b, bool horizontal) {
 }
 
 static void draw() {
-  vfb.clear(BG);
+  win.clear(BG);
 
-  vfb.fill_rect(0, 0, sw, 34, PANEL);
-  vfb.fill_rect(0, 33, sw, 2, BLUE);
-  UI::text(vfb, 12, 12, "OSFOS / BREAKOUT", GREEN);
-  UI::text(vfb, sw / 2 - 56, 12, "SCORE", MUTED);
-  UI::number(vfb, sw / 2 + 4, 12, score, FG);
-  UI::text(vfb, sw - 100, 12, "LIVES", MUTED);
-  UI::number(vfb, sw - 48, 12, lives, FG);
+  win.fill_rect(0, 0, sw, 34, PANEL);
+  win.fill_rect(0, 33, sw, 2, BLUE);
+  UI::text(win, 12, 12, "OSFOS / BREAKOUT", GREEN);
+  UI::text(win, sw / 2 - 56, 12, "SCORE", MUTED);
+  UI::number(win, sw / 2 + 4, 12, score, FG);
+  UI::text(win, sw - 100, 12, "LIVES", MUTED);
+  UI::number(win, sw - 48, 12, lives, FG);
 
   for (int r = 0; r < BRICK_ROWS; ++r) {
     const uint32_t colors[] = {RED, YELLOW, GREEN, BLUE, RED};
@@ -175,14 +175,14 @@ static void draw() {
       if (!bricks[i])
         continue;
       int x = brick_x(c), y = brick_y(r);
-      vfb.fill_rect(x, y, brick_w(), BRICK_H, colors[r]);
+      win.fill_rect(x, y, brick_w(), BRICK_H, colors[r]);
     }
   }
 
-  vfb.fill_rect(paddle_x, paddle_y, paddle_w, PADDLE_H, BLUE);
+  win.fill_rect(paddle_x, paddle_y, paddle_w, PADDLE_H, BLUE);
   for (int i = 0; i < MAX_BALLS; ++i) {
     if (balls[i].active)
-      vfb.fill_circle(balls[i].x, balls[i].y, BALL_R, FG);
+      win.fill_circle(balls[i].x, balls[i].y, BALL_R, FG);
   }
 
   for (int i = 0; i < MAX_POWERUPS; ++i) {
@@ -191,7 +191,7 @@ static void draw() {
 
     int x = powerups[i].x;
     int y = powerups[i].y;
-    vfb.fill_rounded_rect(x - POWERUP_SIZE / 2, y - POWERUP_SIZE / 2,
+    win.fill_rounded_rect(x - POWERUP_SIZE / 2, y - POWERUP_SIZE / 2,
                           POWERUP_SIZE, POWERUP_SIZE, 3, YELLOW);
   }
 
@@ -199,18 +199,18 @@ static void draw() {
     text_center(sh / 2 + 35, "SPACE TO LAUNCH", FG);
 
   if (finished) {
-    vfb.fill_rect(sw / 2 - 150, sh / 2 - 48, 300, 100, PANEL);
-    vfb.draw_rounded_rect(sw / 2 - 150, sh / 2 - 48, 300, 100, 8, BLUE);
+    win.fill_rect(sw / 2 - 150, sh / 2 - 48, 300, 100, PANEL);
+    win.draw_rounded_rect(sw / 2 - 150, sh / 2 - 48, 300, 100, 8, BLUE);
     text_center(sh / 2 - 24, won ? "YOU WIN!" : "GAME OVER", won ? GREEN : RED);
     text_center(sh / 2 + 2, "SPACE: RESTART", FG);
     text_center(sh / 2 + 22, "Q: QUIT", MUTED);
   } else {
-    UI::text(vfb, 12, sh - 20,
+    UI::text(win, 12, sh - 20,
                             "A/D or J/L: MOVE    SPACE: LAUNCH    Q: QUIT",
                             MUTED);
   }
 
-  vfb.flush();
+  win.flush();
 }
 
 static void update() {
@@ -328,10 +328,10 @@ static void update() {
 } // namespace
 
 void run() {
-  if (!vfb.open_window(640, 480, 240, 220))
+  if (!win.open(640, 480, 240, 220))
     return;
-  sw = static_cast<int>(vfb.width());
-  sh = static_cast<int>(vfb.height());
+  sw = static_cast<int>(win.width());
+  sh = static_cast<int>(win.height());
   reset_game();
 
   bool space_prev = false;
@@ -339,7 +339,7 @@ void run() {
   for (;;) {
     if (Kernel::Scheduler::should_stop())
       return;
-    if (!vfb.has_focus()) {
+    if (!win.has_focus()) {
       Kernel::AppCommon::delay(10);
       continue;
     }

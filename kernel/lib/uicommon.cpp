@@ -1,8 +1,6 @@
 #include <string.h>
 #include <oslib/keyboard.h>
-#include <oslib/mouse.h>
 #include <kernel/lib/appcommon.h>
-#include <kernel/lib/math.h>
 #include <kernel/scheduler.h>
 #include <oslib/ui.h>
 
@@ -72,24 +70,24 @@ static inline void copy_str(char *dst, const char *src, size_t max_len) {
   dst[i] = '\0';
 }
 
-void text(Kernel::Graphics::VirtualFramebuffer &vfb, int32_t x, int32_t y,
+void text(oslib::Win &win, int32_t x, int32_t y,
           const char *value, uint32_t color, float font_size_pixels) {
-  Kernel::AppCommon::text(vfb, x, y, value, color, font_size_pixels);
+  Kernel::AppCommon::text(win, x, y, value, color, font_size_pixels);
 }
 
-int text(Kernel::Graphics::VirtualFramebuffer &vfb, int32_t x, int32_t y,
+int text(oslib::Win &win, int32_t x, int32_t y,
          float font_size_pixels, Kernel::Graphics::TrueTypeFont &font,
          const char *value, uint32_t color) {
-  return vfb.draw_text_truetype(x, y, font_size_pixels, font, value, color);
+  return win.draw_text_truetype(x, y, font_size_pixels, font, value, color);
 }
 
 int text_width(const char *value, float font_size_pixels) {
   return Kernel::AppCommon::text_width(value, font_size_pixels);
 }
 
-void number(Kernel::Graphics::VirtualFramebuffer &vfb, int32_t x, int32_t y,
+void number(oslib::Win &win, int32_t x, int32_t y,
             int32_t value, uint32_t color) {
-  Kernel::AppCommon::number(vfb, x, y, value, color);
+  Kernel::AppCommon::number(win, x, y, value, color);
 }
 
 int mouse_x() { return Kernel::AppCommon::get_mouse_x(); }
@@ -117,8 +115,8 @@ void Label::set_text(const char *new_text) {
   }
 }
 
-void Label::draw(Kernel::Graphics::VirtualFramebuffer &vfb) {
-  Kernel::AppCommon::text(vfb, x_, y_, text_, color_, font_size_pixels_);
+void Label::draw(oslib::Win &win) {
+  Kernel::AppCommon::text(win, x_, y_, text_, color_, font_size_pixels_);
   dirty_ = false;
 }
 
@@ -180,21 +178,21 @@ bool Button::handle_mouse(int mx, int my, bool left_pressed,
 
 bool Button::handle_key(char) { return false; }
 
-void Button::draw(Kernel::Graphics::VirtualFramebuffer &vfb) {
+void Button::draw(oslib::Win &win) {
   uint32_t current_bg =
       pressed_ ? COLOR_OVERLAY : (hovered_ ? COLOR_SURFACE : bg_color_);
   uint32_t current_border = hovered_ ? COLOR_BLUE : border_color_;
 
-  vfb.fill_rounded_rect(x_, y_, w_, h_, 4, current_bg);
+  win.fill_rounded_rect(x_, y_, w_, h_, 4, current_bg);
   if (current_border != 0) {
-    vfb.draw_rounded_rect(x_, y_, w_, h_, 4, current_border);
+    win.draw_rounded_rect(x_, y_, w_, h_, 4, current_border);
   }
 
   int32_t text_w = Kernel::AppCommon::text_width(label_, font_size_pixels_);
   int32_t tx = x_ + (w_ - text_w) / 2;
   int32_t ty = y_ + (h_ - font_height(font_size_pixels_)) / 2;
 
-  Kernel::AppCommon::text(vfb, tx, ty, label_, text_color_, font_size_pixels_);
+  Kernel::AppCommon::text(win, tx, ty, label_, text_color_, font_size_pixels_);
   dirty_ = false;
 }
 
@@ -242,19 +240,19 @@ bool Checkbox::handle_mouse(int mx, int my, bool left_pressed,
 
 bool Checkbox::handle_key(char) { return false; }
 
-void Checkbox::draw(Kernel::Graphics::VirtualFramebuffer &vfb) {
+void Checkbox::draw(oslib::Win &win) {
   int box_size = font_height(font_size_pixels_);
-  vfb.fill_rounded_rect(x_, y_, box_size, box_size, 3, COLOR_SURFACE);
-  vfb.draw_rounded_rect(x_, y_, box_size, box_size, 3,
+  win.fill_rounded_rect(x_, y_, box_size, box_size, 3, COLOR_SURFACE);
+  win.draw_rounded_rect(x_, y_, box_size, box_size, 3,
                         hovered_ ? COLOR_BLUE : COLOR_BORDER);
 
   if (checked_) {
-    vfb.fill_rounded_rect(x_ + 3, y_ + 3, box_size - 6, box_size - 6, 2,
+    win.fill_rounded_rect(x_ + 3, y_ + 3, box_size - 6, box_size - 6, 2,
                           COLOR_BLUE);
   }
 
   if (label_[0] != '\0') {
-    Kernel::AppCommon::text(vfb, x_ + box_size + 8,
+    Kernel::AppCommon::text(win, x_ + box_size + 8,
                 y_ + (box_size - font_height(font_size_pixels_)) / 2,
                 label_, COLOR_TEXT, font_size_pixels_);
   }
@@ -305,17 +303,17 @@ bool Slider::handle_mouse(int mx, int my, bool left_pressed,
 
 bool Slider::handle_key(char) { return false; }
 
-void Slider::draw(Kernel::Graphics::VirtualFramebuffer &vfb) {
-  vfb.fill_rect(x_, y_, w_, h_, COLOR_BG);
+void Slider::draw(oslib::Win &win) {
+  win.fill_rect(x_, y_, w_, h_, COLOR_BG);
   int bar_y = y_ + h_ / 2 - 2;
-  vfb.fill_rounded_rect(x_, bar_y, w_, 4, 2, COLOR_SURFACE);
+  win.fill_rounded_rect(x_, bar_y, w_, 4, 2, COLOR_SURFACE);
 
   int range = max_val_ - min_val_;
   int handle_x = x_ + ((val_ - min_val_) * w_) / (range > 0 ? range : 1);
   handle_x = std::max(handle_x, x_);
   handle_x = std::min(handle_x, x_ + w_);
 
-  vfb.fill_circle(handle_x, y_ + h_ / 2, 6, hovered_ ? COLOR_BLUE : COLOR_TEXT);
+  win.fill_circle(handle_x, y_ + h_ / 2, 6, hovered_ ? COLOR_BLUE : COLOR_TEXT);
   dirty_ = false;
 }
 
@@ -338,12 +336,12 @@ void StatusBar::set_status(const char *new_text) {
 bool StatusBar::handle_mouse(int, int, bool, bool) { return false; }
 bool StatusBar::handle_key(char) { return false; }
 
-void StatusBar::draw(Kernel::Graphics::VirtualFramebuffer &vfb) {
-  vfb.fill_rect(x_, y_, w_, h_, bg_color_);
+void StatusBar::draw(oslib::Win &win) {
+  win.fill_rect(x_, y_, w_, h_, bg_color_);
   if (border_color_ != 0) {
-    vfb.draw_line(x_, y_, x_ + w_, y_, border_color_);
+    win.draw_line(x_, y_, x_ + w_, y_, border_color_);
   }
-  Kernel::AppCommon::text(vfb, x_ + 10,
+  Kernel::AppCommon::text(win, x_ + 10,
                           y_ + (h_ - font_height(font_size_pixels_)) / 2,
                           status_text_, text_color_, font_size_pixels_);
   dirty_ = false;
@@ -521,9 +519,9 @@ void TextArea::set_focused(bool focused) {
   }
 }
 
-void TextArea::draw(Kernel::Graphics::VirtualFramebuffer &vfb) {
-  vfb.fill_rect(x_, y_, w_, h_, background_color_);
-  vfb.draw_rect(x_, y_, w_, h_, focused_ ? COLOR_FOCUS : border_color_);
+void TextArea::draw(oslib::Win &win) {
+  win.fill_rect(x_, y_, w_, h_, background_color_);
+  win.draw_rect(x_, y_, w_, h_, focused_ ? COLOR_FOCUS : border_color_);
 
   const int32_t line_height = font_height(font_size_pixels_) + 3;
   const int32_t max_width = std::max(w_ - 16, 1);
@@ -541,7 +539,7 @@ void TextArea::draw(Kernel::Graphics::VirtualFramebuffer &vfb) {
     if (!read_text_line(text_, offset, line, sizeof(line), max_width,
                         font_size_pixels_))
       break;
-    Kernel::AppCommon::text(vfb, x_ + 8, y, line, text_color_,
+    Kernel::AppCommon::text(win, x_ + 8, y, line, text_color_,
                             font_size_pixels_);
     y += line_height;
   }
@@ -599,12 +597,12 @@ void WidgetGroup::clear() {
   count_ = 0;
 }
 
-void WidgetGroup::draw(Kernel::Graphics::VirtualFramebuffer &vfb,
+void WidgetGroup::draw(oslib::Win &win,
                        bool dirty_only) {
   for (size_t i = 0; i < count_; ++i)
     if (widgets_[i] && widgets_[i]->is_visible() &&
         (!dirty_only || widgets_[i]->is_dirty()))
-      widgets_[i]->draw(vfb);
+      widgets_[i]->draw(win);
 }
 
 Widget *WidgetGroup::handle_mouse(int mx, int my, bool left_pressed,
@@ -626,9 +624,9 @@ bool WidgetGroup::handle_key(char c) {
   return false;
 }
 
-void TextInput::draw(Kernel::Graphics::VirtualFramebuffer &vfb) {
-  vfb.fill_rounded_rect(x_, y_, w_, h_, 4, COLOR_SURFACE);
-  vfb.draw_rounded_rect(x_, y_, w_, h_, 4,
+void TextInput::draw(oslib::Win &win) {
+  win.fill_rounded_rect(x_, y_, w_, h_, 4, COLOR_SURFACE);
+  win.draw_rounded_rect(x_, y_, w_, h_, 4,
                         focused_ ? COLOR_FOCUS : COLOR_BORDER);
 
   if (buffer_) {
@@ -663,21 +661,21 @@ void TextInput::draw(Kernel::Graphics::VirtualFramebuffer &vfb) {
       ++visible_length;
     }
     visible_text[visible_length] = '\0';
-    Kernel::AppCommon::text(vfb, x_ + 8,
+    Kernel::AppCommon::text(win, x_ + 8,
                             y_ + (h_ - font_height(font_size_pixels_)) / 2,
                             visible_text, COLOR_TEXT, font_size_pixels_);
 
     if (focused_) {
       const int32_t cursor_x =
           x_ + 8 + prefix_width(display_pos) - first_width;
-      vfb.fill_rect(cursor_x, y_ + 4, 2, h_ - 8, COLOR_BLUE);
+      win.fill_rect(cursor_x, y_ + 4, 2, h_ - 8, COLOR_BLUE);
     }
   }
   dirty_ = false;
 }
 
 // --- Modal Dialog Prompt Implementation ---
-bool prompt_filename(Kernel::Graphics::VirtualFramebuffer &vfb,
+bool prompt_filename(oslib::Win &win,
                      const char *prompt, char *buf, size_t max_len) {
   TextInput input(56, 110, 308, 28, buf, max_len);
   input.set_focused(true);
@@ -686,13 +684,13 @@ bool prompt_filename(Kernel::Graphics::VirtualFramebuffer &vfb,
   Button confirm_btn(274, 145, 90, 20, "Confirm", COLOR_BLUE, 0xFF1E1E2E, 0);
 
   // Initial draw of dialog frame
-  vfb.fill_rounded_rect(40, 70, 340, 100, 8, COLOR_BG);
-  vfb.draw_rounded_rect(40, 70, 340, 100, 8, COLOR_BLUE);
-  Kernel::AppCommon::text(vfb, 56, 85, prompt, COLOR_TEXT);
-  input.draw(vfb);
-  cancel_btn.draw(vfb);
-  confirm_btn.draw(vfb);
-  vfb.flush();
+  win.fill_rounded_rect(40, 70, 340, 100, 8, COLOR_BG);
+  win.draw_rounded_rect(40, 70, 340, 100, 8, COLOR_BLUE);
+  Kernel::AppCommon::text(win, 56, 85, prompt, COLOR_TEXT);
+  input.draw(win);
+  cancel_btn.draw(win);
+  confirm_btn.draw(win);
+  win.flush();
 
   bool old_left = Kernel::AppCommon::is_left_pressed();
 
@@ -717,13 +715,13 @@ bool prompt_filename(Kernel::Graphics::VirtualFramebuffer &vfb,
 
     if (cancel_btn.is_dirty() || confirm_btn.is_dirty() || input.is_dirty() ||
         needs_redraw) {
-      vfb.fill_rounded_rect(40, 70, 340, 100, 8, COLOR_BG);
-      vfb.draw_rounded_rect(40, 70, 340, 100, 8, COLOR_BLUE);
-      Kernel::AppCommon::text(vfb, 56, 85, prompt, COLOR_TEXT);
-      input.draw(vfb);
-      cancel_btn.draw(vfb);
-      confirm_btn.draw(vfb);
-      vfb.flush();
+      win.fill_rounded_rect(40, 70, 340, 100, 8, COLOR_BG);
+      win.draw_rounded_rect(40, 70, 340, 100, 8, COLOR_BLUE);
+      Kernel::AppCommon::text(win, 56, 85, prompt, COLOR_TEXT);
+      input.draw(win);
+      cancel_btn.draw(win);
+      confirm_btn.draw(win);
+      win.flush();
     }
 
     if (oslib::Keyboard::available()) {
@@ -733,13 +731,13 @@ bool prompt_filename(Kernel::Graphics::VirtualFramebuffer &vfb,
       if (c == 27)
         return false;
       if (input.handle_key(c)) {
-        vfb.fill_rounded_rect(40, 70, 340, 100, 8, COLOR_BG);
-        vfb.draw_rounded_rect(40, 70, 340, 100, 8, COLOR_BLUE);
-        Kernel::AppCommon::text(vfb, 56, 85, prompt, COLOR_TEXT);
-        input.draw(vfb);
-        cancel_btn.draw(vfb);
-        confirm_btn.draw(vfb);
-        vfb.flush();
+        win.fill_rounded_rect(40, 70, 340, 100, 8, COLOR_BG);
+        win.draw_rounded_rect(40, 70, 340, 100, 8, COLOR_BLUE);
+        Kernel::AppCommon::text(win, 56, 85, prompt, COLOR_TEXT);
+        input.draw(win);
+        cancel_btn.draw(win);
+        confirm_btn.draw(win);
+        win.flush();
       }
     } else {
       Kernel::Scheduler::thread_sleep_ms(10);

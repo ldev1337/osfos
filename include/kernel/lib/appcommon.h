@@ -1,14 +1,14 @@
 #pragma once
 
-#include "kernel/graphics/vfb.h"
+#include <oslib/win.h>
 #include <cstdint>
 
 namespace Kernel::AppCommon {
 
-void text(Kernel::Graphics::VirtualFramebuffer &vfb, int32_t x, int32_t y,
+void text(oslib::Win &win, int32_t x, int32_t y,
           const char *s, uint32_t color, float font_size_pixels = 14.0f);
 int text_width(const char *s, float font_size_pixels = 14.0f);
-void number(Kernel::Graphics::VirtualFramebuffer &vfb, int32_t x, int32_t y,
+void number(oslib::Win &win, int32_t x, int32_t y,
             int32_t n, uint32_t color);
 void delay(uint32_t speed);
 [[noreturn]] void exit(int status = 0);

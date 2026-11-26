@@ -1,7 +1,7 @@
 #include <cstdint>
 #include <oslib/keyboard.h>
 #include <kernel/graphics/open_font.h>
-#include <kernel/graphics/vfb.h>
+#include <oslib/win.h>
 #include <oslib/ui.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/scheduler.h>
@@ -21,11 +21,11 @@ constexpr uint32_t ORANGE = 0xF3B089;
 constexpr uint32_t PURPLE = 0xD489FA;
 
 void run_graphic_test() {
-  Kernel::Graphics::VirtualFramebuffer vfb;
-  if (!vfb.open_window(800, 600, 200, 150))
+  oslib::Win win;
+  if (!win.open(800, 600, 200, 150))
     return;
-  const int32_t w = static_cast<int32_t>(vfb.width());
-  const int32_t h = static_cast<int32_t>(vfb.height());
+  const int32_t w = static_cast<int32_t>(win.width());
+  const int32_t h = static_cast<int32_t>(win.height());
 
   int page = 0;
   int max_pages = 4;
@@ -50,105 +50,105 @@ void run_graphic_test() {
     if (!running)
       break;
 
-    vfb.clear(BG);
+    win.clear(BG);
 
     if (ui_font_loaded) {
-      UI::text(vfb, 20, 15, 16.0f, ui_font,
+      UI::text(win, 20, 15, 16.0f, ui_font,
                             "GRAPHIC TEST SUITE - DIVERSE MODULES", BLUE);
-      UI::text(vfb, 20, h - 25, 13.0f, ui_font,
+      UI::text(win, 20, h - 25, 13.0f, ui_font,
                             "SPACE: NEXT PAGE    Q: QUIT", FG);
-      UI::text(vfb, w - 60, 15, 16.0f, ui_font,
+      UI::text(win, w - 60, 15, 16.0f, ui_font,
                             "1", GREEN);
-      UI::text(vfb, w - 40, 15, 16.0f, ui_font,
+      UI::text(win, w - 40, 15, 16.0f, ui_font,
                             "/4", FG);
     } else {
-      UI::text(vfb, 20, 15, "GRAPHIC TEST SUITE - DIVERSE MODULES", BLUE);
-      UI::text(vfb, 20, h - 25, "SPACE: NEXT PAGE    Q: QUIT", FG);
-      UI::number(vfb, w - 60, 15, page + 1, GREEN);
-      UI::text(vfb, w - 40, 15, "/4", FG);
+      UI::text(win, 20, 15, "GRAPHIC TEST SUITE - DIVERSE MODULES", BLUE);
+      UI::text(win, 20, h - 25, "SPACE: NEXT PAGE    Q: QUIT", FG);
+      UI::number(win, w - 60, 15, page + 1, GREEN);
+      UI::text(win, w - 40, 15, "/4", FG);
     }
 
     if (page == 0) {
-      UI::text(vfb, 20, 45, "1. Basic Lines, Rectangles & Triangles", YELLOW);
+      UI::text(win, 20, 45, "1. Basic Lines, Rectangles & Triangles", YELLOW);
 
-      vfb.draw_line(50, 80, 160, 130, GREEN);
-      vfb.draw_line(160, 80, 50, 130, RED);
+      win.draw_line(50, 80, 160, 130, GREEN);
+      win.draw_line(160, 80, 50, 130, RED);
 
-      vfb.fill_rect(190, 75, 90, 55, BLUE);
-      vfb.fill_rect_alpha(210, 95, 90, 55, GREEN, 140);
+      win.fill_rect(190, 75, 90, 55, BLUE);
+      win.fill_rect_alpha(210, 95, 90, 55, GREEN, 140);
 
-      vfb.draw_circle(360, 100, 32, YELLOW);
-      vfb.fill_circle(450, 100, 28, RED);
+      win.draw_circle(360, 100, 32, YELLOW);
+      win.fill_circle(450, 100, 28, RED);
 
-      vfb.draw_triangle(520, 130, 570, 70, 620, 130, BLUE);
-      vfb.fill_triangle(650, 130, 700, 70, 750, 130, PURPLE);
+      win.draw_triangle(520, 130, 570, 70, 620, 130, BLUE);
+      win.fill_triangle(650, 130, 700, 70, 750, 130, PURPLE);
 
       int32_t cx = 100 + static_cast<int32_t>(anim_counter %
                                               static_cast<uint32_t>(w - 200));
-      vfb.fill_circle_alpha(cx, 210, 22, ORANGE, 200);
-      UI::text(vfb, 20, 250, "Dynamic element traversal and alpha layers active.",
+      win.fill_circle_alpha(cx, 210, 22, ORANGE, 200);
+      UI::text(win, 20, 250, "Dynamic element traversal and alpha layers active.",
            FG);
 
     } else if (page == 1) {
-      UI::text(vfb, 20, 45, "2. Angular Geometry, Arcs & Sectors", YELLOW);
+      UI::text(win, 20, 45, "2. Angular Geometry, Arcs & Sectors", YELLOW);
 
       int32_t xc = 110, yc = 120, r = 45;
-      vfb.draw_arc(xc, yc, r, 0, 270, GREEN);
-      UI::text(vfb, 70, 180, "Arc", FG);
+      win.draw_arc(xc, yc, r, 0, 270, GREEN);
+      UI::text(win, 70, 180, "Arc", FG);
 
       int32_t xc2 = 250, yc2 = 120;
       int32_t dynamic_angle = static_cast<int32_t>((anim_counter * 4) % 360);
-      vfb.draw_semicircle(xc2, yc2, r, dynamic_angle, BLUE);
-      UI::text(vfb, 200, 180, "Semicircle", FG);
+      win.draw_semicircle(xc2, yc2, r, dynamic_angle, BLUE);
+      UI::text(win, 200, 180, "Semicircle", FG);
 
       int32_t xc3 = 390, yc3 = 120;
-      vfb.fill_sector(xc3, yc3, r, 15, 150, RED);
-      UI::text(vfb, 350, 180, "Sector", FG);
+      win.fill_sector(xc3, yc3, r, 15, 150, RED);
+      UI::text(win, 350, 180, "Sector", FG);
 
       int32_t xc4 = 530, yc4 = 120;
-      vfb.fill_sector(xc4, yc4, r, 180, 310, PURPLE);
-      UI::text(vfb, 480, 180, "Pie Wedge", FG);
+      win.fill_sector(xc4, yc4, r, 180, 310, PURPLE);
+      UI::text(win, 480, 180, "Pie Wedge", FG);
 
       int32_t xc5 = 670, yc5 = 120;
-      vfb.fill_circle_alpha(xc5, yc5, r, YELLOW, 110);
-      UI::text(vfb, 610, 180, "Alpha Ring", FG);
+      win.fill_circle_alpha(xc5, yc5, r, YELLOW, 110);
+      UI::text(win, 610, 180, "Alpha Ring", FG);
 
     } else if (page == 2) {
-      UI::text(vfb, 20, 45, "3. Rounded Rectangles & UI Paneling", YELLOW);
+      UI::text(win, 20, 45, "3. Rounded Rectangles & UI Paneling", YELLOW);
 
-      vfb.draw_rounded_rect(50, 80, 150, 65, 10, GREEN);
-      UI::text(vfb, 65, 105, "Outline Widget", FG);
+      win.draw_rounded_rect(50, 80, 150, 65, 10, GREEN);
+      UI::text(win, 65, 105, "Outline Widget", FG);
 
-      vfb.fill_rounded_rect(220, 80, 150, 65, 14, BLUE);
-      UI::text(vfb, 245, 105, "Solid Button", BG);
+      win.fill_rounded_rect(220, 80, 150, 65, 14, BLUE);
+      UI::text(win, 245, 105, "Solid Button", BG);
 
-      vfb.fill_rounded_rect(390, 80, 180, 65, 20, RED);
-      UI::text(vfb, 420, 105, "Container Panel", FG);
+      win.fill_rounded_rect(390, 80, 180, 65, 20, RED);
+      UI::text(win, 420, 105, "Container Panel", FG);
 
-      vfb.draw_rounded_rect(590, 80, 160, 65, 25, PURPLE);
-      UI::text(vfb, 615, 105, "Pill Badge", YELLOW);
+      win.draw_rounded_rect(590, 80, 160, 65, 25, PURPLE);
+      UI::text(win, 615, 105, "Pill Badge", YELLOW);
 
-      UI::text(vfb, 20, 190,
+      UI::text(win, 20, 190,
            "Advanced UI bounding boxes and corner radii rendered cleanly.",
            GREEN);
 
     } else if (page == 3) {
-      UI::text(vfb, 20, 45, "4. Multi-Layer Blending & Matrix Composition", YELLOW);
+      UI::text(win, 20, 45, "4. Multi-Layer Blending & Matrix Composition", YELLOW);
 
       for (int i = 0; i < 6; ++i) {
         int32_t px = 100 + i * 95;
         int32_t py = 110 + (i % 2) * 25;
         uint32_t col = (i % 2 == 0) ? GREEN : ORANGE;
         uint8_t alpha = static_cast<uint8_t>(60 + i * 30);
-        vfb.fill_circle_alpha(px, py, 35, col, alpha);
-        vfb.fill_rounded_rect(px - 20, py - 10, 40, 20, 6, PURPLE);
+        win.fill_circle_alpha(px, py, 35, col, alpha);
+        win.fill_rounded_rect(px - 20, py - 10, 40, 20, 6, PURPLE);
       }
 
-      UI::text(vfb, 20, 210,
+      UI::text(win, 20, 210,
            "Stress testing composition blending rules across layers.", FG);
     }
 
-    vfb.flush();
+    win.flush();
     anim_counter++;
     delay(2);
   }

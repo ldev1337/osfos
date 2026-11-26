@@ -425,7 +425,6 @@ enum
    STBI_type_tga,
 };
 
-#include <stdlib.h>
 typedef unsigned char stbi_uc;
 typedef unsigned short stbi_us;
 
@@ -646,7 +645,6 @@ STBIDEF int   stbi_zlib_decode_noheader_buffer(char *obuffer, int olen, const ch
 
 #include <stdarg.h>
 #include <stddef.h> // ptrdiff_t on osx
-#include <stdlib.h>
 #include <string.h>
 #include <limits.h>
 

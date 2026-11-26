@@ -1,5 +1,4 @@
 #include <kernel/debug/debug.h>
-#include <kernel/drivers/ata.h>
 #include <kernel/drivers/net/device.h>
 #include <kernel/drivers/pci.h>
 #include <kernel/drivers/usb/xhci.h>

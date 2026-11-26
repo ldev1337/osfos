@@ -1,6 +1,6 @@
 #include <cstdint>
 #include <oslib/keyboard.h>
-#include <kernel/graphics/vfb.h>
+#include <oslib/win.h>
 #include <kernel/lib/appcommon.h>
 #include <oslib/ui.h>
 #include <kernel/memory/heap.h>
@@ -83,7 +83,7 @@ void append_str(char *buf, size_t &idx, size_t cap, const char *s) {
   buf[idx] = '\0';
 }
 
-void draw_formatted_size(Kernel::Graphics::VirtualFramebuffer &vfb, int32_t x,
+void draw_formatted_size(oslib::Win &win, int32_t x,
                          int32_t y, size_t bytes, uint32_t color) {
   char buf[32];
   buf[0] = '\0';
@@ -104,42 +104,42 @@ void draw_formatted_size(Kernel::Graphics::VirtualFramebuffer &vfb, int32_t x,
     append_str(buf, idx, sizeof(buf), " KiB");
   }
 
-  UI::text(vfb, x, y, buf, color);
+  UI::text(win, x, y, buf, color);
 }
 
-void draw_stat_card(Kernel::Graphics::VirtualFramebuffer &vfb, int32_t x,
+void draw_stat_card(oslib::Win &win, int32_t x,
                     int32_t y, int32_t w, int32_t h, const char *title,
                     size_t used_bytes, size_t total_bytes, uint32_t pct,
                     uint32_t color) {
-  vfb.fill_rounded_rect(x, y, w, h, 6, CARD_BG);
-  vfb.draw_rounded_rect(x, y, w, h, 6, CARD_BORDER);
+  win.fill_rounded_rect(x, y, w, h, 6, CARD_BG);
+  win.draw_rounded_rect(x, y, w, h, 6, CARD_BORDER);
 
-  UI::text(vfb, x + 12, y + 10, title, TEXT_MUTED);
-  draw_formatted_size(vfb, x + 12, y + 26, used_bytes, color);
+  UI::text(win, x + 12, y + 10, title, TEXT_MUTED);
+  draw_formatted_size(win, x + 12, y + 26, used_bytes, color);
 
-  UI::text(vfb, x + 12, y + 42, "/", TEXT_MUTED);
-  draw_formatted_size(vfb, x + 24, y + 42, total_bytes, TEXT_MUTED);
+  UI::text(win, x + 12, y + 42, "/", TEXT_MUTED);
+  draw_formatted_size(win, x + 24, y + 42, total_bytes, TEXT_MUTED);
 
   // Dynamic Progress Bar
   const int32_t bar_x = x + 12;
   const int32_t bar_y = y + h - 16;
   const int32_t bar_w = w - 24;
   const int32_t bar_h = 8;
-  vfb.fill_rounded_rect(bar_x, bar_y, bar_w, bar_h, 3, 0x121A22);
+  win.fill_rounded_rect(bar_x, bar_y, bar_w, bar_h, 3, 0x121A22);
 
   const int32_t fill_w =
       static_cast<int32_t>((static_cast<uint64_t>(bar_w) * pct) / 100);
   if (fill_w > 0) {
-    vfb.fill_rounded_rect(bar_x, bar_y, fill_w, bar_h, 3, color);
+    win.fill_rounded_rect(bar_x, bar_y, fill_w, bar_h, 3, color);
   }
 }
 
 void run_memory_analyzer() {
-  Kernel::Graphics::VirtualFramebuffer vfb;
-  if (!vfb.open_window(640, 440, 400, 300))
+  oslib::Win win;
+  if (!win.open(640, 440, 400, 300))
     return;
-  const int32_t w = static_cast<int32_t>(vfb.width());
-  const int32_t h = static_cast<int32_t>(vfb.height());
+  const int32_t w = static_cast<int32_t>(win.width());
+  const int32_t h = static_cast<int32_t>(win.height());
 
   MemoryHistory history;
   bool running = true;
@@ -184,50 +184,50 @@ void run_memory_analyzer() {
       history.push(pmm_pct, heap_pct);
     }
 
-    vfb.clear(BG_COLOR);
+    win.clear(BG_COLOR);
 
     // Header Title & Controls
-    UI::text(vfb, 16, 12, "SYSTEM MEMORY ANALYTICS LIVE", TEXT_MAIN);
-    UI::text(vfb, w - 210, 12, "[R] VERIFY  [V] CHECK  [Q] QUIT",
+    UI::text(win, 16, 12, "SYSTEM MEMORY ANALYTICS LIVE", TEXT_MAIN);
+    UI::text(win, w - 210, 12, "[R] VERIFY  [V] CHECK  [Q] QUIT",
                            TEXT_MUTED);
 
     // Status Cards (reflecting live dynamic heap pool size & PMM usage)
     const int32_t card_w = (w - 44) / 2;
-    draw_stat_card(vfb, 16, 32, card_w, 76, "PMM PHYSICAL MEMORY",
+    draw_stat_card(win, 16, 32, card_w, 76, "PMM PHYSICAL MEMORY",
                    mem_info.pmm_used_memory, mem_info.pmm_total_memory, pmm_pct,
                    COLOR_PMM);
 
-    draw_stat_card(vfb, 28 + card_w, 32, card_w, 76, "DYNAMIC KERNEL HEAP",
+    draw_stat_card(win, 28 + card_w, 32, card_w, 76, "DYNAMIC KERNEL HEAP",
                    mem_info.heap_used_size, mem_info.heap_total_size, heap_pct,
                    COLOR_HEAP);
 
     // Heap Peak & True Recheck Panel
-    vfb.fill_rounded_rect(16, 116, w - 32, 40, 4, CARD_BG);
-    UI::text(vfb, 24, 122, "HEAP PEAK:", TEXT_MUTED);
-    draw_formatted_size(vfb, 112, 122, mem_info.heap_peak_size, COLOR_PEAK);
+    win.fill_rounded_rect(16, 116, w - 32, 40, 4, CARD_BG);
+    UI::text(win, 24, 122, "HEAP PEAK:", TEXT_MUTED);
+    draw_formatted_size(win, 112, 122, mem_info.heap_peak_size, COLOR_PEAK);
 
-    UI::text(vfb, 234, 122, "POOL:", TEXT_MUTED);
-    draw_formatted_size(vfb, 282, 122, mem_info.heap_total_size, COLOR_HEAP);
+    UI::text(win, 234, 122, "POOL:", TEXT_MUTED);
+    draw_formatted_size(win, 282, 122, mem_info.heap_total_size, COLOR_HEAP);
 
     if (has_heap_check) {
-      UI::text(vfb, w - 120, 122,
+      UI::text(win, w - 120, 122,
                              heap_valid ? "HEAP: OK" : "HEAP: CORRUPT",
                              heap_valid ? COLOR_OK : COLOR_ERR);
     }
 
     if (has_verified_sample) {
-      UI::text(vfb, 24, 140, "TRUE PMM:", TEXT_MUTED);
-      draw_formatted_size(vfb, 104, 140, verified_info.pmm_used_memory,
+      UI::text(win, 24, 140, "TRUE PMM:", TEXT_MUTED);
+      draw_formatted_size(win, 104, 140, verified_info.pmm_used_memory,
                           COLOR_CHECK);
-      UI::text(vfb, 218, 140, "TRUE HEAP:", TEXT_MUTED);
-      draw_formatted_size(vfb, 304, 140, verified_info.heap_used_size,
+      UI::text(win, 218, 140, "TRUE HEAP:", TEXT_MUTED);
+      draw_formatted_size(win, 304, 140, verified_info.heap_used_size,
                           COLOR_CHECK);
-      UI::text(vfb, 420, 140, "FREE RAM:", TEXT_MUTED);
-      draw_formatted_size(vfb, 502, 140, verified_info.pmm_free_memory,
+      UI::text(win, 420, 140, "FREE RAM:", TEXT_MUTED);
+      draw_formatted_size(win, 502, 140, verified_info.pmm_free_memory,
                           COLOR_PMM);
     } else {
       UI::text(
-          vfb, 24, 140,
+          win, 24, 140,
           "PRESS [R] TO SCAN TRUE BITMAP/SEGMENT USAGE OR [V] TO VALIDATE",
           COLOR_CHECK);
     }
@@ -238,13 +238,13 @@ void run_memory_analyzer() {
     const int32_t gw = w - 32;
     const int32_t gh = h - 168;
 
-    vfb.fill_rounded_rect(gx, gy, gw, gh, 6, CARD_BG);
-    vfb.draw_rounded_rect(gx, gy, gw, gh, 6, CARD_BORDER);
+    win.fill_rounded_rect(gx, gy, gw, gh, 6, CARD_BG);
+    win.draw_rounded_rect(gx, gy, gw, gh, 6, CARD_BORDER);
 
     // Axis Grid Lines (25%, 50%, 75%)
     for (int i = 1; i <= 3; ++i) {
       const int32_t line_y = gy + gh - (gh * i) / 4;
-      vfb.draw_line(gx + 4, line_y, gx + gw - 5, line_y, COLOR_GRID);
+      win.draw_line(gx + 4, line_y, gx + gw - 5, line_y, COLOR_GRID);
     }
 
     // Plot Usage Curves
@@ -272,7 +272,7 @@ void run_memory_analyzer() {
         const int32_t pmm_y2 =
             inner_y + inner_h -
             static_cast<int32_t>((s2.pmm_pct * inner_h) / 100);
-        vfb.draw_line(x1, pmm_y1, x2, pmm_y2, COLOR_PMM);
+        win.draw_line(x1, pmm_y1, x2, pmm_y2, COLOR_PMM);
 
         // Heap Line
         const int32_t heap_y1 =
@@ -281,18 +281,18 @@ void run_memory_analyzer() {
         const int32_t heap_y2 =
             inner_y + inner_h -
             static_cast<int32_t>((s2.heap_pct * inner_h) / 100);
-        vfb.draw_line(x1, heap_y1, x2, heap_y2, COLOR_HEAP);
+        win.draw_line(x1, heap_y1, x2, heap_y2, COLOR_HEAP);
       }
     }
 
     // Graph Legend
-    vfb.fill_rect(gx + 12, gy + gh - 18, 10, 8, COLOR_PMM);
-    UI::text(vfb, gx + 26, gy + gh - 18, "PMM", COLOR_PMM);
+    win.fill_rect(gx + 12, gy + gh - 18, 10, 8, COLOR_PMM);
+    UI::text(win, gx + 26, gy + gh - 18, "PMM", COLOR_PMM);
 
-    vfb.fill_rect(gx + 70, gy + gh - 18, 10, 8, COLOR_HEAP);
-    UI::text(vfb, gx + 84, gy + gh - 18, "HEAP", COLOR_HEAP);
+    win.fill_rect(gx + 70, gy + gh - 18, 10, 8, COLOR_HEAP);
+    UI::text(win, gx + 84, gy + gh - 18, "HEAP", COLOR_HEAP);
 
-    vfb.flush();
+    win.flush();
     sample_tick++;
     delay(2);
   }

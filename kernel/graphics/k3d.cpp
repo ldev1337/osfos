@@ -3,7 +3,6 @@
 #include <string.h>
 #include <kernel/graphics/k3d.h>
 #include <kernel/lib/math.h>
-#include <kernel/memory/heap.h>
 
 namespace Kernel::Graphics::K3D {
 
@@ -207,7 +206,7 @@ Frustum Renderer3D::extract_frustum(const Mat4 &m) {
   return f;
 }
 
-void Renderer3D::render_mesh(VirtualFramebuffer &vfb, const Vertex *vertices,
+void Renderer3D::render_mesh(oslib::Win &win, const Vertex *vertices,
                              size_t vertex_count, const uint32_t *indices,
                              size_t index_count, const BoundingSphere &bounds) {
   if (!vertices || !indices || index_count < 3)
@@ -281,12 +280,12 @@ void Renderer3D::render_mesh(VirtualFramebuffer &vfb, const Vertex *vertices,
     s0.color = s1.color = s2.color = lit_color;
 
     // 7. Rasterization
-    rasterize_triangle(vfb, s0, s1, s2);
+    rasterize_triangle(win, s0, s1, s2);
   }
 }
 
 // Fixed-point Barycentric Edge-Function Rasterizer
-void Renderer3D::rasterize_triangle(VirtualFramebuffer &vfb, const Vertex &v0,
+void Renderer3D::rasterize_triangle(oslib::Win &win, const Vertex &v0,
                                     const Vertex &v1, const Vertex &v2) {
   // Convert 2D screen positions to 16.16 Fixed Point
   const int32_t x0 = float_to_fp(v0.position.x);
@@ -350,7 +349,7 @@ void Renderer3D::rasterize_triangle(VirtualFramebuffer &vfb, const Vertex &v0,
             b0 * v0.position.z + b1 * v1.position.z + b2 * v2.position.z;
 
         if (depth_buffer_.test_and_set(x, y, z)) {
-          vfb.put_pixel(static_cast<uint32_t>(x), static_cast<uint32_t>(y),
+          win.put_pixel(static_cast<uint32_t>(x), static_cast<uint32_t>(y),
                         v0.color);
         }
       }

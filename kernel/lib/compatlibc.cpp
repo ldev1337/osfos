@@ -1,6 +1,5 @@
 #include <kernel/fs/laziofs.h>
 #include <kernel/programs/terminal.h>
-#include <kernel/scheduler.h>
 #include <limits.h>
 #include <stdarg.h>
 #include <stddef.h>

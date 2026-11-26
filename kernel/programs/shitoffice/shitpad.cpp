@@ -3,10 +3,9 @@
 #include <cstdint>
 #include <oslib/keyboard.h>
 #include <kernel/fs/laziofs.h>
-#include <kernel/graphics/vfb.h>
+#include <oslib/win.h>
 #include <oslib/ui.h>
 #include <kernel/lib/appcommon.h>
-#include <kernel/memory/heap.h>
 #include <kernel/scheduler.h>
 
 namespace Kernel::Apps {
@@ -283,12 +282,12 @@ int cursor_pixel_offset(const char *line, size_t column) {
   return text_width(prefix);
 }
 
-bool prompt_path(Kernel::Graphics::VirtualFramebuffer &vfb, const char *prompt,
+bool prompt_path(oslib::Win &win, const char *prompt,
                  char *buf, size_t max_len) {
   using namespace UI;
   const Rect dialog = FlexLayout::center(
-      {0, 0, static_cast<int32_t>(vfb.width()),
-       static_cast<int32_t>(vfb.height())},
+      {0, 0, static_cast<int32_t>(win.width()),
+       static_cast<int32_t>(win.height())},
       420, 116);
   Label title(dialog.x + 14, dialog.y + 10, prompt, FG);
   title.set_font_size_pixels(15.0f);
@@ -309,15 +308,15 @@ bool prompt_path(Kernel::Graphics::VirtualFramebuffer &vfb, const char *prompt,
   bool previous_left = UI::primary_pressed();
 
   for (;;) {
-    vfb.fill_rounded_rect(dialog.x, dialog.y, dialog.width, dialog.height, 6,
+    win.fill_rounded_rect(dialog.x, dialog.y, dialog.width, dialog.height, 6,
                           BG);
-    vfb.draw_rounded_rect(dialog.x, dialog.y, dialog.width, dialog.height, 6,
+    win.draw_rounded_rect(dialog.x, dialog.y, dialog.width, dialog.height, 6,
                           RULE);
-    title.draw(vfb);
-    controls.draw(vfb, false);
-    UI::text(vfb, dialog.x + 14, dialog.y + 104,
+    title.draw(win);
+    controls.draw(win, false);
+    UI::text(win, dialog.x + 14, dialog.y + 104,
                            "Enter confirms   Esc cancels", MUTED, 11.0f);
-    vfb.flush();
+    win.flush();
 
     const int mx = UI::mouse_x();
     const int my = UI::mouse_y();
@@ -344,22 +343,22 @@ bool prompt_path(Kernel::Graphics::VirtualFramebuffer &vfb, const char *prompt,
   }
 }
 
-void draw_menu_item(Kernel::Graphics::VirtualFramebuffer &vfb, int x, int y,
+void draw_menu_item(oslib::Win &win, int x, int y,
                     int w, int h, const char *label, bool active) {
   if (active) {
-    vfb.fill_rect(x, y, w, h, INVERT_BG);
-    UI::text(vfb, x + 6, y + (h / 2) - 4, label, INVERT_FG);
+    win.fill_rect(x, y, w, h, INVERT_BG);
+    UI::text(win, x + 6, y + (h / 2) - 4, label, INVERT_FG);
   } else {
-    UI::text(vfb, x + 6, y + (h / 2) - 4, label, FG);
+    UI::text(win, x + 6, y + (h / 2) - 4, label, FG);
   }
 }
 
 void run_shitty_pad() {
-  Kernel::Graphics::VirtualFramebuffer vfb;
-  if (!vfb.open_window(900, 640, 480, 320))
+  oslib::Win win;
+  if (!win.open(900, 640, 480, 320))
     return;
-  const auto w = static_cast<int32_t>(vfb.width());
-  const auto h = static_cast<int32_t>(vfb.height());
+  const auto w = static_cast<int32_t>(win.width());
+  const auto h = static_cast<int32_t>(win.height());
 
   auto *text_buf = static_cast<TextBuffer *>(malloc(sizeof(TextBuffer)));
   if (!text_buf)
@@ -408,12 +407,12 @@ void run_shitty_pad() {
           continue;
         clicked_btn = true;
         if (i == 0) {
-          if (prompt_path(vfb, "Save as:", current_filepath,
+          if (prompt_path(win, "Save as:", current_filepath,
                           sizeof(current_filepath)))
             status_msg = save_to_vfs(*text_buf, current_filepath) ? "Saved"
                                                                 : "Save failed";
         } else if (i == 1) {
-          if (prompt_path(vfb, "Open:", current_filepath,
+          if (prompt_path(win, "Open:", current_filepath,
                           sizeof(current_filepath))) {
             if (load_from_vfs(*text_buf, current_filepath)) {
               cursor_r = 0;
@@ -515,24 +514,24 @@ void run_shitty_pad() {
     if (cursor_r >= view_r + static_cast<size_t>(v_rows))
       view_r = cursor_r - static_cast<size_t>(v_rows) + 1;
 
-    vfb.clear(BG);
+    win.clear(BG);
 
     // Menu bar: flat text actions, single rule.
-    vfb.fill_rect(0, 0, w, MENU_H, BAR);
+    win.fill_rect(0, 0, w, MENU_H, BAR);
     for (int i = 0; i < 4; ++i) {
       bool active =
           m_left && hit(mx, my, btn_x[i], btn_y, btn_w[i], btn_h);
-      draw_menu_item(vfb, btn_x[i], btn_y, btn_w[i], btn_h, btn_label[i],
+      draw_menu_item(win, btn_x[i], btn_y, btn_w[i], btn_h, btn_label[i],
                      active);
       if (i < 3)
-        UI::text(vfb, btn_x[i] + btn_w[i] - 2, btn_y + (btn_h / 2) - 4, "|",
+        UI::text(win, btn_x[i] + btn_w[i] - 2, btn_y + (btn_h / 2) - 4, "|",
              MUTED);
     }
-    vfb.draw_line(0, MENU_H, w, MENU_H, RULE);
+    win.draw_line(0, MENU_H, w, MENU_H, RULE);
 
     // Line-number gutter.
-    vfb.fill_rect(0, editor_top, GUTTER_W, editor_bot - editor_top, GUTTER);
-    vfb.draw_line(GUTTER_W, editor_top, GUTTER_W, editor_bot, RULE);
+    win.fill_rect(0, editor_top, GUTTER_W, editor_bot - editor_top, GUTTER);
+    win.draw_line(GUTTER_W, editor_top, GUTTER_W, editor_bot, RULE);
 
     for (int r = 0; r < v_rows; ++r) {
       size_t cur_r = view_r + static_cast<size_t>(r);
@@ -546,19 +545,19 @@ void run_shitty_pad() {
       int ln_x = GUTTER_W - 4 - static_cast<int>(ln_len) * CHAR_W;
       if (ln_x < 2)
         ln_x = 2;
-      UI::text(vfb, ln_x, ry, ln, MUTED);
+      UI::text(win, ln_x, ry, ln, MUTED);
 
-      UI::text(vfb, text_x, ry, text_buf->lines[cur_r], FG);
+      UI::text(win, text_x, ry, text_buf->lines[cur_r], FG);
       if (cur_r == cursor_r) {
         int cx = text_x + cursor_pixel_offset(text_buf->lines[cur_r], cursor_c);
-        vfb.fill_rect(cx, ry, 1, CURSOR_H, CURSOR);
+        win.fill_rect(cx, ry, 1, CURSOR_H, CURSOR);
       }
     }
 
     // Status bar: Ln / Col / status / path
     const int ty = h - STATUS_H;
-    vfb.fill_rect(0, ty, w, STATUS_H, BAR);
-    vfb.draw_line(0, ty, w, ty, RULE);
+    win.fill_rect(0, ty, w, STATUS_H, BAR);
+    win.draw_line(0, ty, w, ty, RULE);
 
     char pos_str[64];
     size_t p = 0;
@@ -573,16 +572,16 @@ void run_shitty_pad() {
     append(pos_str, sizeof(pos_str), p, "  Lines ");
     append(pos_str, sizeof(pos_str), p, n_str);
 
-    UI::text(vfb, 6, ty + 5, pos_str, FG);
-    UI::text(vfb, 210, ty + 5, status_msg, MUTED);
+    UI::text(win, 6, ty + 5, pos_str, FG);
+    UI::text(win, 210, ty + 5, status_msg, MUTED);
 
     size_t path_len = strlen(current_filepath);
     int path_x = w - 6 - static_cast<int>(path_len) * CHAR_W;
     if (path_x < 320)
       path_x = 320;
-    UI::text(vfb, path_x, ty + 5, current_filepath, MUTED);
+    UI::text(win, path_x, ty + 5, current_filepath, MUTED);
 
-    vfb.flush();
+    win.flush();
     delay(10);
   }
 

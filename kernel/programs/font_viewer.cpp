@@ -2,7 +2,7 @@
 #include <oslib/keyboard.h>
 #include <kernel/fs/laziofs.h>
 #include <kernel/graphics/open_font.h>
-#include <kernel/graphics/vfb.h>
+#include <oslib/win.h>
 #include <oslib/ui.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/scheduler.h>
@@ -22,26 +22,26 @@ constexpr uint32_t RED = 0xFF8B8B;
 constexpr uint32_t GOLD = 0xF3C77A;
 constexpr size_t MAX_FONT_CHOICES = 16;
 
-void draw_status(Kernel::Graphics::VirtualFramebuffer &vfb, int32_t x,
+void draw_status(oslib::Win &win, int32_t x,
                  int32_t y, const char *label, const char *status,
                  bool ok) {
   const uint32_t box = ok ? 0x1B3C2B : 0x3B2525;
   const uint32_t text = ok ? GREEN : RED;
-  vfb.fill_rect(x, y, 260, 22, box);
-  vfb.draw_rect(x, y, 260, 22, PANEL);
-  UI::text(vfb, x + 8, y + 6, label, FG);
-  UI::text(vfb, x + 150, y + 6, status, text);
+  win.fill_rect(x, y, 260, 22, box);
+  win.draw_rect(x, y, 260, 22, PANEL);
+  UI::text(win, x + 8, y + 6, label, FG);
+  UI::text(win, x + 150, y + 6, status, text);
 }
 
-void draw_selection_bar(Kernel::Graphics::VirtualFramebuffer &vfb,
+void draw_selection_bar(oslib::Win &win,
                         int32_t x, int32_t y, const char *font_name,
                         bool selected, bool available) {
   const uint32_t bg = selected ? 0x27354C : 0x1A2430;
   const uint32_t text = available ? FG : MUTED;
-  vfb.fill_rect(x, y, 320, 22, bg);
-  vfb.draw_rect(x, y, 320, 22, PANEL);
-  UI::text(vfb, x + 8, y + 6, selected ? ">" : " ", GOLD);
-  UI::text(vfb, x + 24, y + 6, font_name, text);
+  win.fill_rect(x, y, 320, 22, bg);
+  win.draw_rect(x, y, 320, 22, PANEL);
+  UI::text(win, x + 8, y + 6, selected ? ">" : " ", GOLD);
+  UI::text(win, x + 24, y + 6, font_name, text);
 }
 
 bool load_font_choice(Kernel::Graphics::TrueTypeFont &font, const char *font_name) {
@@ -53,8 +53,8 @@ bool load_font_choice(Kernel::Graphics::TrueTypeFont &font, const char *font_nam
 } // namespace
 
 void run_font_viewer() {
-  Kernel::Graphics::VirtualFramebuffer vfb;
-  if (!vfb.open_window(760, 470, 320, 260))
+  oslib::Win win;
+  if (!win.open(760, 470, 320, 260))
     return;
 
   Kernel::Graphics::TrueTypeFont embedded_font;
@@ -107,40 +107,40 @@ void run_font_viewer() {
       }
     }
 
-    vfb.clear(BG);
-    vfb.fill_rect(0, 0, vfb.width(), 30, PANEL);
-    UI::text(vfb, 16, 8, "FONT VIEWER - AVAILABLE TTFs", FG);
+    win.clear(BG);
+    win.fill_rect(0, 0, win.width(), 30, PANEL);
+    UI::text(win, 16, 8, "FONT VIEWER - AVAILABLE TTFs", FG);
 
-    draw_status(vfb, 12, 42, "embedded", embedded_ok ? "READY" : "MISSING", embedded_ok);
+    draw_status(win, 12, 42, "embedded", embedded_ok ? "READY" : "MISSING", embedded_ok);
     int32_t list_y = 78;
     for (size_t i = 0; i < font_count && i < MAX_FONT_CHOICES; ++i) {
       const bool selected = (i == selected_index);
       char label[96];
       strncpy(label, font_names[i], sizeof(label) - 1);
       label[sizeof(label) - 1] = '\0';
-      draw_selection_bar(vfb, 12, list_y, label, selected, true);
+      draw_selection_bar(win, 12, list_y, label, selected, true);
       list_y += 24;
     }
     if (font_count == 0) {
-      draw_selection_bar(vfb, 12, list_y, "no .ttf files in fonts/", false, false);
+      draw_selection_bar(win, 12, list_y, "no .ttf files in fonts/", false, false);
       list_y += 24;
     }
 
     const int32_t sample_y = 270;
-    vfb.fill_rect(12, sample_y, vfb.width() - 24, 1, PANEL);
+    win.fill_rect(12, sample_y, win.width() - 24, 1, PANEL);
     if (active_loaded) {
-      UI::text(vfb, 18, sample_y + 18, 20.0f, active_font,
+      UI::text(win, 18, sample_y + 18, 20.0f, active_font,
                             "The quick brown fox jumps over the lazy dog.", BLUE);
-      UI::text(vfb, 18, sample_y + 52, 16.0f, active_font,
+      UI::text(win, 18, sample_y + 52, 16.0f, active_font,
                             "OSFOS font sample text", GOLD);
-      UI::text(vfb, 18, sample_y + 82, active_name, GREEN);
+      UI::text(win, 18, sample_y + 82, active_name, GREEN);
     } else {
-      UI::text(vfb, 18, sample_y + 18, "No valid font selected.", RED);
+      UI::text(win, 18, sample_y + 18, "No valid font selected.", RED);
     }
 
-    UI::text(vfb, 18, sample_y + 104, 12.0f, embedded_font,
+    UI::text(win, 18, sample_y + 104, 12.0f, embedded_font,
                           "n/p or j/k switch fonts  q quits", MUTED);
-    vfb.flush();
+    win.flush();
     delay(4);
   }
 }

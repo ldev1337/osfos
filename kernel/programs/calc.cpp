@@ -1,4 +1,4 @@
-#include <kernel/graphics/vfb.h>
+#include <oslib/win.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/scheduler.h>
 #include <oslib/keyboard.h>
@@ -499,14 +499,14 @@ private:
 // -----------------------------------------------------------------------------
 
 static void
-draw_highlighted_expression(Kernel::Graphics::VirtualFramebuffer &vfb,
+draw_highlighted_expression(oslib::Win &win,
                             int start_x, int y, const char *expr) {
   int cx = start_x;
   const char *p = expr;
   while (*p != '\0') {
     if (*p == ' ' || *p == '\t') {
       char space[2] = {*p, '\0'};
-      UI::text(vfb, cx, y, space, 0xFFCDD6F4);
+      UI::text(win, cx, y, space, 0xFFCDD6F4);
       cx += UI::text_width(space);
       p++;
       continue;
@@ -522,7 +522,7 @@ draw_highlighted_expression(Kernel::Graphics::VirtualFramebuffer &vfb,
         p++;
       }
       word[idx] = '\0';
-      UI::text(vfb, cx, y, word, 0xFFF9E2AF);
+      UI::text(win, cx, y, word, 0xFFF9E2AF);
       cx += UI::text_width(word);
       continue;
     }
@@ -536,7 +536,7 @@ draw_highlighted_expression(Kernel::Graphics::VirtualFramebuffer &vfb,
         p++;
       }
       number[idx] = '\0';
-      UI::text(vfb, cx, y, number, 0xFFFAB387);
+      UI::text(win, cx, y, number, 0xFFFAB387);
       cx += UI::text_width(number);
       continue;
     }
@@ -544,7 +544,7 @@ draw_highlighted_expression(Kernel::Graphics::VirtualFramebuffer &vfb,
     if (*p == '+' || *p == '-' || *p == '*' || *p == '/' || *p == '^' ||
         *p == ',') {
       char token[2] = {*p, '\0'};
-      UI::text(vfb, cx, y, token, 0xFF89B4FA);
+      UI::text(win, cx, y, token, 0xFF89B4FA);
       cx += UI::text_width(token);
       p++;
       continue;
@@ -552,14 +552,14 @@ draw_highlighted_expression(Kernel::Graphics::VirtualFramebuffer &vfb,
 
     if (*p == '(' || *p == ')') {
       char token[2] = {*p, '\0'};
-      UI::text(vfb, cx, y, token, 0xFF94E2D5);
+      UI::text(win, cx, y, token, 0xFF94E2D5);
       cx += UI::text_width(token);
       p++;
       continue;
     }
 
     char token[2] = {*p, '\0'};
-    UI::text(vfb, cx, y, token, 0xFFCDD6F4);
+    UI::text(win, cx, y, token, 0xFFCDD6F4);
     cx += UI::text_width(token);
     p++;
   }
@@ -570,11 +570,11 @@ draw_highlighted_expression(Kernel::Graphics::VirtualFramebuffer &vfb,
 // -----------------------------------------------------------------------------
 
 void run() {
-  Kernel::Graphics::VirtualFramebuffer vfb;
-  if (!vfb.open_window(600, 200, 300, 150))
+  oslib::Win win;
+  if (!win.open(600, 200, 300, 150))
     return;
-  const int32_t w = static_cast<int32_t>(vfb.width());
-  const int32_t h = static_cast<int32_t>(vfb.height());
+  const int32_t w = static_cast<int32_t>(win.width());
+  const int32_t h = static_cast<int32_t>(win.height());
 
   char expression[96] = "";
   char display[64] = "0";
@@ -661,24 +661,24 @@ void run() {
     if (!running)
       break;
 
-    vfb.clear(0xFF1E1E2E);
+    win.clear(0xFF1E1E2E);
 
-    vfb.fill_rect(20, 20, w - 40, 60, 0xFF313244);
+    win.fill_rect(20, 20, w - 40, 60, 0xFF313244);
     if (strlen(expression) > 0) {
-      draw_highlighted_expression(vfb, 32, 42, expression);
+      draw_highlighted_expression(win, 32, 42, expression);
     } else {
-      UI::text(vfb, 32, 42, display, error ? 0xFFF38BA8 : 0xFFCDD6F4);
+      UI::text(win, 32, 42, display, error ? 0xFFF38BA8 : 0xFFCDD6F4);
     }
 
     // Minimalist help guide
-    UI::text(vfb, 20, 100,
+    UI::text(win, 20, 100,
              "Functions: sin, cos, tan, sqrt, root, log10, logn, pi",
              0xFF6C7086);
-    UI::text(vfb, 20, 118,
+    UI::text(win, 20, 118,
              "Exponents: ^-1, ^-2 | Enter: = | `: Clear | ESC: Quit",
              0xFF6C7086);
 
-    vfb.flush();
+    win.flush();
     delay(10);
   }
 }

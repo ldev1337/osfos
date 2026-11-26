@@ -2,7 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <kernel/graphics/vfb.h>
+#include <oslib/win.h>
 
 namespace UI {
 
@@ -53,7 +53,7 @@ public:
         enabled_(true), dirty_(true) {}
   virtual ~Widget() = default;
 
-  virtual void draw(Kernel::Graphics::VirtualFramebuffer &vfb) = 0;
+  virtual void draw(oslib::Win &win) = 0;
   virtual bool handle_mouse(int mx, int my, bool left_pressed,
                             bool left_released) = 0;
   virtual bool handle_key(char c) = 0;
@@ -86,7 +86,7 @@ public:
         uint32_t color = COLOR_TEXT);
   void set_font_size_pixels(float font_size_pixels) override;
   void set_text(const char *new_text);
-  void draw(Kernel::Graphics::VirtualFramebuffer &vfb) override;
+  void draw(oslib::Win &win) override;
   bool handle_mouse(int mx, int my, bool left_pressed,
                     bool left_released) override;
   bool handle_key(char c) override;
@@ -108,7 +108,7 @@ public:
   Button(int32_t x, int32_t y, int32_t w, int32_t h, const char *label,
          uint32_t bg_color = COLOR_SURFACE, uint32_t text_color = COLOR_TEXT,
          uint32_t border_color = COLOR_BORDER);
-  void draw(Kernel::Graphics::VirtualFramebuffer &vfb) override;
+  void draw(oslib::Win &win) override;
   bool handle_mouse(int mx, int my, bool left_pressed,
                     bool left_released) override;
   bool handle_key(char c) override;
@@ -128,7 +128,7 @@ public:
   void set_font_size_pixels(float font_size_pixels) override;
   bool is_checked() const { return checked_; }
   void set_checked(bool checked);
-  void draw(Kernel::Graphics::VirtualFramebuffer &vfb) override;
+  void draw(oslib::Win &win) override;
   bool handle_mouse(int mx, int my, bool left_pressed,
                     bool left_released) override;
   bool handle_key(char c) override;
@@ -148,7 +148,7 @@ public:
          int32_t max_val, int32_t initial_val);
   int32_t get_value() const { return val_; }
   void set_value(int32_t val);
-  void draw(Kernel::Graphics::VirtualFramebuffer &vfb) override;
+  void draw(oslib::Win &win) override;
   bool handle_mouse(int mx, int my, bool left_pressed,
                     bool left_released) override;
   bool handle_key(char c) override;
@@ -168,7 +168,7 @@ public:
             uint32_t text_color = COLOR_TEXT,
             uint32_t border_color = COLOR_BORDER);
   void set_status(const char *new_text);
-  void draw(Kernel::Graphics::VirtualFramebuffer &vfb) override;
+  void draw(oslib::Win &win) override;
   bool handle_mouse(int mx, int my, bool left_pressed,
                     bool left_released) override;
   bool handle_key(char c) override;
@@ -190,7 +190,7 @@ public:
   void set_text(const char *text);
   bool is_focused() const { return focused_; }
   void set_focused(bool focused);
-  void draw(Kernel::Graphics::VirtualFramebuffer &vfb) override;
+  void draw(oslib::Win &win) override;
   bool handle_mouse(int mx, int my, bool left_pressed,
                     bool left_released) override;
   bool handle_key(char c) override;
@@ -214,7 +214,7 @@ public:
   void set_focused(bool focused);
   void set_scroll_line(size_t line);
   size_t get_scroll_line() const { return scroll_line_; }
-  void draw(Kernel::Graphics::VirtualFramebuffer &vfb) override;
+  void draw(oslib::Win &win) override;
   bool handle_mouse(int mx, int my, bool left_pressed,
                     bool left_released) override;
   bool handle_key(char c) override;
@@ -232,27 +232,27 @@ public:
   bool add(Widget &widget);
   void clear();
   size_t size() const { return count_; }
-  void draw(Kernel::Graphics::VirtualFramebuffer &vfb,
+  void draw(oslib::Win &win,
             bool dirty_only = true);
   Widget *handle_mouse(int mx, int my, bool left_pressed, bool left_released);
   bool handle_key(char c);
 };
 
-void text(Kernel::Graphics::VirtualFramebuffer &vfb, int32_t x, int32_t y,
+void text(oslib::Win &win, int32_t x, int32_t y,
           const char *value, uint32_t color,
           float font_size_pixels = 14.0f);
-int text(Kernel::Graphics::VirtualFramebuffer &vfb, int32_t x, int32_t y,
+int text(oslib::Win &win, int32_t x, int32_t y,
          float font_size_pixels, Kernel::Graphics::TrueTypeFont &font,
          const char *value, uint32_t color);
 int text_width(const char *value, float font_size_pixels = 14.0f);
-void number(Kernel::Graphics::VirtualFramebuffer &vfb, int32_t x, int32_t y,
+void number(oslib::Win &win, int32_t x, int32_t y,
             int32_t value, uint32_t color);
 int mouse_x();
 int mouse_y();
 bool primary_pressed();
 
 // 7. Interactive Modal Dialog Prompt
-bool prompt_filename(Kernel::Graphics::VirtualFramebuffer &vfb,
+bool prompt_filename(oslib::Win &win,
                      const char *prompt, char *buf, size_t max_len);
 
 } // namespace UI

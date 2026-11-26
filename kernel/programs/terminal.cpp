@@ -3,8 +3,7 @@
 #include <kernel/drivers/keyboard.h>
 #include <kernel/graphics/lwm.h>
 #include <kernel/graphics/open_font.h>
-#include <kernel/graphics/vfb.h>
-#include <kernel/memory/heap.h>
+#include <oslib/win.h>
 #include <kernel/programs/terminal.h>
 #include <kernel/scheduler.h>
 #include <kernel/spinlock.h>
@@ -26,7 +25,7 @@ enum class ContextState : uint8_t { FREE, INITIALIZING, READY, CLOSING };
 struct TerminalContext {
   ContextState state = ContextState::FREE;
   uint64_t thread_id = 0;
-  Graphics::VirtualFramebuffer vfb;
+  oslib::Win win;
   Spinlock lock;
   char *screen = nullptr;
   uint32_t *screen_fg = nullptr;
@@ -84,16 +83,16 @@ void draw_glyph(TerminalContext &context, uint32_t x, uint32_t y, char ch, uint3
   auto &font = terminal_font();
   if (font.is_valid()) {
     char text[2] = {ch, '\0'};
-    context.vfb.draw_string(static_cast<int32_t>(x), static_cast<int32_t>(y), 14.0f, text, color);
+    context.win.draw_string(static_cast<int32_t>(x), static_cast<int32_t>(y), 14.0f, text, color);
   } else {
-    context.vfb.draw_glyph_bg(static_cast<int32_t>(x), static_cast<int32_t>(y), ch, color, BG);
+    context.win.draw_glyph_bg(static_cast<int32_t>(x), static_cast<int32_t>(y), ch, color, BG);
   }
 }
 
 void draw_cell(TerminalContext &context, size_t cell_col, size_t cell_row, char ch, uint32_t color) {
   const uint32_t x = static_cast<uint32_t>(cell_col) * CELL_W;
   const uint32_t y = static_cast<uint32_t>(cell_row) * LINE_H;
-  context.vfb.fill_rect(x, y, CELL_W, LINE_H, BG);
+  context.win.fill_rect(x, y, CELL_W, LINE_H, BG);
   if (ch != ' ')
     draw_glyph(context, x, y, ch, color);
 }
@@ -109,7 +108,7 @@ void clear_unlocked(TerminalContext &context) {
   for (size_t screen_row = 0; screen_row < context.row_count; ++screen_row)
     clear_row(context, screen_row);
   context.row = context.col = 0;
-  context.vfb.clear(BG);
+  context.win.clear(BG);
 }
 
 void redraw_terminal(TerminalContext &context) {
@@ -223,15 +222,15 @@ bool initialize() {
     context->screen_w = Drivers::Framebuffer::width();
     context->screen_h = Drivers::Framebuffer::height();
     if (Graphics::WindowManager::has_window(tid)) {
-      ok = context->vfb.open_window(context->screen_w > 48 ? context->screen_w - 48 : context->screen_w,
+      ok = context->win.open(context->screen_w > 48 ? context->screen_w - 48 : context->screen_w,
                                     context->screen_h > 100 ? context->screen_h - 100 : context->screen_h,
                                     CELL_W, LINE_H);
       if (ok) {
-        context->screen_w = context->vfb.width();
-        context->screen_h = context->vfb.height();
+        context->screen_w = context->win.width();
+        context->screen_h = context->win.height();
       }
     } else {
-      ok = context->vfb.init(0, 0, context->screen_w, context->screen_h);
+      ok = context->win.open_screen(0, 0, context->screen_w, context->screen_h);
     }
   }
   if (ok && context->screen_w && context->screen_h >= LINE_H) {
@@ -248,12 +247,12 @@ bool initialize() {
     for (size_t r = 0; r < context->row_count; ++r)
       clear_row(*context, r);
     context->row = context->col = 0;
-    context->vfb.clear(BG);
+    context->win.clear(BG);
     redraw_terminal(*context);
-    context->vfb.flush();
+    context->win.flush();
   }
   if (!ok) {
-    context->vfb.destroy();
+    context->win.close();
     free(context->screen);
     free(context->screen_fg);
     context->screen = nullptr;
@@ -290,7 +289,7 @@ void shutdown() {
   registry_lock.unlock();
   if (!context)
     return;
-  context->vfb.destroy();
+  context->win.close();
   free(context->screen);
   free(context->screen_fg);
   context->screen = nullptr;
@@ -344,7 +343,7 @@ void clear() {
   TerminalContext *context = lock_context(false);
   if (context) {
     clear_unlocked(*context);
-    context->vfb.flush();
+    context->win.flush();
   }
   unlock_context(context);
 }
@@ -390,8 +389,8 @@ void show_cursor(size_t column, size_t screen_row, uint32_t color) {
     const uint32_t x = static_cast<uint32_t>(column) * CELL_W;
     const uint32_t y = static_cast<uint32_t>(screen_row) * LINE_H + LINE_H - 1;
     if (x + CELL_W <= context->screen_w)
-      context->vfb.fill_rect(x, y, CELL_W, 1, color);
-    context->vfb.flush();
+      context->win.fill_rect(x, y, CELL_W, 1, color);
+    context->win.flush();
   }
   unlock_context(context);
 }
@@ -401,7 +400,7 @@ void hide_cursor(size_t column, size_t screen_row) {
   if (context && column < context->cols && screen_row < context->row_count) {
     const size_t index = screen_row * MAX_COLS + column;
     draw_cell(*context, column, screen_row, context->screen[index], context->screen_fg[index]);
-    context->vfb.flush();
+    context->win.flush();
   }
   unlock_context(context);
 }
@@ -513,7 +512,7 @@ size_t read_line(char *buffer, size_t capacity) {
 void flush() {
   TerminalContext *context = lock_context(true);
   if (context)
-    context->vfb.flush();
+    context->win.flush();
   unlock_context(context);
 }
 
@@ -521,7 +520,7 @@ void present() {
   TerminalContext *context = lock_context(false);
   if (context) {
     redraw_terminal(*context);
-    context->vfb.flush();
+    context->win.flush();
   }
   unlock_context(context);
 }

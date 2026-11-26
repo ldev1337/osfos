@@ -1,7 +1,7 @@
 #include <cstdint>
 #include <oslib/keyboard.h>
 #include <kernel/drivers/tsc_deadline.h>
-#include <kernel/graphics/vfb.h>
+#include <oslib/win.h>
 #include <oslib/ui.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/lib/random.h>
@@ -11,7 +11,7 @@
 
 namespace Kernel::Games::Tetris {
 namespace {
-static Kernel::Graphics::VirtualFramebuffer vfb;
+static oslib::Win win;
 static Kernel::Lib::Random rng(Kernel::Lib::Random::rdtsc());
 constexpr int BOARD_W = 10;
 constexpr int BOARD_H = 20;
@@ -193,24 +193,24 @@ void draw_block(int x, int y, int type, int ox, int oy) {
   uint32_t col = TETROMINO_COLORS[type];
   int px = ox + x * block_size;
   int py = oy + y * block_size;
-  vfb.fill_rect(px + 1, py + 1, block_size - 2, block_size - 2, col);
-  vfb.draw_rect(px, py, block_size, block_size, COLOR_GRID);
+  win.fill_rect(px + 1, py + 1, block_size - 2, block_size - 2, col);
+  win.draw_rect(px, py, block_size, block_size, COLOR_GRID);
 }
 
 void render(int ox, int oy) {
-  vfb.fill(COLOR_BG);
+  win.fill(COLOR_BG);
 
   int board_w_px = BOARD_W * block_size;
   int board_h_px = BOARD_H * block_size;
-  vfb.fill_rect(ox - 2, oy - 2, board_w_px + 4, board_h_px + 4, COLOR_BORDER);
-  vfb.fill_rect(ox, oy, board_w_px, board_h_px, COLOR_BOARD_BG);
+  win.fill_rect(ox - 2, oy - 2, board_w_px + 4, board_h_px + 4, COLOR_BORDER);
+  win.fill_rect(ox, oy, board_w_px, board_h_px, COLOR_BOARD_BG);
 
   for (int r = 0; r < BOARD_H; ++r) {
     for (int c = 0; c < BOARD_W; ++c) {
       if (board[r][c] != 0) {
         draw_block(c, r, board[r][c], ox, oy);
       } else {
-        vfb.draw_rect(ox + c * block_size, oy + r * block_size, block_size,
+        win.draw_rect(ox + c * block_size, oy + r * block_size, block_size,
                       block_size, COLOR_GRID);
       }
     }
@@ -232,9 +232,9 @@ void render(int ox, int oy) {
   int sb_x = ox + board_w_px + 20;
   int sb_y = oy;
 
-  UI::text(vfb, sb_x, sb_y, "TETRIS", 0x00FFFF);
-  vfb.draw_line(sb_x, sb_y + 12, sb_x + 140, sb_y + 12, COLOR_BORDER);
-  UI::text(vfb, sb_x, sb_y + 22, "SCORE:", COLOR_DIM_TEXT);
+  UI::text(win, sb_x, sb_y, "TETRIS", 0x00FFFF);
+  win.draw_line(sb_x, sb_y + 12, sb_x + 140, sb_y + 12, COLOR_BORDER);
+  UI::text(win, sb_x, sb_y + 22, "SCORE:", COLOR_DIM_TEXT);
   char score_buf[32];
   int s = score;
   int idx = 0;
@@ -253,11 +253,11 @@ void render(int ox, int oy) {
     }
     score_buf[idx] = 0;
   }
-  UI::text(vfb, sb_x, sb_y + 34, score_buf, COLOR_TEXT);
+  UI::text(win, sb_x, sb_y + 34, score_buf, COLOR_TEXT);
 
-  UI::text(vfb, sb_x, sb_y + 58, "NEXT:", COLOR_DIM_TEXT);
-  vfb.draw_rect(sb_x, sb_y + 72, 110, 80, COLOR_BORDER);
-  vfb.fill_rect(sb_x + 1, sb_y + 73, 108, 78, COLOR_BOARD_BG);
+  UI::text(win, sb_x, sb_y + 58, "NEXT:", COLOR_DIM_TEXT);
+  win.draw_rect(sb_x, sb_y + 72, 110, 80, COLOR_BORDER);
+  win.fill_rect(sb_x + 1, sb_y + 73, 108, 78, COLOR_BOARD_BG);
 
   auto &next_shape = TETROMINOES[next_piece.type][0];
   int p_ox = sb_x + 20;
@@ -267,18 +267,18 @@ void render(int ox, int oy) {
       if (next_shape[r][c] != 0) {
         int px = p_ox + c * 16;
         int py = p_oy + r * 16;
-        vfb.fill_rect(px + 1, py + 1, 14, 14,
+        win.fill_rect(px + 1, py + 1, 14, 14,
                       TETROMINO_COLORS[next_piece.type]);
-        vfb.draw_rect(px, py, 16, 16, COLOR_GRID);
+        win.draw_rect(px, py, 16, 16, COLOR_GRID);
       }
     }
   }
-  UI::text(vfb, sb_x, sb_y + 162, "LEVEL:", COLOR_DIM_TEXT);
+  UI::text(win, sb_x, sb_y + 162, "LEVEL:", COLOR_DIM_TEXT);
   char lvl_buf[16] = {static_cast<char>('0' + (level / 10)),
                       static_cast<char>('0' + (level % 10)), 0};
-  UI::text(vfb, sb_x, sb_y + 174, lvl_buf, COLOR_TEXT);
+  UI::text(win, sb_x, sb_y + 174, lvl_buf, COLOR_TEXT);
 
-  UI::text(vfb, sb_x, sb_y + 200, "LINES:", COLOR_DIM_TEXT);
+  UI::text(win, sb_x, sb_y + 200, "LINES:", COLOR_DIM_TEXT);
   char lns_buf[16];
   int l = lines;
   int li = 0;
@@ -297,45 +297,45 @@ void render(int ox, int oy) {
     }
     lns_buf[li] = 0;
   }
-  UI::text(vfb, sb_x, sb_y + 212, lns_buf, COLOR_TEXT);
+  UI::text(win, sb_x, sb_y + 212, lns_buf, COLOR_TEXT);
 
   int ctrl_y = sb_y + 245;
-  UI::text(vfb, sb_x, ctrl_y, "CONTROLS:", 0x8888AA);
-  UI::text(vfb, sb_x, ctrl_y + 16, "LEFT/RIGHT: Move",
+  UI::text(win, sb_x, ctrl_y, "CONTROLS:", 0x8888AA);
+  UI::text(win, sb_x, ctrl_y + 16, "LEFT/RIGHT: Move",
                           COLOR_DIM_TEXT);
-  UI::text(vfb, sb_x, ctrl_y + 30, "UP/X: Rotate CW",
+  UI::text(win, sb_x, ctrl_y + 30, "UP/X: Rotate CW",
                           COLOR_DIM_TEXT);
-  UI::text(vfb, sb_x, ctrl_y + 44, "Z: Rotate CCW",
+  UI::text(win, sb_x, ctrl_y + 44, "Z: Rotate CCW",
                           COLOR_DIM_TEXT);
-  UI::text(vfb, sb_x, ctrl_y + 58, "DOWN: Soft Drop",
+  UI::text(win, sb_x, ctrl_y + 58, "DOWN: Soft Drop",
                           COLOR_DIM_TEXT);
-  UI::text(vfb, sb_x, ctrl_y + 72, "SPACE: Hard Drop",
+  UI::text(win, sb_x, ctrl_y + 72, "SPACE: Hard Drop",
                           COLOR_DIM_TEXT);
-  UI::text(vfb, sb_x, ctrl_y + 86, "ESC: Quit", COLOR_DIM_TEXT);
+  UI::text(win, sb_x, ctrl_y + 86, "ESC: Quit", COLOR_DIM_TEXT);
 
   if (game_over) {
     int ov_w = 260;
     int ov_h = 100;
     int ov_x = ox + (board_w_px - ov_w) / 2;
     int ov_y = oy + (board_h_px - ov_h) / 2;
-    vfb.fill_rect(ov_x, ov_y, ov_w, ov_h, 0x1A1A26);
-    vfb.draw_rect(ov_x, ov_y, ov_w, ov_h, 0xFF0000);
-    UI::text(vfb, ov_x + 75, ov_y + 20, "GAME OVER", 0xFF4444);
-    UI::text(vfb, ov_x + 35, ov_y + 50, "PRESS R TO RESTART",
+    win.fill_rect(ov_x, ov_y, ov_w, ov_h, 0x1A1A26);
+    win.draw_rect(ov_x, ov_y, ov_w, ov_h, 0xFF0000);
+    UI::text(win, ov_x + 75, ov_y + 20, "GAME OVER", 0xFF4444);
+    UI::text(win, ov_x + 35, ov_y + 50, "PRESS R TO RESTART",
                             COLOR_TEXT);
-    UI::text(vfb, ov_x + 35, ov_y + 70, "PRESS ESC TO EXIT",
+    UI::text(win, ov_x + 35, ov_y + 70, "PRESS ESC TO EXIT",
                             COLOR_DIM_TEXT);
   }
 
-  vfb.flush();
+  win.flush();
 }
 } // namespace
 
 void run() {
-  if (!vfb.open_window(500, 560, 260, 180))
+  if (!win.open(500, 560, 260, 180))
     return;
-  const int sw = static_cast<int>(vfb.width());
-  const int sh = static_cast<int>(vfb.height());
+  const int sw = static_cast<int>(win.width());
+  const int sh = static_cast<int>(win.height());
 
   block_size = (sw - 220) / BOARD_W;
   block_size = std::min(block_size, sh / BOARD_H);

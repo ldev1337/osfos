@@ -1,8 +1,7 @@
 #include <oslib/keyboard.h>
-#include <kernel/graphics/vfb.h>
+#include <oslib/win.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/media/jpeg.h>
-#include <kernel/memory/heap.h>
 #include <kernel/net/smoltcp.h>
 #include <kernel/programs/youtube.h>
 #include <kernel/scheduler.h>
@@ -459,26 +458,26 @@ ThumbnailJob *request_thumbnail(const Video &video, size_t index,
   return job;
 }
 
-void draw_text(Graphics::VirtualFramebuffer &vfb, int x, int y,
+void draw_text(oslib::Win &win, int x, int y,
                const char *text, uint32_t color, float size = 14.0f) {
-  AppCommon::text(vfb, x, y, text, color, size);
+  AppCommon::text(win, x, y, text, color, size);
 }
 
-void draw_ui(Graphics::VirtualFramebuffer &vfb, const char *query,
+void draw_ui(oslib::Win &win, const char *query,
              const Video *videos, size_t count, size_t selected,
              const char *status, bool busy,
              const ThumbnailCacheEntry *thumbnail_cache) {
-  const int32_t width = static_cast<int32_t>(vfb.width());
-  const int32_t height = static_cast<int32_t>(vfb.height());
-  vfb.clear(BG);
-  vfb.fill_rect(0, 0, width, 54, PANEL);
-  vfb.fill_rect(14, 12, 5, 28, ACCENT);
-  draw_text(vfb, 30, 10, "YouTube", TEXT, 22.0f);
-  draw_text(vfb, 144, 17, "OSFOS live search", MUTED, 13.0f);
-  vfb.fill_rounded_rect(14, 66, width - 28, 38, 7, PANEL);
-  draw_text(vfb, 25, 77, query, TEXT, 14.0f);
+  const int32_t width = static_cast<int32_t>(win.width());
+  const int32_t height = static_cast<int32_t>(win.height());
+  win.clear(BG);
+  win.fill_rect(0, 0, width, 54, PANEL);
+  win.fill_rect(14, 12, 5, 28, ACCENT);
+  draw_text(win, 30, 10, "YouTube", TEXT, 22.0f);
+  draw_text(win, 144, 17, "OSFOS live search", MUTED, 13.0f);
+  win.fill_rounded_rect(14, 66, width - 28, 38, 7, PANEL);
+  draw_text(win, 25, 77, query, TEXT, 14.0f);
   if (!*query)
-    draw_text(vfb, 25, 77, "Type a search and press Enter", MUTED, 14.0f);
+    draw_text(win, 25, 77, "Type a search and press Enter", MUTED, 14.0f);
 
   const int32_t row_height = 88;
   const int32_t card_height = 80;
@@ -500,7 +499,7 @@ void draw_ui(Graphics::VirtualFramebuffer &vfb, const char *query,
     const int32_t y = first_y + static_cast<int32_t>(row) * row_height;
     const int32_t thumb_box_y = y + (card_height - thumb_box_h) / 2;
 
-    vfb.fill_rounded_rect(14, y, width - 28, card_height, 6,
+    win.fill_rounded_rect(14, y, width - 28, card_height, 6,
                           i == selected ? SELECTED : ROW);
 
     const ThumbnailCacheEntry *entry =
@@ -512,29 +511,29 @@ void draw_ui(Graphics::VirtualFramebuffer &vfb, const char *query,
           thumb_box_x + (thumb_box_w - static_cast<int32_t>(entry->width)) / 2;
       const int32_t thumb_y =
           thumb_box_y + (thumb_box_h - static_cast<int32_t>(entry->height)) / 2;
-      vfb.fill_rounded_rect(thumb_box_x, thumb_box_y, thumb_box_w, thumb_box_h,
+      win.fill_rounded_rect(thumb_box_x, thumb_box_y, thumb_box_w, thumb_box_h,
                             5, 0xFF101418);
-      vfb.blit(entry->pixels, thumb_x, thumb_y, entry->width, entry->height,
+      win.blit(entry->pixels, thumb_x, thumb_y, entry->width, entry->height,
                entry->width * sizeof(uint32_t));
     } else {
-      vfb.fill_rounded_rect(thumb_box_x, thumb_box_y, thumb_box_w, thumb_box_h,
+      win.fill_rounded_rect(thumb_box_x, thumb_box_y, thumb_box_w, thumb_box_h,
                             5, 0xFF303A41);
       const int32_t cx = thumb_box_x + thumb_box_w / 2;
       const int32_t cy = thumb_box_y + thumb_box_h / 2;
-      vfb.fill_triangle(cx - 8, cy - 12, cx - 8, cy + 12, cx + 11, cy, ACCENT);
+      win.fill_triangle(cx - 8, cy - 12, cx - 8, cy + 12, cx + 11, cy, ACCENT);
     }
 
-    draw_text(vfb, text_x, y + 10, videos[i].title, TEXT, 14.0f);
-    draw_text(vfb, text_x, y + 36, videos[i].channel, MUTED, 12.0f);
-    draw_text(vfb, text_x, y + 56, videos[i].published, MUTED, 10.0f);
+    draw_text(win, text_x, y + 10, videos[i].title, TEXT, 14.0f);
+    draw_text(win, text_x, y + 36, videos[i].channel, MUTED, 12.0f);
+    draw_text(win, text_x, y + 56, videos[i].published, MUTED, 10.0f);
   }
 
-  vfb.fill_rect(0, height - 27, width, 27, PANEL);
-  draw_text(vfb, 14, height - 22, busy ? "Searching YouTube..." : status,
+  win.fill_rect(0, height - 27, width, 27, PANEL);
+  draw_text(win, 14, height - 22, busy ? "Searching YouTube..." : status,
             busy ? ACCENT : MUTED, 11.0f);
-  draw_text(vfb, width - 190, height - 22, "Up/Down select  Esc close", MUTED,
+  draw_text(win, width - 190, height - 22, "Up/Down select  Esc close", MUTED,
             11.0f);
-  vfb.flush();
+  win.flush();
 }
 
 size_t pick_next_thumbnail_index(const Video *videos, size_t count,
@@ -597,8 +596,8 @@ int search(const char *query, Video *videos, size_t capacity) {
 }
 
 void run() {
-  Graphics::VirtualFramebuffer vfb;
-  if (!vfb.open_window(820, 620, 400, 240))
+  oslib::Win win;
+  if (!win.open(820, 620, 400, 240))
     return;
 
   auto *videos = static_cast<Video *>(malloc(sizeof(Video) * MAX_RESULTS));
@@ -626,7 +625,7 @@ void run() {
   bool up_was_pressed = false;
   bool down_was_pressed = false;
 
-  draw_ui(vfb, query, videos, count, selected, status, busy, thumbnail_cache);
+  draw_ui(win, query, videos, count, selected, status, busy, thumbnail_cache);
 
   while (running && !Scheduler::should_stop()) {
     bool changed = false;
@@ -651,7 +650,7 @@ void run() {
           selected = 0;
           copy_text(status, sizeof(status), "Contacting YouTube over TLS...",
                     sizeof("Contacting YouTube over TLS...") - 1);
-          draw_ui(vfb, query, videos, count, selected, status, busy,
+          draw_ui(win, query, videos, count, selected, status, busy,
                   thumbnail_cache);
 
           const int result = search(query, videos, MAX_RESULTS);
@@ -793,7 +792,7 @@ void run() {
     }
 
     if (changed)
-      draw_ui(vfb, query, videos, count, selected, status, busy,
+      draw_ui(win, query, videos, count, selected, status, busy,
               thumbnail_cache);
 
     Scheduler::thread_sleep_ms(16);

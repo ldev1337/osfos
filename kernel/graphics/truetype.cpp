@@ -4,7 +4,6 @@
 
 // Kernel memory and string overrides
 #include <string.h>
-#include <kernel/memory/heap.h>
 #include <kernel/spinlock.h>
 
 #define STBTT_malloc(x, u) ((void)(u), malloc(x))

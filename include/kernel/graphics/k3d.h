@@ -3,7 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <kernel/graphics/vfb.h>
+#include <oslib/win.h>
 #include <string.h>
 
 namespace Kernel::Graphics::K3D {
@@ -148,12 +148,12 @@ public:
   void set_light_direction(const Vec3 &dir);
 
   // Render pipeline entrypoints
-  void render_mesh(VirtualFramebuffer &vfb, const Vertex *vertices,
+  void render_mesh(oslib::Win &win, const Vertex *vertices,
                    size_t vertex_count, const uint32_t *indices,
                    size_t index_count, const BoundingSphere &bounds);
 
 private:
-  void rasterize_triangle(VirtualFramebuffer &vfb, const Vertex &v0,
+  void rasterize_triangle(oslib::Win &win, const Vertex &v0,
                           const Vertex &v1, const Vertex &v2);
 
   Frustum extract_frustum(const Mat4 &clip_matrix);

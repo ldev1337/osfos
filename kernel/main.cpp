@@ -8,7 +8,6 @@
 #include <kernel/drivers/tsc_deadline.h>
 #include <kernel/fs/laziofs.h>
 #include <kernel/graphics/lwm.h>
-#include <kernel/lib/lz4.h>
 #include <kernel/lib/random.h>
 #include <kernel/memory/heap.h>
 #include <kernel/memory/init.h>

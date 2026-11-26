@@ -2,7 +2,6 @@
 #include <atomic>
 #include <kernel/debug/debug.h>
 #include <kernel/drivers/tsc_deadline.h>
-#include <kernel/memory/heap.h>
 #include <kernel/mtask/internal.h>
 #include <stdlib.h>
 

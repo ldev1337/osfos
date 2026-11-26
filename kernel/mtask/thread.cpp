@@ -6,7 +6,6 @@
 #endif
 #include <kernel/drivers/tsc_deadline.h>
 #include <kernel/graphics/lwm.h>
-#include <kernel/memory/heap.h>
 #include <kernel/mtask/internal.h>
 #include <stdlib.h>
 #include <string.h>

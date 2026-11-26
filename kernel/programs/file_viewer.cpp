@@ -1,8 +1,7 @@
 #include <string.h>
 #include <oslib/keyboard.h>
 #include <kernel/fs/laziofs.h>
-#include <kernel/graphics/vfb.h>
-#include <kernel/lib/appcommon.h>
+#include <oslib/win.h>
 #include <oslib/ui.h>
 #include <kernel/scheduler.h>
 
@@ -10,7 +9,7 @@ namespace Kernel::Apps {
 namespace {
 using Kernel::FS::VFS;
 using Kernel::FS::VFSFile;
-using Kernel::Graphics::VirtualFramebuffer;
+using oslib::Win;
 using namespace UI;
 
 constexpr uint32_t BG = 0xFF171D24;
@@ -64,7 +63,7 @@ bool move_selection(bool forward, uint32_t steps, uint32_t &selected_index,
   return moved;
 }
 
-void draw_size(VirtualFramebuffer &vfb, int32_t x, int32_t y, uint32_t size,
+void draw_size(oslib::Win &win, int32_t x, int32_t y, uint32_t size,
                uint32_t color, float font_size) {
   char digits[11];
   char text[11];
@@ -76,10 +75,10 @@ void draw_size(VirtualFramebuffer &vfb, int32_t x, int32_t y, uint32_t size,
   for (size_t i = 0; i < count; ++i)
     text[i] = digits[count - i - 1];
   text[count] = '\0';
-  UI::text(vfb, x, y, text, color, font_size);
+  UI::text(win, x, y, text, color, font_size);
 }
 
-void draw_file_rows(VirtualFramebuffer &vfb, uint32_t selected,
+void draw_file_rows(oslib::Win &win, uint32_t selected,
                     uint32_t first_index, int32_t list_x, int32_t list_y,
                     int32_t list_width, int32_t visible_rows) {
   uint32_t index = first_index;
@@ -88,7 +87,7 @@ void draw_file_rows(VirtualFramebuffer &vfb, uint32_t selected,
     VFSFile file{};
     if (VFS::get_file_at(index, &file) && file.exists && !file.is_directory) {
       const int32_t y = list_y + row * LIST_ROW_HEIGHT;
-      vfb.fill_rect(list_x, y, list_width, LIST_ROW_HEIGHT - 1,
+      win.fill_rect(list_x, y, list_width, LIST_ROW_HEIGHT - 1,
                     index == selected ? SELECTED : ROW);
       char display_name[Kernel::FS::VFS_MAX_PATH];
       strncpy(display_name, file.name, sizeof(display_name) - 1);
@@ -105,7 +104,7 @@ void draw_file_rows(VirtualFramebuffer &vfb, uint32_t selected,
         display_name[name_length - 2] = '.';
         display_name[name_length - 1] = '.';
       }
-      UI::text(vfb, list_x + 8, y + 4, display_name, TEXT,
+      UI::text(win, list_x + 8, y + 4, display_name, TEXT,
                               12.0f);
       char size_text[11];
       uint32_t remaining_size = file.size;
@@ -121,7 +120,7 @@ void draw_file_rows(VirtualFramebuffer &vfb, uint32_t selected,
         size_text[size_length - i - 1] = temp;
       }
       const int size_width = UI::text_width(size_text, 11.0f);
-      UI::text(vfb, list_x + list_width - size_width - 8,
+      UI::text(win, list_x + list_width - size_width - 8,
                               y + 5, size_text, MUTED, 11.0f);
       ++row;
     }
@@ -129,7 +128,7 @@ void draw_file_rows(VirtualFramebuffer &vfb, uint32_t selected,
   }
   while (row < visible_rows) {
     const int32_t y = list_y + row * LIST_ROW_HEIGHT;
-    vfb.fill_rect(list_x, y, list_width, LIST_ROW_HEIGHT - 1, BG);
+    win.fill_rect(list_x, y, list_width, LIST_ROW_HEIGHT - 1, BG);
     ++row;
   }
 }
@@ -139,8 +138,8 @@ void draw_file_rows(VirtualFramebuffer &vfb, uint32_t selected,
 void file_viewer_run() {
   if (!VFS::is_mounted())
     return;
-  VirtualFramebuffer vfb;
-  if (!vfb.open_window(820, 560, 540, 360))
+  oslib::Win win;
+  if (!win.open(820, 560, 540, 360))
     return;
 
   Label title(16, 10, "FILE VIEWER", TEXT);
@@ -157,13 +156,13 @@ void file_viewer_run() {
   down_button.set_font_size_pixels(12.0f);
   page_up_button.set_font_size_pixels(12.0f);
   page_down_button.set_font_size_pixels(12.0f);
-  StatusBar status(12, static_cast<int32_t>(vfb.height()) - 34,
-                   static_cast<int32_t>(vfb.width()) - 24, 24,
+  StatusBar status(12, static_cast<int32_t>(win.height()) - 34,
+                   static_cast<int32_t>(win.width()) - 24, 24,
                    "Select a file, then choose Open.", PANEL, MUTED, 0);
   status.set_font_size_pixels(12.0f);
 
-  TextArea document(330, 108, static_cast<int32_t>(vfb.width()) - 352,
-                    static_cast<int32_t>(vfb.height()) - 174, "",
+  TextArea document(330, 108, static_cast<int32_t>(win.width()) - 352,
+                    static_cast<int32_t>(win.height()) - 174, "",
                     0xFF12171C, TEXT, ACCENT);
   document.set_font_size_pixels(13.0f);
   WidgetGroup controls;
@@ -187,12 +186,12 @@ void file_viewer_run() {
   const int32_t list_x = 12;
   const int32_t list_y = 82;
   const int32_t list_width = 300;
-  const int32_t body_bottom = static_cast<int32_t>(vfb.height()) - 44;
+  const int32_t body_bottom = static_cast<int32_t>(win.height()) - 44;
   const int32_t body_height = body_bottom - list_y;
   const int32_t visible_rows = body_height / LIST_ROW_HEIGHT;
 
   while (running && !Kernel::Scheduler::should_stop()) {
-    if (!vfb.has_focus()) {
+    if (!win.has_focus()) {
       Kernel::Scheduler::thread_sleep_ms(16);
       continue;
     }
@@ -340,12 +339,12 @@ void file_viewer_run() {
         back_button.is_dirty() || up_button.is_dirty() ||
         down_button.is_dirty() || page_up_button.is_dirty() ||
         page_down_button.is_dirty() || status.is_dirty()) {
-      vfb.clear(BG);
-      vfb.fill_rect(0, 0, vfb.width(), 36, PANEL);
-      title.draw(vfb);
-      controls.draw(vfb, false);
-      vfb.fill_rect(10, 76, 304, body_height + 8, PANEL);
-      vfb.fill_rect(322, 76, vfb.width() - 334, body_height + 8, PANEL);
+      win.clear(BG);
+      win.fill_rect(0, 0, win.width(), 36, PANEL);
+      title.draw(win);
+      controls.draw(win, false);
+      win.fill_rect(10, 76, 304, body_height + 8, PANEL);
+      win.fill_rect(322, 76, win.width() - 334, body_height + 8, PANEL);
       if (viewing) {
         if (loaded_offset != view_offset) {
           const uint32_t remaining = view_offset < selected_file.size
@@ -370,29 +369,29 @@ void file_viewer_run() {
           document.set_scroll_line(0);
           loaded_offset = view_offset;
         }
-        UI::text(vfb, 24, 86, selected_file.name, ACCENT,
+        UI::text(win, 24, 86, selected_file.name, ACCENT,
                                 14.0f);
-        document.draw(vfb);
+        document.draw(win);
         status.set_status("j/k scroll  Page +/- browse file  Esc back");
       } else {
-        UI::text(vfb, 22, 86, "FILES", ACCENT, 13.0f);
-        draw_file_rows(vfb, selected_index, first_index, list_x, list_y,
+        UI::text(win, 22, 86, "FILES", ACCENT, 13.0f);
+        draw_file_rows(win, selected_index, first_index, list_x, list_y,
                        list_width, visible_rows);
         if (has_selection) {
-          UI::text(vfb, 338, 100, selected_file.name, TEXT,
+          UI::text(win, 338, 100, selected_file.name, TEXT,
                                   14.0f);
-          UI::text(vfb, 338, 130, "Size", MUTED, 12.0f);
-          draw_size(vfb, 390, 130, selected_file.size, TEXT, 12.0f);
-          UI::text(vfb, 338, 162,
+          UI::text(win, 338, 130, "Size", MUTED, 12.0f);
+          draw_size(win, 390, 130, selected_file.size, TEXT, 12.0f);
+          UI::text(win, 338, 162,
                                   "Press Enter or Open to view", MUTED, 12.0f);
         } else {
-          UI::text(vfb, 338, 100, "No files found.", MUTED,
+          UI::text(win, 338, 100, "No files found.", MUTED,
                                   14.0f);
         }
         status.set_status("Up/Down select  Enter open  Esc quit");
       }
-      status.draw(vfb);
-      vfb.flush();
+      status.draw(win);
+      win.flush();
       title.clear_dirty();
       open_button.clear_dirty();
       back_button.clear_dirty();

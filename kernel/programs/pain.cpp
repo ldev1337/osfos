@@ -1,12 +1,8 @@
 #include <stdlib.h>
 #include <string.h>
-#include <oslib/keyboard.h>
-#include <oslib/mouse.h>
 #include <kernel/fs/laziofs.h>
-#include <kernel/graphics/vfb.h>
-#include <kernel/lib/appcommon.h>
+#include <oslib/win.h>
 #include <oslib/ui.h>
-#include <kernel/memory/heap.h>
 #include <kernel/scheduler.h>
 
 #include <utility>
@@ -382,11 +378,11 @@ inline void flood_fill(uint32_t *canvas, uint32_t cw, uint32_t ch, int start_x,
 }
 
 void run() {
-  Kernel::Graphics::VirtualFramebuffer vfb;
-  if (!vfb.open_window(1024, 720))
+  oslib::Win win;
+  if (!win.open(1024, 720))
     return;
-  const auto sw = static_cast<int32_t>(vfb.width());
-  const auto sh = static_cast<int32_t>(vfb.height());
+  const auto sw = static_cast<int32_t>(win.width());
+  const auto sh = static_cast<int32_t>(win.height());
   const uint32_t canvas_w = sw;
   const uint32_t canvas_h = sh > 120 ? sh - 120 : sh;
 
@@ -643,7 +639,7 @@ void run() {
 
       else if (active_widget == &btn_save) {
         char filename[64] = "drawing.png";
-        if (UI::prompt_filename(vfb, "Save filename:", filename,
+        if (UI::prompt_filename(win, "Save filename:", filename,
                                               sizeof(filename))) {
           save_png(filename, canvas, canvas_w, canvas_h);
           strcpy(status_msg, "File saved successfully.");
@@ -654,7 +650,7 @@ void run() {
 
       else if (active_widget == &btn_open) {
         char filename[64] = "drawing.png";
-        if (UI::prompt_filename(vfb, "Open filename:", filename,
+        if (UI::prompt_filename(win, "Open filename:", filename,
                                               sizeof(filename))) {
           if (load_png(filename, canvas, canvas_w, canvas_h)) {
             memcpy(backup_canvas, canvas,
@@ -689,23 +685,23 @@ void run() {
         status_bar.is_dirty() || panel_redraw_needed) {
 
       // Render Canvas
-      vfb.clear(COLOR_BG);
-      vfb.blit(canvas, 0, 0, canvas_w, canvas_h, canvas_w * sizeof(uint32_t));
+      win.clear(COLOR_BG);
+      win.blit(canvas, 0, 0, canvas_w, canvas_h, canvas_w * sizeof(uint32_t));
 
       // Render Control Panel Background
-      vfb.fill_rect(0, canvas_h, sw, 120, 0xFF313244);
-      vfb.draw_rect(0, canvas_h, sw, 120, 0xFF45475A);
+      win.fill_rect(0, canvas_h, sw, 120, 0xFF313244);
+      win.draw_rect(0, canvas_h, sw, 120, 0xFF45475A);
 
-      panel_widgets.draw(vfb, false);
+      panel_widgets.draw(win, false);
 
       // Draw Color Preview Box
       uint32_t preview_col = 0xFF000000 | (static_cast<uint32_t>(cur_r) << 16) |
                              (static_cast<uint32_t>(cur_g) << 8) |
                              static_cast<uint32_t>(cur_b);
-      vfb.fill_rect(830, canvas_h + 44, 45, 22, preview_col);
-      vfb.draw_rect(830, canvas_h + 44, 45, 22, COLOR_TEXT);
+      win.fill_rect(830, canvas_h + 44, 45, 22, preview_col);
+      win.draw_rect(830, canvas_h + 44, 45, 22, COLOR_TEXT);
 
-      vfb.flush();
+      win.flush();
       panel_redraw_needed = false;
     } else {
       Kernel::Scheduler::thread_sleep_ms(5);

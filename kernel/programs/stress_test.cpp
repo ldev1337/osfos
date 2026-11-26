@@ -1,6 +1,6 @@
 #include <cstdint>
 #include <oslib/keyboard.h>
-#include <kernel/graphics/vfb.h>
+#include <oslib/win.h>
 #include <oslib/ui.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/scheduler.h>
@@ -18,11 +18,11 @@ constexpr uint32_t RED = 0xf38ba8;
 constexpr uint32_t YELLOW = 0xf9e2af;
 
 void run_stress_test() {
-  Kernel::Graphics::VirtualFramebuffer vfb;
-  if (!vfb.open_window(800, 600, 200, 150))
+  oslib::Win win;
+  if (!win.open(800, 600, 200, 150))
     return;
-  const int32_t w = static_cast<int32_t>(vfb.width());
-  const int32_t h = static_cast<int32_t>(vfb.height());
+  const int32_t w = static_cast<int32_t>(win.width());
+  const int32_t h = static_cast<int32_t>(win.height());
 
   int mode = 0;
   bool running = true;
@@ -44,34 +44,34 @@ void run_stress_test() {
     if (!running)
       break;
 
-    vfb.clear(BG);
+    win.clear(BG);
 
-    UI::text(vfb, 20, 15, "KERNEL STRESS TEST BENCHMARK", BLUE);
-    UI::text(vfb, 20, h - 25, "SPACE: SWITCH MODE    Q: QUIT", FG);
-    UI::text(vfb, w - 140, 15, "MODE:", YELLOW);
-    UI::number(vfb, w - 80, 15, mode + 1, GREEN);
+    UI::text(win, 20, 15, "KERNEL STRESS TEST BENCHMARK", BLUE);
+    UI::text(win, 20, h - 25, "SPACE: SWITCH MODE    Q: QUIT", FG);
+    UI::text(win, w - 140, 15, "MODE:", YELLOW);
+    UI::number(win, w - 80, 15, mode + 1, GREEN);
 
     if (mode == 0) {
-      UI::text(vfb, 20, 45,
+      UI::text(win, 20, 45,
            "Test 1: Heavy Primitive Flood (Rectangles & Rounded Shapes)",
            YELLOW);
       for (int i = 0; i < 150; ++i) {
         int32_t px = (i * 37 + frame_count * 5) % (w - 50);
         int32_t py = 60 + (i * 23 + frame_count * 3) % (h - 120);
         uint32_t col = (i % 2 == 0) ? GREEN : RED;
-        vfb.fill_rounded_rect(px, py, 30, 20, 4, col);
+        win.fill_rounded_rect(px, py, 30, 20, 4, col);
       }
     } else if (mode == 1) {
-      UI::text(vfb, 20, 45, "Test 2: Heavy Alpha Blending Overload", YELLOW);
+      UI::text(win, 20, 45, "Test 2: Heavy Alpha Blending Overload", YELLOW);
       for (int i = 0; i < 80; ++i) {
         int32_t cx = 50 + (i * 41 + frame_count * 7) % (w - 100);
         int32_t cy = 80 + (i * 29 + frame_count * 4) % (h - 140);
         uint32_t col = (i % 3 == 0) ? BLUE : (i % 3 == 1) ? YELLOW : RED;
         uint8_t alpha = static_cast<uint8_t>(50 + ((i * 15) % 150));
-        vfb.fill_circle_alpha(cx, cy, 35, col, alpha);
+        win.fill_circle_alpha(cx, cy, 35, col, alpha);
       }
     } else if (mode == 2) {
-      UI::text(vfb, 20, 45, "Test 3: Line Matrix Rasterization Stress", YELLOW);
+      UI::text(win, 20, 45, "Test 3: Line Matrix Rasterization Stress", YELLOW);
       int32_t ox = w / 2;
       int32_t oy = h / 2;
       for (int i = 0; i < 60; ++i) {
@@ -81,11 +81,11 @@ void run_stress_test() {
             ox + (150 * (i % 2 == 1 ? 1 : -1) + angle_offset) % (w / 2);
         int32_t y2 = oy + (100 * (i % 3 == 1 ? 1 : -1)) % (h / 2);
         uint32_t col = (i % 2 == 0) ? GREEN : BLUE;
-        vfb.draw_line(ox, oy, x2, y2, col);
+        win.draw_line(ox, oy, x2, y2, col);
       }
     }
 
-    vfb.flush();
+    win.flush();
     frame_count++;
     delay(1);
   }

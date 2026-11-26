@@ -1,7 +1,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <oslib/keyboard.h>
-#include <kernel/graphics/vfb.h>
+#include <oslib/win.h>
 #include <oslib/ui.h>
 #include <kernel/lib/appcommon.h>
 #include <kernel/lib/random.h>
@@ -48,24 +48,24 @@ void reset_ball(Game &g, int32_t direction) {
   g.ai_timer = 0;
 }
 
-void render(const Game &g, Kernel::Graphics::VirtualFramebuffer &vfb) {
-  vfb.clear(BG);
+void render(const Game &g, oslib::Win &win) {
+  win.clear(BG);
 
   for (int32_t y = 0; y < g.h; y += 24)
-    vfb.fill_rect((g.w / 2) - 1, y, 2, 12, 0x2E1E1E);
+    win.fill_rect((g.w / 2) - 1, y, 2, 12, 0x2E1E1E);
 
-  vfb.fill_rect(20, g.p1, PW, g.paddle_h, GREEN);
-  vfb.fill_rect(g.w - 20 - PW, g.p2, PW, g.paddle_h, RED);
-  vfb.fill_rect(g.bx, g.by, BW, BW, FG);
+  win.fill_rect(20, g.p1, PW, g.paddle_h, GREEN);
+  win.fill_rect(g.w - 20 - PW, g.p2, PW, g.paddle_h, RED);
+  win.fill_rect(g.bx, g.by, BW, BW, FG);
 
   const auto title_bounds = UI::FlexLayout::center(
       {0, 20, g.w, 16}, UI::text_width("SPONG"), 16);
-  UI::text(vfb, title_bounds.x, title_bounds.y, "SPONG", BLUE);
-  UI::number(vfb, 16, 20, g.score1, GREEN);
-  UI::number(vfb, g.w - 48, 20, g.score2, RED);
-  UI::text(vfb, 16, g.h - 20, g.ai ? "W/S   AI   Q: QUIT" : "W/S   I/K   Q: QUIT",
+  UI::text(win, title_bounds.x, title_bounds.y, "SPONG", BLUE);
+  UI::number(win, 16, 20, g.score1, GREEN);
+  UI::number(win, g.w - 48, 20, g.score2, RED);
+  UI::text(win, 16, g.h - 20, g.ai ? "W/S   AI   Q: QUIT" : "W/S   I/K   Q: QUIT",
        FG);
-  vfb.flush();
+  win.flush();
 }
 
 void update_ai(Game &g) {
@@ -123,11 +123,11 @@ void input(Game &g, bool &running) {
 
 void run(uint32_t speed, bool ai) {
   Game g{};
-  Kernel::Graphics::VirtualFramebuffer vfb;
-  if (!vfb.open_window(640, 480, 168, 200))
+  oslib::Win win;
+  if (!win.open(640, 480, 168, 200))
     return;
-  g.w = static_cast<int32_t>(vfb.width());
-  g.h = static_cast<int32_t>(vfb.height());
+  g.w = static_cast<int32_t>(win.width());
+  g.h = static_cast<int32_t>(win.height());
   g.paddle_h = g.h < 300 ? g.h / 5 : 76;
 
   speed = std::max<uint32_t>(speed, 1);
@@ -147,7 +147,7 @@ void run(uint32_t speed, bool ai) {
   while (running) {
     if (Kernel::Scheduler::should_stop())
       break;
-    if (!vfb.has_focus()) {
+    if (!win.has_focus()) {
       delay(10);
       continue;
     }
@@ -186,7 +186,7 @@ void run(uint32_t speed, bool ai) {
       reset_ball(g, -1);
     }
 
-    render(g, vfb);
+    render(g, win);
     delay(g.speed);
   }
 }

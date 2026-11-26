@@ -1,11 +1,7 @@
 #include <string.h>
-#include <oslib/keyboard.h>
-#include <oslib/mouse.h>
 #include <kernel/graphics/k3d.h>
-#include <kernel/graphics/vfb.h>
-#include <kernel/lib/appcommon.h>
+#include <oslib/win.h>
 #include <oslib/ui.h>
-#include <kernel/memory/heap.h>
 #include <kernel/scheduler.h>
 
 namespace Kernel::Apps::Cube3D {
@@ -13,12 +9,12 @@ namespace Kernel::Apps::Cube3D {
 using namespace Kernel::Graphics::K3D;
 
 void run() {
-  Graphics::VirtualFramebuffer vfb;
-  if (!vfb.open_window(1024, 720))
+  oslib::Win win;
+  if (!win.open(1024, 720))
     return;
 
-  const auto sw = static_cast<int32_t>(vfb.width());
-  const auto sh = static_cast<int32_t>(vfb.height());
+  const auto sw = static_cast<int32_t>(win.width());
+  const auto sh = static_cast<int32_t>(win.height());
   const uint32_t canvas_w = sw;
   const uint32_t canvas_h = sh > 120 ? sh - 120 : sh;
 
@@ -167,7 +163,7 @@ void run() {
     old_left = m_left;
 
     // --- Render Frame ---
-    vfb.clear(COLOR_BG);
+    win.clear(COLOR_BG);
     renderer.clear_depth(1.0f);
 
     angle_x =
@@ -188,15 +184,15 @@ void run() {
     renderer.set_light_direction(Vec3(0.577f, 0.577f, -0.577f));
 
     // Render mesh with aggressive culling enabled
-    renderer.render_mesh(vfb, cube_vertices, 8, cube_indices, 36, cube_bounds);
+    renderer.render_mesh(win, cube_vertices, 8, cube_indices, 36, cube_bounds);
 
     // --- Draw UI Control Panel Background ---
-    vfb.fill_rect(0, canvas_h, sw, 120, 0xFF313244);
-    vfb.draw_rect(0, canvas_h, sw, 120, 0xFF45475A);
+    win.fill_rect(0, canvas_h, sw, 120, 0xFF313244);
+    win.draw_rect(0, canvas_h, sw, 120, 0xFF45475A);
 
-    panel_widgets.draw(vfb, false);
+    panel_widgets.draw(win, false);
 
-    vfb.flush();
+    win.flush();
     panel_redraw_needed = false;
 
     if (!auto_rotate && !panel_redraw_needed) {
