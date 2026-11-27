@@ -180,7 +180,10 @@ extern "C" void main(unsigned long multiboot_info_addr) {
           Kernel::Shell::process_entry, 0, nullptr, nullptr, "Shell",
           Kernel::Scheduler::ThreadPriority::NORMAL, nullptr, true))
     Kernel::Debug::log("ERROR: shell process creation failed");
-
+  if (!Kernel::Scheduler::process_spawn(
+          Kernel::Shell::process_entry, 0, nullptr, nullptr, "Shell",
+          Kernel::Scheduler::ThreadPriority::NORMAL, nullptr, true))
+    Kernel::Debug::log("ERROR: second shell process creation failed");
   {
     uintptr_t init_start_phys = reinterpret_cast<uintptr_t>(_os_init_start);
     uintptr_t init_end_phys = reinterpret_cast<uintptr_t>(_os_init_end);

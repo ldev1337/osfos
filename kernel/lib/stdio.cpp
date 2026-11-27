@@ -27,32 +27,10 @@ struct __FILE {
 struct StdioContext {
   FILE standard[3];
   FILE *open_files = nullptr;
-  int next_descriptor = 3;
   Spinlock lock;
 };
 
-namespace {
-int bootstrap_errno = 0;
-}
-
-extern "C" {
-int *__errno_location(void) {
-  int *value = Kernel::Scheduler::current_errno_location();
-  return value ? value : &bootstrap_errno;
-}
-
-static const uint16_t ctype_b[384] = {0};
-static const int32_t ctype_toupper[384] = {0};
-const uint16_t **__ctype_b_loc(void) {
-  static const uint16_t *ptr = ctype_b + 128;
-  return &ptr;
-}
-const int32_t **__ctype_toupper_loc(void) {
-  static const int32_t *ptr = ctype_toupper + 128;
-  return &ptr;
-}
-}
-
+extern "C" int *__errno_location(void);
 #define errno_val (*__errno_location())
 
 namespace {
@@ -61,6 +39,39 @@ constexpr size_t STACK_FORMAT_SIZE = 512;
 Spinlock stdio_context_lock;
 StdioContext fallback_stdio_context;
 bool fallback_stdio_initialized = false;
+
+bool descriptor_in_use(StdioContext *context, int descriptor) {
+  for (FILE *file = context->open_files; file; file = file->next)
+    if (file->descriptor == descriptor)
+      return true;
+  return false;
+}
+
+int allocate_descriptor(StdioContext *context) {
+  // Match the usual lowest-available descriptor policy. LazioFS bounds each
+  // process to VFS_MAX_OPEN_FILES streams, so one extra candidate guarantees
+  // a free descriptor whenever VFS can provide another stream.
+  for (int candidate = 3;
+       candidate <= 3 + static_cast<int>(Kernel::FS::VFS_MAX_OPEN_FILES);
+       ++candidate) {
+    if (!descriptor_in_use(context, candidate))
+      return candidate;
+  }
+  return -1;
+}
+
+bool valid_stdio_mode(const char *mode) {
+  if (!mode || (mode[0] != 'r' && mode[0] != 'w' && mode[0] != 'a'))
+    return false;
+  bool plus = false, binary = false, exclusive = false;
+  for (size_t i = 1; mode[i]; ++i) {
+    if (mode[i] == '+') { if (plus) return false; plus = true; }
+    else if (mode[i] == 'b') { if (binary) return false; binary = true; }
+    else if (mode[i] == 'x' && mode[0] == 'w') { if (exclusive) return false; exclusive = true; }
+    else return false;
+  }
+  return true;
+}
 
 void initialize_stdio_context(StdioContext *context) {
   context->standard[0] = FILE{};
@@ -74,7 +85,6 @@ void initialize_stdio_context(StdioContext *context) {
     context->standard[i].owner = context;
   }
   context->open_files = nullptr;
-  context->next_descriptor = 3;
 }
 
 StdioContext *current_stdio_context() {
@@ -470,10 +480,10 @@ int format_to_buffer(char *buffer, size_t size, const char *format,
              : static_cast<int>(out.length);
 }
 
-int stream_write(FILE *stream, const void *buffer, size_t bytes) {
+size_t stream_write(FILE *stream, const void *buffer, size_t bytes) {
   if (!belongs_to_current_process(stream) || (!buffer && bytes)) {
     errno_val = 9;
-    return -1;
+    return static_cast<size_t>(-1);
   }
   if (!bytes)
     return 0;
@@ -488,19 +498,25 @@ int stream_write(FILE *stream, const void *buffer, size_t bytes) {
       Terminal::write(static_cast<const char *>(buffer), bytes, color);
       Terminal::flush();
     }
-    return static_cast<int>(bytes);
+    return bytes;
   }
   if (is_file_stream(stream)) {
+    if (!Kernel::FS::VFS::vfs_writable(stream->stream)) {
+      errno_val = 9;
+      stream->error = 1;
+      return static_cast<size_t>(-1);
+    }
     const size_t written =
         Kernel::FS::VFS::vfs_write(buffer, 1, bytes, stream->stream);
-    if (written != bytes)
+    if (written != bytes) {
       stream->error = 1;
-    return written > static_cast<size_t>(INT_MAX) ? INT_MAX
-                                                  : static_cast<int>(written);
+      errno_val = 5;
+    }
+    return written;
   }
   errno_val = 9;
   stream->error = 1;
-  return -1;
+  return static_cast<size_t>(-1);
 }
 
 int stream_get(FILE *stream) {
@@ -516,10 +532,22 @@ int stream_get(FILE *stream) {
                        : Terminal::read_char();
   }
   if (is_file_stream(stream)) {
+    if (!Kernel::FS::VFS::vfs_readable(stream->stream)) {
+      errno_val = 9;
+      stream->error = 1;
+      return EOF;
+    }
     unsigned char ch = 0;
     if (Kernel::FS::VFS::vfs_read(&ch, 1, 1, stream->stream) == 1)
       return ch;
-    stream->eof = 1;
+    const long position = Kernel::FS::VFS::vfs_tell(stream->stream);
+    if (position >= 0 &&
+        static_cast<size_t>(position) >= Kernel::FS::VFS::vfs_size(stream->stream))
+      stream->eof = 1;
+    else {
+      stream->error = 1;
+      errno_val = 5;
+    }
     return EOF;
   }
   errno_val = 9;
@@ -651,6 +679,15 @@ bool scanset_contains(const bool set[256], int c, bool invert) {
     return false;
   return invert ? !set[static_cast<unsigned char>(c)]
                 : set[static_cast<unsigned char>(c)];
+}
+int scan_digit_value(int c) {
+  if (c >= '0' && c <= '9')
+    return c - '0';
+  if (c >= 'a' && c <= 'z')
+    return c - 'a' + 10;
+  if (c >= 'A' && c <= 'Z')
+    return c - 'A' + 10;
+  return -1;
 }
 int scan_format(ScanInput &input, const char *format, va_list args) {
   if (!format)
@@ -860,48 +897,51 @@ int scan_format(ScanInput &input, const char *format, va_list args) {
         sign_char = c;
         negative = c == '-';
         --width;
-        c = scan_get(input);
+        c = width > 0 ? scan_get(input) : EOF;
       }
       if (c == EOF) {
+        if (sign_char)
+          scan_unget(input, sign_char);
         input_failure = true;
         break;
       }
-      unsigned base =
-          (conversion == 'o')
-              ? 8u
-              : ((conversion == 'x' || conversion == 'X' || conversion == 'p')
-                     ? 16u
-                     : 10u);
+
       const bool auto_base = conversion == 'i';
-      if (auto_base)
-        base = 10;
-      if (c < '0' || c > '9') {
+      unsigned base = conversion == 'o' ? 8u
+                      : (conversion == 'x' || conversion == 'X' ||
+                         conversion == 'p') ? 16u : 10u;
+      const int first_digit = scan_digit_value(c);
+      if (first_digit < 0 || static_cast<unsigned>(first_digit) >= base) {
         scan_unget(input, c);
         if (sign_char)
           scan_unget(input, sign_char);
         break;
       }
-      unsigned long long value = static_cast<unsigned>(c - '0');
+
+      unsigned long long value = static_cast<unsigned>(first_digit);
       int digits = 1;
       --width;
       if (c == '0' && width > 0 && (auto_base || base == 16)) {
         const int prefix = scan_get(input);
         if (prefix == 'x' || prefix == 'X') {
-          const int first_hex = scan_get(input);
-          const bool valid_hex = (first_hex >= '0' && first_hex <= '9') ||
-                                 (first_hex >= 'a' && first_hex <= 'f') ||
-                                 (first_hex >= 'A' && first_hex <= 'F');
-          if (valid_hex) {
-            base = 16;
-            value = static_cast<unsigned>(
-                first_hex <= '9'
-                    ? first_hex - '0'
-                    : (first_hex <= 'F' ? (first_hex | 32) - 'a' + 10 : 0));
-            digits = 1;
-            width -= 2;
+          if (width > 1) {
+            const int first_hex = scan_get(input);
+            const int digit = scan_digit_value(first_hex);
+            if (digit >= 0 && digit < 16) {
+              base = 16;
+              value = static_cast<unsigned>(digit);
+              digits = 1;
+              width -= 2;
+            } else {
+              scan_unget(input, first_hex);
+              scan_unget(input, prefix);
+              if (auto_base)
+                base = 8;
+            }
           } else {
-            scan_unget(input, first_hex);
             scan_unget(input, prefix);
+            if (auto_base)
+              base = 8;
           }
         } else {
           if (auto_base)
@@ -911,41 +951,32 @@ int scan_format(ScanInput &input, const char *format, va_list args) {
       } else if (auto_base && c == '0') {
         base = 8;
       }
+
       while (width > 0) {
         const int digit_char = scan_get(input);
         if (digit_char == EOF) {
           input_failure = true;
           break;
         }
-        unsigned digit;
-        if (digit_char >= '0' && digit_char <= '9')
-          digit = static_cast<unsigned>(digit_char - '0');
-        else if (digit_char >= 'a' && digit_char <= 'f')
-          digit = static_cast<unsigned>(digit_char - 'a' + 10);
-        else if (digit_char >= 'A' && digit_char <= 'F')
-          digit = static_cast<unsigned>(digit_char - 'A' + 10);
-        else {
+        const int digit = scan_digit_value(digit_char);
+        if (digit < 0 || static_cast<unsigned>(digit) >= base) {
           scan_unget(input, digit_char);
           break;
         }
-        if (digit >= base) {
-          scan_unget(input, digit_char);
-          break;
-        }
-        value = value * base + digit;
+        value = value * base + static_cast<unsigned>(digit);
         ++digits;
         --width;
       }
       if (!digits) {
-        if (c == '+' || c == '-')
-          scan_unget(input, c);
+        if (sign_char)
+          scan_unget(input, sign_char);
         break;
       }
       if (!suppress) {
-        if (conversion == 'p')
+        if (conversion == 'p') {
           *va_arg(args, void **) = reinterpret_cast<void *>(
               static_cast<uintptr_t>(negative ? 0ull - value : value));
-        else if (conversion == 'd' || conversion == 'i') {
+        } else if (conversion == 'd' || conversion == 'i') {
           const long long signed_value =
               negative ? static_cast<long long>(0ull - value)
                        : static_cast<long long>(value);
@@ -958,24 +989,24 @@ int scan_format(ScanInput &input, const char *format, va_list args) {
           else if (length == LengthMod::H)
             *va_arg(args, short *) = static_cast<short>(signed_value);
           else if (length == LengthMod::HH)
-            *va_arg(args, signed char *) =
-                static_cast<signed char>(signed_value);
+            *va_arg(args, signed char *) = static_cast<signed char>(signed_value);
           else
             *va_arg(args, int *) = static_cast<int>(signed_value);
         } else {
+          const unsigned long long unsigned_value =
+              negative ? 0ull - value : value;
           if (length == LengthMod::LL || length == LengthMod::J)
-            *va_arg(args, unsigned long long *) = value;
+            *va_arg(args, unsigned long long *) = unsigned_value;
           else if (length == LengthMod::L)
-            *va_arg(args, unsigned long *) = static_cast<unsigned long>(value);
+            *va_arg(args, unsigned long *) = static_cast<unsigned long>(unsigned_value);
           else if (length == LengthMod::Z)
-            *va_arg(args, size_t *) = static_cast<size_t>(value);
+            *va_arg(args, size_t *) = static_cast<size_t>(unsigned_value);
           else if (length == LengthMod::H)
-            *va_arg(args, unsigned short *) =
-                static_cast<unsigned short>(value);
+            *va_arg(args, unsigned short *) = static_cast<unsigned short>(unsigned_value);
           else if (length == LengthMod::HH)
-            *va_arg(args, unsigned char *) = static_cast<unsigned char>(value);
+            *va_arg(args, unsigned char *) = static_cast<unsigned char>(unsigned_value);
           else
-            *va_arg(args, unsigned int *) = static_cast<unsigned int>(value);
+            *va_arg(args, unsigned int *) = static_cast<unsigned int>(unsigned_value);
         }
         ++assigned;
       }
@@ -1065,12 +1096,13 @@ int vfprintf(FILE *stream, const char *format, va_list args) {
   const int rendered =
       vsnprintf(buffer, static_cast<size_t>(length) + 1, format, render_args);
   va_end(render_args);
-  int result = rendered < 0 ? -1
-                            : stream_write(stream, buffer,
-                                           static_cast<size_t>(rendered));
+  size_t written = static_cast<size_t>(-1);
+  if (rendered >= 0)
+    written = stream_write(stream, buffer, static_cast<size_t>(rendered));
   if (buffer != local)
     free(buffer);
-  return result < 0 ? -1 : rendered;
+  return rendered < 0 || written != static_cast<size_t>(rendered) ? -1
+                                                                  : rendered;
 }
 int fprintf(FILE *stream, const char *format, ...) {
   va_list args;
@@ -1099,8 +1131,7 @@ int fputs(const char *text, FILE *stream) {
   if (!text)
     text = "(null)";
   const size_t length = strlen(text);
-  return stream_write(stream, text, length) == static_cast<int>(length) ? 0
-                                                                        : EOF;
+  return stream_write(stream, text, length) == length ? 0 : EOF;
 }
 int fputc(int character, FILE *stream) {
   const unsigned char ch = static_cast<unsigned char>(character);
@@ -1114,11 +1145,11 @@ int getchar(void) { return fgetc(standard_stream(0)); }
 int ungetc(int character, FILE *stream) {
   if (!belongs_to_current_process(stream) || character == EOF)
     return EOF;
-  if (is_stdin_stream(stream)) {
-    const uint64_t terminal_id = Kernel::Scheduler::process_terminal_thread_id();
-    if ((terminal_id && Terminal::push_input_char_to(terminal_id, character)) ||
-        (!terminal_id && Terminal::push_input_char(character)))
-      return static_cast<unsigned char>(character);
+  if (!is_stdin_stream(stream) &&
+      (!is_file_stream(stream) ||
+       !Kernel::FS::VFS::vfs_readable(stream->stream))) {
+    errno_val = 9;
+    return EOF;
   }
   if (stream->unget_count >= sizeof(stream->unget_buffer))
     return EOF;
@@ -1153,7 +1184,7 @@ char *fgets(char *buffer, int size, FILE *stream) {
 }
 
 FILE *fopen(const char *filename, const char *mode) {
-  if (!filename || !mode) {
+  if (!filename || !valid_stdio_mode(mode)) {
     errno_val = 22;
     return nullptr;
   }
@@ -1165,8 +1196,10 @@ FILE *fopen(const char *filename, const char *mode) {
     errno_val = 2;
     return nullptr;
   }
-  FILE *file = static_cast<FILE *>(Kernel::Memory::g_kheap.kmalloc_process(
-      sizeof(FILE), Kernel::Scheduler::current_process_id()));
+  const uint64_t process_id = Kernel::Scheduler::current_process_id();
+  FILE *file = static_cast<FILE *>(process_id
+      ? Kernel::Memory::g_kheap.kmalloc_process(sizeof(FILE), process_id)
+      : Kernel::Memory::g_kheap.kmalloc(sizeof(FILE)));
   if (!file) {
     Kernel::FS::VFS::vfs_close(handle);
     errno_val = 12;
@@ -1176,7 +1209,14 @@ FILE *fopen(const char *filename, const char *mode) {
   file->stream = handle;
   file->owner = context;
   context->lock.lock();
-  file->descriptor = context->next_descriptor++;
+  file->descriptor = allocate_descriptor(context);
+  if (file->descriptor < 0) {
+    context->lock.unlock();
+    Kernel::FS::VFS::vfs_close(handle);
+    free(file);
+    errno_val = 24;
+    return nullptr;
+  }
   file->next = context->open_files;
   context->open_files = file;
   context->lock.unlock();
@@ -1203,25 +1243,43 @@ int fclose(FILE *stream) {
   const int result = Kernel::FS::VFS::vfs_close(stream->stream);
   stream->stream = nullptr;
   free(stream);
-  return result == 0 ? 0 : EOF;
+  if (result != 0) {
+    errno_val = 5;
+    return EOF;
+  }
+  return 0;
 }
 size_t fread(void *buffer, size_t size, size_t count, FILE *stream) {
-  if (!belongs_to_current_process(stream) || (!buffer && size && count) ||
-      !size || !count)
+  if (!belongs_to_current_process(stream)) {
+    errno_val = 9;
     return 0;
+  }
+  if (!size || !count)
+    return 0;
+  if (!buffer) {
+    errno_val = 22;
+    stream->error = 1;
+    return 0;
+  }
   if (count > static_cast<size_t>(-1) / size) {
     stream->error = 1;
     errno_val = 75;
     return 0;
   }
+  if (is_file_stream(stream) &&
+      !Kernel::FS::VFS::vfs_readable(stream->stream)) {
+    errno_val = 9;
+    stream->error = 1;
+    return 0;
+  }
   const size_t total = size * count;
-  unsigned char *output = static_cast<unsigned char *>(buffer);
+  auto *output = static_cast<unsigned char *>(buffer);
   size_t bytes = 0;
   while (stream->unget_count && bytes < total)
     output[bytes++] = stream->unget_buffer[--stream->unget_count];
   if (is_stdin_stream(stream)) {
     while (bytes < total) {
-      const int ch = fgetc(stream);
+      const int ch = stream_get(stream);
       if (ch == EOF)
         break;
       output[bytes++] = static_cast<unsigned char>(ch);
@@ -1229,32 +1287,45 @@ size_t fread(void *buffer, size_t size, size_t count, FILE *stream) {
   } else if (is_file_stream(stream) && bytes < total) {
     bytes += Kernel::FS::VFS::vfs_read(output + bytes, 1, total - bytes,
                                        stream->stream);
-  } else if (bytes < total) {
-    stream->error = 1;
+    if (bytes < total) {
+      const long position = Kernel::FS::VFS::vfs_tell(stream->stream);
+      if (position >= 0 && static_cast<size_t>(position) >=
+                               Kernel::FS::VFS::vfs_size(stream->stream))
+        stream->eof = 1;
+      else {
+        stream->error = 1;
+        errno_val = 5;
+      }
+    }
+  } else if (!is_stdin_stream(stream) && !is_file_stream(stream)) {
     errno_val = 9;
+    stream->error = 1;
   }
-  if (bytes < total && is_file_stream(stream) &&
-      Kernel::FS::VFS::vfs_tell(stream->stream) >=
-          static_cast<long>(Kernel::FS::VFS::vfs_size(stream->stream)))
-    stream->eof = 1;
   return bytes / size;
 }
+
 size_t fwrite(const void *buffer, size_t size, size_t count, FILE *stream) {
-  if (!belongs_to_current_process(stream) || (!buffer && size && count)) {
+  if (!belongs_to_current_process(stream)) {
     errno_val = 9;
     return 0;
   }
   if (!size || !count)
     return 0;
+  if (!buffer) {
+    errno_val = 22;
+    stream->error = 1;
+    return 0;
+  }
   if (count > static_cast<size_t>(-1) / size) {
     stream->error = 1;
     errno_val = 75;
     return 0;
   }
   const size_t total = size * count;
-  const int written = stream_write(stream, buffer, total);
-  return written < 0 ? 0 : static_cast<size_t>(written) / size;
+  const size_t written = stream_write(stream, buffer, total);
+  return written == static_cast<size_t>(-1) ? 0 : written / size;
 }
+
 int fflush(FILE *stream) {
   if (!stream) {
     const uint64_t terminal_id = Kernel::Scheduler::process_terminal_thread_id();
@@ -1277,8 +1348,13 @@ int fflush(FILE *stream) {
       Terminal::flush();
     return 0;
   }
-  if (is_file_stream(stream))
-    return Kernel::FS::VFS::vfs_sync() ? 0 : EOF;
+  if (is_file_stream(stream)) {
+    if (Kernel::FS::VFS::vfs_sync())
+      return 0;
+    errno_val = 5;
+    stream->error = 1;
+    return EOF;
+  }
   errno_val = 9;
   return EOF;
 }
@@ -1288,13 +1364,25 @@ int fseek(FILE *stream, long offset, int whence) {
     errno_val = 9;
     return EOF;
   }
+  long adjusted = offset;
+  if (whence == SEEK_CUR && stream->unget_count) {
+    if (adjusted < LONG_MIN + static_cast<long>(stream->unget_count)) {
+      errno_val = 22;
+      return EOF;
+    }
+    adjusted -= static_cast<long>(stream->unget_count);
+  }
+  const int result = Kernel::FS::VFS::vfs_seek(stream->stream, adjusted, whence);
+  if (result != 0) {
+    errno_val = 22;
+    stream->error = 1;
+    return EOF;
+  }
   stream->unget_count = 0;
   stream->eof = 0;
-  const int result = Kernel::FS::VFS::vfs_seek(stream->stream, offset, whence);
-  if (result != 0)
-    stream->error = 1;
-  return result;
+  return 0;
 }
+
 long ftell(FILE *stream) {
   if (!belongs_to_current_process(stream) || !is_file_stream(stream)) {
     errno_val = 9;
@@ -1405,102 +1493,11 @@ void perror(const char *prefix) {
     fprintf(standard_stream(2), "error %d\n", errno_val);
 }
 
-long strtol(const char *nptr, char **endptr, int base) {
-  if (!nptr) {
-    errno_val = 22;
-    if (endptr)
-      *endptr = nullptr;
-    return 0;
-  }
-  const char *s = nptr;
-  while (is_space_char(*s))
-    ++s;
-  bool negative = false;
-  if (*s == '+' || *s == '-') {
-    negative = *s == '-';
-    ++s;
-  }
-  if (base == 0 || base == 16) {
-    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
-      base = 16;
-      s += 2;
-    }
-  }
-  if (base == 0)
-    base = (*s == '0') ? 8 : 10;
-  if (base < 2 || base > 36) {
-    errno_val = 22;
-    if (endptr)
-      *endptr = const_cast<char *>(nptr);
-    return 0;
-  }
-  unsigned long long value = 0;
-  bool any = false;
-  bool overflow = false;
-  const unsigned long long limit =
-      negative ? (static_cast<unsigned long long>(LONG_MAX) + 1ull)
-               : static_cast<unsigned long long>(LONG_MAX);
-  while (*s) {
-    unsigned digit;
-    if (*s >= '0' && *s <= '9')
-      digit = *s - '0';
-    else if (*s >= 'a' && *s <= 'z')
-      digit = *s - 'a' + 10;
-    else if (*s >= 'A' && *s <= 'Z')
-      digit = *s - 'A' + 10;
-    else
-      break;
-    if (digit >= static_cast<unsigned>(base))
-      break;
-    any = true;
-    if (value > (limit - digit) / static_cast<unsigned>(base))
-      overflow = true;
-    else if (!overflow)
-      value = value * static_cast<unsigned>(base) + digit;
-    ++s;
-  }
-  if (!any) {
-    if (endptr)
-      *endptr = const_cast<char *>(nptr);
-    return 0;
-  }
-  if (endptr)
-    *endptr = const_cast<char *>(s);
-  if (overflow) {
-    errno_val = 34;
-    return negative ? LONG_MIN : LONG_MAX;
-  }
-  if (negative)
-    return value == static_cast<unsigned long long>(LONG_MAX) + 1ull
-               ? LONG_MIN
-               : -static_cast<long>(value);
-  return static_cast<long>(value);
-}
-double strtod(const char *nptr, char **endptr) {
-  return static_cast<double>(strtol(nptr, endptr, 10));
-}
-int system(const char *command) {
-  (void)command;
-  errno_val = 38;
-  return -1;
-}
-int mkdir(const char *pathname, int mode) {
-  return Kernel::FS::VFS::vfs_mkdir(pathname, mode);
-}
-int remove(const char *pathname) {
-  return Kernel::FS::VFS::vfs_remove(pathname);
-}
-int rename(const char *oldpath, const char *newpath) {
-  return Kernel::FS::VFS::vfs_rename(oldpath, newpath);
-}
-long atol(const char *nptr) { return strtol(nptr, nullptr, 10); }
-int toupper(int c) { return (c >= 'a' && c <= 'z') ? c - ('a' - 'A') : c; }
-double fabs(double x) { return (x < 0.0) ? -x : x; }
 }
 
 extern "C" void kprintf(const char *format, ...) {
   va_list args;
   va_start(args, format);
-  (void)vfprintf(standard_stream(1), format, args);
+  (void)vfprintf(__os_stdout(), format, args);
   va_end(args);
 }

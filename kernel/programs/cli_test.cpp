@@ -23,9 +23,11 @@ void memory_lifetime_worker(void *opaque) {
 } // namespace
 
 int cli_args_test(int argc, char **argv, void *) {
-  printf("process: pid=%llu ppid=%llu\n",
-         static_cast<unsigned long long>(Kernel::Scheduler::current_process_id()),
-         static_cast<unsigned long long>(Kernel::Scheduler::current_parent_process_id()));
+  printf(
+      "process: pid=%llu ppid=%llu\n",
+      static_cast<unsigned long long>(Kernel::Scheduler::current_process_id()),
+      static_cast<unsigned long long>(
+          Kernel::Scheduler::current_parent_process_id()));
   printf("argc=%d\n", argc);
   for (int i = 0; i < argc; ++i)
     printf("argv[%d]=<%s>\n", i, argv[i]);
@@ -41,8 +43,8 @@ int cli_exitcode_test(int argc, char **argv, void *) {
 }
 
 int cli_stdio_test(int, char **, void *) {
-  printf("stdio: printf/vprintf formatting check: %s %d %#x %.2f\n",
-         "ready", 42, 0xBEEF, 3.14159);
+  printf("stdio: printf/vprintf formatting check: %s %d %#x %.2f\n", "ready",
+         42, 0xBEEF, 3.14159);
   char name[32]{};
   int value = 0;
   printf("Enter one word and an integer: ");
@@ -78,7 +80,8 @@ int cli_stdio_test(int, char **, void *) {
   char contents[96]{};
   char parsed_name[32]{};
   int parsed_value = 0;
-  const int parsed = fscanf(file, "name=%31s value=%d", parsed_name, &parsed_value);
+  const int parsed =
+      fscanf(file, "name=%31s value=%d", parsed_name, &parsed_value);
   if (fseek(file, 0, SEEK_SET) != 0) {
     fclose(file);
     remove("/stdio-test.tmp");
@@ -89,34 +92,89 @@ int cli_stdio_test(int, char **, void *) {
   const bool eof_seen = feof(file) != 0;
   const bool read_error = ferror(file) != 0;
   const int close_result = fclose(file);
-  printf("file: wrote=%ld bytes parsed=%d<%s,%d> read=%zu eof=%d error=%d close=%d\n",
-         end_position, parsed, parsed_name, parsed_value, read_count,
-         eof_seen, read_error, close_result);
+  printf("file: wrote=%ld bytes parsed=%d<%s,%d> read=%zu eof=%d error=%d "
+         "close=%d\n",
+         end_position, parsed, parsed_name, parsed_value, read_count, eof_seen,
+         read_error, close_result);
   printf("file contents: %s", contents);
   const int remove_result = remove("/stdio-test.tmp");
   printf("remove: %s\n", remove_result == 0 ? "OK" : "FAILED");
 
+  bool extended_file_ok = true;
+  unsigned char pattern[1536];
+  unsigned char span[700];
+  for (size_t i = 0; i < sizeof(pattern); ++i)
+    pattern[i] = static_cast<unsigned char>((i * 37u + 11u) % 251u);
+  FILE *extended = fopen("/stdio-span.tmp", "w+");
+  if (!extended) {
+    extended_file_ok = false;
+  } else {
+    extended_file_ok &=
+        fwrite(pattern, 1, sizeof(pattern), extended) == sizeof(pattern);
+    extended_file_ok &= fflush(extended) == 0;
+    extended_file_ok &= fseek(extended, 0, SEEK_SET) == 0;
+    unsigned char exact[1536];
+    extended_file_ok &=
+        fread(exact, 1, sizeof(exact), extended) == sizeof(exact);
+    extended_file_ok &= !feof(extended);
+    extended_file_ok &= fgetc(extended) == EOF && feof(extended);
+    extended_file_ok &= fseek(extended, 480, SEEK_SET) == 0;
+    extended_file_ok &= fread(span, 1, sizeof(span), extended) == sizeof(span);
+    extended_file_ok &= memcmp(span, pattern + 480, sizeof(span)) == 0;
+    extended_file_ok &= fseek(extended, 2048, SEEK_SET) == 0;
+    extended_file_ok &= fwrite("Z", 1, 1, extended) == 1;
+    extended_file_ok &= fflush(extended) == 0;
+    extended_file_ok &= fseek(extended, 1536, SEEK_SET) == 0;
+    unsigned char zero_gap[513];
+    extended_file_ok &=
+        fread(zero_gap, 1, sizeof(zero_gap), extended) == sizeof(zero_gap);
+    for (size_t i = 0; i < 512; ++i)
+      extended_file_ok &= zero_gap[i] == 0;
+    extended_file_ok &= zero_gap[512] == 'Z';
+    extended_file_ok &= fclose(extended) == 0;
+  }
+
+  FILE *append_file = fopen("/stdio-span.tmp", "a+");
+  if (!append_file) {
+    extended_file_ok = false;
+  } else {
+    extended_file_ok &= fgetc(append_file) == pattern[0];
+    extended_file_ok &= fwrite("tail", 1, 4, append_file) == 4;
+    extended_file_ok &= ftell(append_file) == 2053;
+    extended_file_ok &= fclose(append_file) == 0;
+  }
+
+  extended_file_ok &= rename("/stdio-span.tmp", "/stdio-span-renamed.tmp") == 0;
+  extended_file_ok &= fopen("/stdio-span.tmp", "r") == nullptr;
+  FILE *unlinked = fopen("/stdio-span-renamed.tmp", "r");
+  if (!unlinked) {
+    extended_file_ok = false;
+  } else {
+    extended_file_ok &= remove("/stdio-span-renamed.tmp") == 0;
+    extended_file_ok &= fgetc(unlinked) == pattern[0];
+    extended_file_ok &= fclose(unlinked) == 0;
+  }
+  printf("stdio file semantics: %s\n", extended_file_ok ? "PASS" : "FAIL");
+
   double parsed_float = 0.0;
   float parsed_float32 = 0.0f;
-  const int parsed_double_count =
-      sscanf("3.125e1", "%lf", &parsed_float);
-  const int parsed_float_count =
-      sscanf("-0.625", "%f", &parsed_float32);
-  printf("scanf float: double=%d<%.3f> float=%d<%.3f>\n",
-         parsed_double_count, parsed_float, parsed_float_count,
-         static_cast<double>(parsed_float32));
+  const int parsed_double_count = sscanf("3.125e1", "%lf", &parsed_float);
+  const int parsed_float_count = sscanf("-0.625", "%f", &parsed_float32);
+  printf("scanf float: double=%d<%.3f> float=%d<%.3f>\n", parsed_double_count,
+         parsed_float, parsed_float_count, static_cast<double>(parsed_float32));
 
   char formatted[64];
-  const int formatted_length =
-      snprintf(formatted, sizeof(formatted), "pid=%llu value=%d",
-               static_cast<unsigned long long>(Kernel::Scheduler::current_process_id()),
-               value);
+  const int formatted_length = snprintf(
+      formatted, sizeof(formatted), "pid=%llu value=%d",
+      static_cast<unsigned long long>(Kernel::Scheduler::current_process_id()),
+      value);
   printf("snprintf: length=%d text=<%s>\n", formatted_length, formatted);
-  return parsed != 2 || strcmp(parsed_name, name) != 0 || parsed_value != value ||
-                 parsed_double_count != 1 || parsed_float_count != 1 ||
-                 parsed_float < 31.249 || parsed_float > 31.251 ||
-                 parsed_float32 < -0.626f || parsed_float32 > -0.624f ||
-                 read_error || close_result != 0 || remove_result != 0
+  return parsed != 2 || strcmp(parsed_name, name) != 0 ||
+                 parsed_value != value || parsed_double_count != 1 ||
+                 parsed_float_count != 1 || parsed_float < 31.249 ||
+                 parsed_float > 31.251 || parsed_float32 < -0.626f ||
+                 parsed_float32 > -0.624f || read_error || close_result != 0 ||
+                 remove_result != 0 || !extended_file_ok
              ? 7
              : 0;
 }
@@ -136,8 +194,8 @@ int cli_memory_lifetime_test(int, char **, void *) {
   memset(thread_memory, 0x22, 64);
 
   MemoryLifetimeProbe probe{};
-  const int worker_id = Kernel::Scheduler::thread_create(
-      memory_lifetime_worker, &probe);
+  const int worker_id =
+      Kernel::Scheduler::thread_create(memory_lifetime_worker, &probe);
   if (worker_id <= 0) {
     free(process_memory);
     free(thread_memory);
@@ -145,8 +203,8 @@ int cli_memory_lifetime_test(int, char **, void *) {
     return 2;
   }
   probe.tid = static_cast<uint64_t>(worker_id);
-  for (unsigned spin = 0; spin < 1000000 &&
-                          !__atomic_load_n(&probe.ready, __ATOMIC_ACQUIRE);
+  for (unsigned spin = 0;
+       spin < 1000000 && !__atomic_load_n(&probe.ready, __ATOMIC_ACQUIRE);
        ++spin)
     Kernel::Scheduler::thread_yield();
   const uint32_t ready = __atomic_load_n(&probe.ready, __ATOMIC_ACQUIRE);
@@ -157,9 +215,9 @@ int cli_memory_lifetime_test(int, char **, void *) {
   const size_t thread_live =
       Kernel::Memory::g_kheap.get_thread_allocated_size(tid);
   __atomic_store_n(&probe.release, 1u, __ATOMIC_RELEASE);
-  for (unsigned spin = 0; spin < 1000000 &&
-                          Kernel::Memory::g_kheap.get_thread_allocated_size(
-                              probe.tid) != 0;
+  for (unsigned spin = 0;
+       spin < 1000000 &&
+       Kernel::Memory::g_kheap.get_thread_allocated_size(probe.tid) != 0;
        ++spin)
     Kernel::Scheduler::thread_yield();
   const size_t worker_after_exit =
@@ -171,7 +229,8 @@ int cli_memory_lifetime_test(int, char **, void *) {
          static_cast<unsigned long long>(pid),
          static_cast<unsigned long long>(tid),
          static_cast<unsigned long long>(probe.tid), ready);
-  printf("memlife: process-owned=%zu current-thread-owned=%zu worker-owned=%zu after-exit=%zu\n",
+  printf("memlife: process-owned=%zu current-thread-owned=%zu worker-owned=%zu "
+         "after-exit=%zu\n",
          process_live, thread_live, worker_live, worker_after_exit);
   const bool ok = ready == 1 && process_live > 0 && thread_live > 0 &&
                   worker_live > 0 && worker_after_exit == 0;

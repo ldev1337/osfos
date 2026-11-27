@@ -50,6 +50,8 @@ public:
   static long vfs_tell(void *stream);
   static int vfs_seek(void *stream, long offset, int whence);
   static size_t vfs_size(void *stream);
+  static bool vfs_readable(void *stream);
+  static bool vfs_writable(void *stream);
   static int vfs_mkdir(const char *pathname, int mode);
   static int vfs_remove(const char *pathname);
   static int vfs_rename(const char *oldpath, const char *newpath);

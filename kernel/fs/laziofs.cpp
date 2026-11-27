@@ -151,6 +151,12 @@ inline bool str_equal_n(const char *a, const char *b, size_t length) {
   }
   return b[length] == '\0';
 }
+bool path_has_prefix(const char *path, const char *prefix, size_t length) {
+  for (size_t i = 0; i < length; ++i)
+    if (path[i] != prefix[i] || path[i] == '\0')
+      return false;
+  return path[length] == '/';
+}
 inline size_t str_length(const char *s) {
   size_t n = 0;
   while (s[n])
@@ -498,7 +504,9 @@ int lookup_inode_in_dir(uint32_t dir_inode_idx, const char *name) {
         if (de->rec_len < 8 || offset + de->rec_len > VFS_SECTOR_SIZE ||
             de->name_len >= VFS_MAX_PATH || de->name_len > de->rec_len - 8)
           break;
-        if (de->inode_index != 0 && str_equal_n(de->name, name, de->name_len)) {
+        if (de->inode_index != 0 && de->inode_index < VFS_MAX_INODES &&
+            g_inodes[de->inode_index].flags != INODE_FREE &&
+            str_equal_n(de->name, name, de->name_len)) {
           return static_cast<int>(de->inode_index);
         }
         offset += de->rec_len;
@@ -573,6 +581,7 @@ bool build_inode_path(uint32_t inode_index, char out_path[VFS_MAX_PATH]) {
                 reinterpret_cast<DiskDirEntry *>(sector + offset);
             if (entry->rec_len < 8 ||
                 offset + entry->rec_len > VFS_SECTOR_SIZE ||
+                entry->name_len >= VFS_MAX_PATH ||
                 entry->name_len > entry->rec_len - 8)
               break;
             if (entry->inode_index == current_inode && entry->name_len > 0) {
@@ -792,23 +801,35 @@ FileStream *validate_stream(void *handle) {
   return nullptr;
 }
 
-bool parse_mode(const char *mode, bool &r, bool &w, bool &a, bool &t) {
-  r = w = a = t = false;
+bool parse_mode(const char *mode, bool &r, bool &w, bool &a, bool &t,
+                bool &exclusive) {
+  r = w = a = t = exclusive = false;
   if (!mode || !mode[0])
     return false;
-  if (mode[0] == 'r')
-    r = true;
-  else if (mode[0] == 'w') {
-    w = true;
-    t = true;
-  } else if (mode[0] == 'a') {
-    w = true;
-    a = true;
-  } else
-    return false;
+  switch (mode[0]) {
+  case 'r': r = true; break;
+  case 'w': w = t = true; break;
+  case 'a': w = a = true; break;
+  default: return false;
+  }
+  bool plus_seen = false, binary_seen = false, exclusive_seen = false;
   for (size_t i = 1; mode[i]; ++i) {
-    if (mode[i] == '+')
+    switch (mode[i]) {
+    case '+':
+      if (plus_seen) return false;
+      plus_seen = true;
       r = w = true;
+      break;
+    case 'b':
+      if (binary_seen) return false;
+      binary_seen = true;
+      break;
+    case 'x':
+      if (exclusive_seen || mode[0] != 'w') return false;
+      exclusive_seen = exclusive = true;
+      break;
+    default: return false;
+    }
   }
   return true;
 }
@@ -953,46 +974,48 @@ bool VFS::find_file(const char *filename, VFSFile *out_file) {
 
 static int read_file_internal(const VFSFile *file, void *buffer,
                               uint32_t length, uint32_t offset) {
-  if (!g_mounted || !file || !file->exists || file->is_directory)
-    return 0;
-  if (!buffer || file->entry_index >= VFS_MAX_INODES)
+  if (!g_mounted || !file || !file->exists || file->is_directory ||
+      file->entry_index >= VFS_MAX_INODES)
+    return -1;
+  if (!buffer || !length)
     return 0;
   Inode &inode = g_inodes[file->entry_index];
+  if (inode.flags != INODE_FILE)
+    return -1;
   if (offset >= inode.size)
     return 0;
-  if (length > inode.size - offset)
-    length = inode.size - offset;
-
-  uint32_t done = 0;
+  const uint32_t wanted =
+      length < inode.size - offset ? length : inode.size - offset;
+  uint32_t logical_base = 0;
+  uint32_t copied = 0;
   uint8_t *dst = static_cast<uint8_t *>(buffer);
 
-  for (uint32_t e = 0; e < inode.extents_count && done < length; ++e) {
-    uint32_t ext_bytes = inode.extents[e].count * VFS_SECTOR_SIZE;
-    // Skip extents before offset
-    if (offset >= done + ext_bytes) {
-      done += ext_bytes;
+  for (uint32_t e = 0; e < inode.extents_count && copied < wanted; ++e) {
+    const uint32_t extent_bytes = inode.extents[e].count * VFS_SECTOR_SIZE;
+    if (offset >= logical_base + extent_bytes) {
+      logical_base += extent_bytes;
       continue;
     }
-    uint32_t ext_offset = (offset > done) ? (offset - done) : 0;
-    uint32_t block_idx =
-        inode.extents[e].start_block + (ext_offset / VFS_SECTOR_SIZE);
-    uint32_t byte_in_sec = ext_offset % VFS_SECTOR_SIZE;
-
-    while (block_idx < inode.extents[e].start_block + inode.extents[e].count &&
-           done < length) {
-      uint8_t *sptr = cached_read_sector_ptr(block_idx);
-      if (!sptr)
-        break;
-      uint32_t chunk = VFS_SECTOR_SIZE - byte_in_sec;
-      if (chunk > length - done)
-        chunk = length - done;
-      bytes_copy(dst + done, sptr + byte_in_sec, chunk);
-      done += chunk;
-      byte_in_sec = 0;
-      block_idx++;
+    uint32_t within_extent = offset > logical_base ? offset - logical_base : 0;
+    while (within_extent < extent_bytes && copied < wanted) {
+      const uint32_t block = inode.extents[e].start_block +
+                             within_extent / VFS_SECTOR_SIZE;
+      const uint32_t byte_in_sector = within_extent % VFS_SECTOR_SIZE;
+      uint8_t *sector = cached_read_sector_ptr(block);
+      if (!sector)
+        return copied ? static_cast<int>(copied) : -1;
+      uint32_t chunk = VFS_SECTOR_SIZE - byte_in_sector;
+      if (chunk > extent_bytes - within_extent)
+        chunk = extent_bytes - within_extent;
+      if (chunk > wanted - copied)
+        chunk = wanted - copied;
+      bytes_copy(dst + copied, sector + byte_in_sector, chunk);
+      copied += chunk;
+      within_extent += chunk;
     }
+    logical_base += extent_bytes;
   }
-  return static_cast<int>(done);
+  return static_cast<int>(copied);
 }
 
 int VFS::read_file(const VFSFile *file, void *buffer, uint32_t length,
@@ -1070,12 +1093,30 @@ bool add_inode_to_dir(uint32_t parent_ino, uint32_t new_ino,
         DiskDirEntry *de =
             reinterpret_cast<DiskDirEntry *>(sector_buf + offset);
         if (de->rec_len == 0) {
-          if (offset + needed_len <= VFS_SECTOR_SIZE) {
+          if (offset + needed_len > VFS_SECTOR_SIZE)
+            break;
+          de->inode_index = new_ino;
+          de->rec_len = static_cast<uint16_t>(VFS_SECTOR_SIZE - offset);
+          de->name_len = static_cast<uint8_t>(name_len);
+          de->file_type = file_type;
+          bytes_copy(de->name, filename, name_len);
+          de->name[name_len] = '\0';
+          if (!cached_write_sector(rel_block, sector_buf))
+            return false;
+          dir.size += needed_len;
+          g_inode_dirty[parent_ino] = true;
+          return true;
+        }
+        if (de->rec_len < 8 || offset + de->rec_len > VFS_SECTOR_SIZE ||
+            de->name_len >= VFS_MAX_PATH || de->name_len > de->rec_len - 8)
+          return false;
+        if (de->inode_index == 0) {
+          if (de->rec_len >= needed_len) {
             de->inode_index = new_ino;
-            de->rec_len = static_cast<uint16_t>(VFS_SECTOR_SIZE - offset);
             de->name_len = static_cast<uint8_t>(name_len);
             de->file_type = file_type;
-            bytes_copy(de->name, filename, name_len + 1);
+            bytes_zero(de->name, name_len + 1);
+            bytes_copy(de->name, filename, name_len);
             de->name[name_len] = '\0';
             if (!cached_write_sector(rel_block, sector_buf))
               return false;
@@ -1083,11 +1124,9 @@ bool add_inode_to_dir(uint32_t parent_ino, uint32_t new_ino,
             g_inode_dirty[parent_ino] = true;
             return true;
           }
-          break;
+          offset += de->rec_len;
+          continue;
         }
-        if (de->rec_len < 8 || offset + de->rec_len > VFS_SECTOR_SIZE ||
-            de->name_len >= VFS_MAX_PATH || de->name_len > de->rec_len - 8)
-          return false;
         uint16_t actual_rec_len = 8 + de->name_len;
         actual_rec_len = (actual_rec_len + 3) & ~3;
         if (de->rec_len > actual_rec_len) {
@@ -1153,71 +1192,233 @@ bool add_inode_to_dir(uint32_t parent_ino, uint32_t new_ino,
   return true;
 }
 
+bool remove_inode_from_dir(uint32_t parent_ino, uint32_t child_ino,
+                           const char *expected_name = nullptr) {
+  if (parent_ino >= VFS_MAX_INODES || g_inodes[parent_ino].flags != INODE_DIR)
+    return false;
+  Inode &dir = g_inodes[parent_ino];
+  uint8_t sector[VFS_SECTOR_SIZE];
+  for (uint32_t e = 0; e < dir.extents_count; ++e) {
+    for (uint32_t b = 0; b < dir.extents[e].count; ++b) {
+      const uint32_t block = dir.extents[e].start_block + b;
+      if (!cached_read_sector(block, sector))
+        return false;
+      uint32_t offset = 0;
+      while (offset + 8 <= VFS_SECTOR_SIZE) {
+        auto *entry = reinterpret_cast<DiskDirEntry *>(sector + offset);
+        if (entry->rec_len < 8 || offset + entry->rec_len > VFS_SECTOR_SIZE ||
+            entry->name_len >= VFS_MAX_PATH ||
+            entry->name_len > entry->rec_len - 8)
+          return false;
+        if (entry->inode_index == child_ino &&
+            (!expected_name || str_equal_n(entry->name, expected_name,
+                                            entry->name_len))) {
+          const uint32_t old_name_len = entry->name_len;
+          uint32_t used = 8u + old_name_len;
+          used = (used + 3u) & ~3u;
+          entry->inode_index = 0;
+          entry->name_len = 0;
+          entry->file_type = 0;
+          // Directory entries are variable-length. Never clear the fixed-size
+          // name array here: it may overlap the following entry in this sector.
+          bytes_zero(entry->name, old_name_len + 1);
+          dir.size = dir.size > used ? dir.size - used : 0;
+          if (!cached_write_sector(block, sector))
+            return false;
+          g_inode_dirty[parent_ino] = true;
+          return true;
+        }
+        offset += entry->rec_len;
+      }
+    }
+  }
+  return false;
+}
+
+bool directory_is_empty(uint32_t inode_index) {
+  if (inode_index >= VFS_MAX_INODES || g_inodes[inode_index].flags != INODE_DIR)
+    return false;
+  Inode &dir = g_inodes[inode_index];
+  uint8_t sector[VFS_SECTOR_SIZE];
+  for (uint32_t e = 0; e < dir.extents_count; ++e) {
+    for (uint32_t b = 0; b < dir.extents[e].count; ++b) {
+      if (!cached_read_sector(dir.extents[e].start_block + b, sector))
+        return false;
+      uint32_t offset = 0;
+      while (offset + 8 <= VFS_SECTOR_SIZE) {
+        auto *entry = reinterpret_cast<DiskDirEntry *>(sector + offset);
+        if (entry->rec_len < 8 || offset + entry->rec_len > VFS_SECTOR_SIZE ||
+            entry->name_len >= VFS_MAX_PATH ||
+            entry->name_len > entry->rec_len - 8)
+          return false;
+        if (entry->inode_index != 0)
+          return false;
+        offset += entry->rec_len;
+      }
+    }
+  }
+  return true;
+}
+
+bool inode_has_open_stream(uint32_t inode_index) {
+  for (const auto &stream : g_streams)
+    if (stream.used && stream.inode_index == inode_index)
+      return true;
+  return false;
+}
+
+void release_inode(uint32_t inode_index) {
+  if (inode_index == 0 || inode_index >= VFS_MAX_INODES)
+    return;
+  Inode &inode = g_inodes[inode_index];
+  for (uint32_t e = 0; e < inode.extents_count; ++e)
+    for (uint32_t b = 0; b < inode.extents[e].count; ++b)
+      free_block_bitmap(inode.extents[e].start_block + b);
+  bytes_zero(&inode, sizeof(inode));
+  g_inode_dirty[inode_index] = true;
+  free_inode_bitmap(inode_index);
+}
+
+bool ensure_file_block(Inode &inode, uint32_t logical_sector,
+                       uint32_t &physical_sector) {
+  uint32_t sectors = 0;
+  for (uint32_t e = 0; e < inode.extents_count; ++e) {
+    const uint32_t count = inode.extents[e].count;
+    if (logical_sector < sectors + count) {
+      physical_sector = inode.extents[e].start_block + logical_sector - sectors;
+      return true;
+    }
+    sectors += count;
+  }
+  while (sectors <= logical_sector) {
+    const int allocated = allocate_block();
+    if (allocated < 0)
+      return false;
+    uint8_t zero_sector[VFS_SECTOR_SIZE]{};
+    if (!cached_write_full_sector(static_cast<uint32_t>(allocated), zero_sector)) {
+      free_block_bitmap(static_cast<uint32_t>(allocated));
+      return false;
+    }
+    const bool extend_last = inode.extents_count > 0 &&
+        inode.extents[inode.extents_count - 1].start_block +
+            inode.extents[inode.extents_count - 1].count ==
+        static_cast<uint32_t>(allocated);
+    if (extend_last) {
+      ++inode.extents[inode.extents_count - 1].count;
+    } else {
+      if (inode.extents_count >= MAX_EXTENTS_PER_INODE) {
+        free_block_bitmap(static_cast<uint32_t>(allocated));
+        return false;
+      }
+      inode.extents[inode.extents_count].start_block =
+          static_cast<uint32_t>(allocated);
+      inode.extents[inode.extents_count].count = 1;
+      ++inode.extents_count;
+    }
+    ++sectors;
+    g_inode_dirty[static_cast<uint32_t>(&inode - g_inodes)] = true;
+  }
+  for (uint32_t e = 0, base = 0; e < inode.extents_count; base += inode.extents[e].count, ++e) {
+    if (logical_sector < base + inode.extents[e].count) {
+      physical_sector = inode.extents[e].start_block + logical_sector - base;
+      return true;
+    }
+  }
+  return false;
+}
+
+bool zero_file_range(Inode &inode, uint32_t begin, uint32_t end) {
+  uint32_t position = begin;
+  while (position < end) {
+    uint32_t physical = 0;
+    if (!ensure_file_block(inode, position / VFS_SECTOR_SIZE, physical))
+      return false;
+    uint8_t *sector = cached_read_sector_ptr(physical);
+    if (!sector)
+      return false;
+    const uint32_t within = position % VFS_SECTOR_SIZE;
+    uint32_t chunk = VFS_SECTOR_SIZE - within;
+    if (chunk > end - position)
+      chunk = end - position;
+    bytes_zero(sector + within, chunk);
+    cached_mark_dirty(physical);
+    position += chunk;
+  }
+  return true;
+}
+
 void *VFS::vfs_open(const char *path, const char *mode) {
   VfsLockGuard guard;
   if (!g_mounted)
     return nullptr;
-  bool r, w, a, t;
-  if (!parse_mode(mode, r, w, a, t))
+  bool readable, writable, append, truncate, exclusive;
+  if (!parse_mode(mode, readable, writable, append, truncate, exclusive))
     return nullptr;
   char normalized[VFS_MAX_PATH];
   if (!normalize_path(path, normalized) || str_equal(normalized, "/"))
     return nullptr;
 
-  int ino = find_inode_by_path(normalized);
-  if (ino >= 0 && g_inodes[ino].flags != INODE_FILE)
-    return nullptr;
-  if (ino < 0) {
-    if (!w)
-      return nullptr;
-    char parent_path[VFS_MAX_PATH];
-    char filename[VFS_MAX_PATH];
-    if (!split_path(normalized, parent_path, filename))
-      return nullptr;
-    size_t filename_len = str_length(filename);
-    if (filename_len == 0 || filename_len > UINT8_MAX ||
-        filename_len + 8 > VFS_SECTOR_SIZE)
-      return nullptr;
-    int parent_ino = find_inode_by_path(parent_path);
-    if (parent_ino < 0)
-      return nullptr;
-    int new_ino = allocate_inode();
-    if (new_ino < 0)
-      return nullptr;
-    bytes_zero(&g_inodes[new_ino], sizeof(Inode));
-    g_inodes[new_ino].flags = INODE_FILE;
-    g_inodes[new_ino].links_count = 1;
-    g_inode_dirty[new_ino] = true;
-    if (!add_inode_to_dir(static_cast<uint32_t>(parent_ino),
-                          static_cast<uint32_t>(new_ino), filename,
-                          INODE_FILE)) {
-      free_inode_bitmap(static_cast<uint32_t>(new_ino));
-      bytes_zero(&g_inodes[new_ino], sizeof(Inode));
-      g_inode_dirty[new_ino] = true;
-      return nullptr;
-    }
-    ino = new_ino;
-  }
-
   FileStream *stream = acquire_stream();
   if (!stream)
     return nullptr;
-  Inode &inode = g_inodes[ino];
-  if (t) {
-    for (uint32_t e = 0; e < inode.extents_count; ++e) {
+  auto fail = [&]() -> void * {
+    stream->used = false;
+    return nullptr;
+  };
+
+  int inode_index = find_inode_by_path(normalized);
+  if (inode_index >= 0 && exclusive)
+    return fail();
+  if (inode_index >= 0 && g_inodes[inode_index].flags != INODE_FILE)
+    return fail();
+  if (inode_index < 0) {
+    if (!writable)
+      return fail();
+    char parent_path[VFS_MAX_PATH];
+    char filename[VFS_MAX_PATH];
+    if (!split_path(normalized, parent_path, filename))
+      return fail();
+    const size_t filename_len = str_length(filename);
+    if (!filename_len || filename_len > UINT8_MAX ||
+        filename_len + 8 > VFS_SECTOR_SIZE)
+      return fail();
+    const int parent_inode = find_inode_by_path(parent_path);
+    if (parent_inode < 0 || g_inodes[parent_inode].flags != INODE_DIR)
+      return fail();
+    const int new_inode = allocate_inode();
+    if (new_inode < 0)
+      return fail();
+    bytes_zero(&g_inodes[new_inode], sizeof(Inode));
+    g_inodes[new_inode].flags = INODE_FILE;
+    g_inodes[new_inode].links_count = 1;
+    g_inode_dirty[new_inode] = true;
+    if (!add_inode_to_dir(static_cast<uint32_t>(parent_inode),
+                          static_cast<uint32_t>(new_inode), filename,
+                          INODE_FILE)) {
+      bytes_zero(&g_inodes[new_inode], sizeof(Inode));
+      g_inode_dirty[new_inode] = true;
+      free_inode_bitmap(static_cast<uint32_t>(new_inode));
+      return fail();
+    }
+    inode_index = new_inode;
+  }
+
+  Inode &inode = g_inodes[inode_index];
+  if (truncate) {
+    for (uint32_t e = 0; e < inode.extents_count; ++e)
       for (uint32_t b = 0; b < inode.extents[e].count; ++b)
         free_block_bitmap(inode.extents[e].start_block + b);
-    }
     bytes_zero(inode.extents, sizeof(inode.extents));
     inode.extents_count = 0;
     inode.size = 0;
-    g_inode_dirty[ino] = true;
+    g_inode_dirty[inode_index] = true;
   }
-  stream->inode_index = static_cast<uint32_t>(ino);
-  stream->readable = r;
-  stream->writable = w;
-  stream->append = a;
-  stream->offset = a ? inode.size : 0;
+  stream->inode_index = static_cast<uint32_t>(inode_index);
+  stream->readable = readable;
+  stream->writable = writable;
+  stream->append = append;
+  // a+ reads from BOF; every write operation still targets the current EOF.
+  stream->offset = (append && !readable) ? inode.size : 0;
   return stream;
 }
 
@@ -1230,13 +1431,11 @@ size_t VFS::vfs_read(void *buffer, size_t size, size_t count, void *stream) {
     return 0;
   if (count > UINT32_MAX / size)
     return 0;
-  uint32_t bytes = static_cast<uint32_t>(size * count);
-  // Read implementation via read_file helper
-  VFSFile vf;
-  vf.exists = true;
-  vf.is_directory = false;
-  vf.entry_index = s->inode_index;
-  int got = read_file_internal(&vf, buffer, bytes, s->offset);
+  const uint32_t bytes = static_cast<uint32_t>(size * count);
+  VFSFile file{};
+  file.exists = true;
+  file.entry_index = s->inode_index;
+  const int got = read_file_internal(&file, buffer, bytes, s->offset);
   if (got <= 0)
     return 0;
   s->offset += static_cast<uint32_t>(got);
@@ -1251,75 +1450,47 @@ size_t VFS::vfs_write(const void *buffer, size_t size, size_t count,
     return 0;
   if (count > UINT32_MAX / size)
     return 0;
-  uint32_t bytes = static_cast<uint32_t>(size * count);
+  const uint32_t bytes = static_cast<uint32_t>(size * count);
+  Inode &inode = g_inodes[s->inode_index];
+  if (inode.flags != INODE_FILE)
+    return 0;
+  if (s->append)
+    s->offset = inode.size;
   if (bytes > UINT32_MAX - s->offset)
     return 0;
-  Inode &inode = g_inodes[s->inode_index];
-
-  uint32_t written = 0;
-  const uint8_t *src = static_cast<const uint8_t *>(buffer);
-
-  while (written < bytes) {
-    uint32_t current_offset = s->offset;
-    uint32_t sector_idx = current_offset / VFS_SECTOR_SIZE;
-    uint32_t byte_in_sec = current_offset % VFS_SECTOR_SIZE;
-    uint32_t chunk = VFS_SECTOR_SIZE - byte_in_sec;
-    if (chunk > bytes - written)
-      chunk = bytes - written;
-
-    uint32_t target_block = 0;
-    bool block_found = false;
-    uint32_t sectors_covered = 0;
-
-    for (uint32_t e = 0; e < inode.extents_count; ++e) {
-      if (sector_idx < sectors_covered + inode.extents[e].count) {
-        target_block =
-            inode.extents[e].start_block + (sector_idx - sectors_covered);
-        block_found = true;
-        break;
-      }
-      sectors_covered += inode.extents[e].count;
-    }
-
-    if (!block_found) {
-      int new_blk = allocate_block();
-      if (new_blk < 0)
-        break; // Disk full
-
-      if (inode.extents_count > 0 &&
-          inode.extents[inode.extents_count - 1].start_block +
-                  inode.extents[inode.extents_count - 1].count ==
-              static_cast<uint32_t>(new_blk)) {
-        inode.extents[inode.extents_count - 1].count++;
-      } else if (inode.extents_count < MAX_EXTENTS_PER_INODE) {
-        inode.extents[inode.extents_count].start_block =
-            static_cast<uint32_t>(new_blk);
-        inode.extents[inode.extents_count].count = 1;
-        inode.extents_count++;
-      } else {
-        free_block_bitmap(new_blk);
-        break; // Max extents reached
-      }
-      target_block = static_cast<uint32_t>(new_blk);
-    }
-
-    if (byte_in_sec == 0 && chunk == VFS_SECTOR_SIZE) {
-      if (!cached_write_full_sector(target_block, src + written))
-        break;
-    } else {
-      uint8_t *sptr = cached_read_sector_ptr(target_block);
-      if (!sptr)
-        break;
-      bytes_copy(sptr + byte_in_sec, src + written, chunk);
-      cached_mark_dirty(target_block);
-    }
-
-    written += chunk;
-    s->offset += chunk;
+  if (s->offset > inode.size) {
+    if (!zero_file_range(inode, inode.size, s->offset))
+      return 0;
+    inode.size = s->offset;
+    g_inode_dirty[s->inode_index] = true;
   }
 
-  if (s->offset > inode.size)
-    inode.size = s->offset;
+  uint32_t written = 0;
+  const auto *source = static_cast<const uint8_t *>(buffer);
+  while (written < bytes) {
+    uint32_t physical = 0;
+    const uint32_t sector_index = s->offset / VFS_SECTOR_SIZE;
+    const uint32_t byte_in_sector = s->offset % VFS_SECTOR_SIZE;
+    if (!ensure_file_block(inode, sector_index, physical))
+      break;
+    uint32_t chunk = VFS_SECTOR_SIZE - byte_in_sector;
+    if (chunk > bytes - written)
+      chunk = bytes - written;
+    if (byte_in_sector == 0 && chunk == VFS_SECTOR_SIZE) {
+      if (!cached_write_full_sector(physical, source + written))
+        break;
+    } else {
+      uint8_t *sector = cached_read_sector_ptr(physical);
+      if (!sector)
+        break;
+      bytes_copy(sector + byte_in_sector, source + written, chunk);
+      cached_mark_dirty(physical);
+    }
+    written += chunk;
+    s->offset += chunk;
+    if (s->offset > inode.size)
+      inode.size = s->offset;
+  }
   g_inode_dirty[s->inode_index] = true;
   return written / size;
 }
@@ -1329,9 +1500,16 @@ int VFS::vfs_close(void *stream) {
   FileStream *s = validate_stream(stream);
   if (!s)
     return -1;
-  bool synced = sync_internal();
+  const uint32_t inode_index = s->inode_index;
   s->used = false;
-  return synced ? 0 : -1;
+  bool ok = sync_internal();
+  if (inode_index < VFS_MAX_INODES && g_inodes[inode_index].flags == INODE_FILE &&
+      g_inodes[inode_index].links_count == 0 &&
+      !inode_has_open_stream(inode_index))
+    release_inode(inode_index);
+  if (ok)
+    ok = sync_internal();
+  return ok ? 0 : -1;
 }
 
 long VFS::vfs_tell(void *stream) {
@@ -1343,12 +1521,16 @@ long VFS::vfs_tell(void *stream) {
 int VFS::vfs_seek(void *stream, long offset, int whence) {
   VfsLockGuard guard;
   FileStream *s = validate_stream(stream);
-  if (!s)
+  if (!s || s->inode_index >= VFS_MAX_INODES)
     return -1;
-  int64_t base =
-      (whence == 0) ? 0
-                    : (whence == 1 ? s->offset : g_inodes[s->inode_index].size);
-  int64_t target = base + offset;
+  int64_t base = 0;
+  switch (whence) {
+  case 0: base = 0; break;
+  case 1: base = s->offset; break;
+  case 2: base = g_inodes[s->inode_index].size; break;
+  default: return -1;
+  }
+  const int64_t target = base + static_cast<int64_t>(offset);
   if (target < 0 || target > static_cast<int64_t>(UINT32_MAX))
     return -1;
   s->offset = static_cast<uint32_t>(target);
@@ -1358,7 +1540,20 @@ int VFS::vfs_seek(void *stream, long offset, int whence) {
 size_t VFS::vfs_size(void *stream) {
   VfsLockGuard guard;
   FileStream *s = validate_stream(stream);
-  return s ? g_inodes[s->inode_index].size : 0;
+  return s && s->inode_index < VFS_MAX_INODES
+             ? g_inodes[s->inode_index].size : 0;
+}
+
+bool VFS::vfs_readable(void *stream) {
+  VfsLockGuard guard;
+  FileStream *s = validate_stream(stream);
+  return s && s->readable;
+}
+
+bool VFS::vfs_writable(void *stream) {
+  VfsLockGuard guard;
+  FileStream *s = validate_stream(stream);
+  return s && s->writable;
 }
 
 int VFS::vfs_mkdir(const char *pathname, int mode) {
@@ -1406,21 +1601,124 @@ int VFS::vfs_remove(const char *pathname) {
   char normalized[VFS_MAX_PATH];
   if (!normalize_path(pathname, normalized) || str_equal(normalized, "/"))
     return -1;
-  int ino = find_inode_by_path(normalized);
-  if (ino < 0)
+  const int ino = find_inode_by_path(normalized);
+  if (ino <= 0 || ino >= static_cast<int>(VFS_MAX_INODES))
     return -1;
-
-  free_inode_bitmap(static_cast<uint32_t>(ino));
-  g_inodes[ino].flags = INODE_FREE;
+  Inode &inode = g_inodes[ino];
+  if (inode.flags == INODE_DIR && !directory_is_empty(static_cast<uint32_t>(ino)))
+    return -1;
+  char parent_path[VFS_MAX_PATH], name[VFS_MAX_PATH];
+  if (!split_path(normalized, parent_path, name))
+    return -1;
+  const int parent = find_inode_by_path(parent_path);
+  if (parent < 0 || !remove_inode_from_dir(static_cast<uint32_t>(parent),
+                                            static_cast<uint32_t>(ino), name))
+    return -1;
+  if (inode.flags == INODE_FILE && inode.links_count)
+    --inode.links_count;
+  else
+    inode.links_count = 0;
   g_inode_dirty[ino] = true;
+  if (!inode_has_open_stream(static_cast<uint32_t>(ino)))
+    release_inode(static_cast<uint32_t>(ino));
   return 0;
 }
 
 int VFS::vfs_rename(const char *oldpath, const char *newpath) {
   VfsLockGuard guard;
-  (void)oldpath;
-  (void)newpath;
-  return -1;
+  if (!g_mounted)
+    return -1;
+  char old_normalized[VFS_MAX_PATH], new_normalized[VFS_MAX_PATH];
+  if (!normalize_path(oldpath, old_normalized) ||
+      !normalize_path(newpath, new_normalized) ||
+      str_equal(old_normalized, "/") || str_equal(new_normalized, "/"))
+    return -1;
+  if (str_equal(old_normalized, new_normalized))
+    return 0;
+
+  const int source_ino = find_inode_by_path(old_normalized);
+  if (source_ino <= 0 || source_ino >= static_cast<int>(VFS_MAX_INODES))
+    return -1;
+  Inode &source = g_inodes[source_ino];
+  if (source.flags != INODE_FILE && source.flags != INODE_DIR)
+    return -1;
+  if (source.flags == INODE_DIR &&
+      path_has_prefix(new_normalized, old_normalized,
+                      str_length(old_normalized)))
+    return -1;
+
+  char old_parent_path[VFS_MAX_PATH], old_name[VFS_MAX_PATH];
+  char new_parent_path[VFS_MAX_PATH], new_name[VFS_MAX_PATH];
+  if (!split_path(old_normalized, old_parent_path, old_name) ||
+      !split_path(new_normalized, new_parent_path, new_name))
+    return -1;
+  const int old_parent = find_inode_by_path(old_parent_path);
+  const int new_parent = find_inode_by_path(new_parent_path);
+  if (old_parent < 0 || new_parent < 0 ||
+      g_inodes[old_parent].flags != INODE_DIR ||
+      g_inodes[new_parent].flags != INODE_DIR)
+    return -1;
+
+  const int destination_ino = find_inode_by_path(new_normalized);
+  if (destination_ino == source_ino)
+    return 0;
+  int destination_parent = -1;
+  char destination_name[VFS_MAX_PATH]{};
+  bool destination_unlinked = false;
+  if (destination_ino >= 0) {
+    if (destination_ino <= 0 || destination_ino >= static_cast<int>(VFS_MAX_INODES))
+      return -1;
+    Inode &destination = g_inodes[destination_ino];
+    if ((source.flags == INODE_DIR) != (destination.flags == INODE_DIR) ||
+        (destination.flags == INODE_DIR &&
+         !directory_is_empty(static_cast<uint32_t>(destination_ino))))
+      return -1;
+    char destination_parent_path[VFS_MAX_PATH];
+    if (!split_path(new_normalized, destination_parent_path, destination_name))
+      return -1;
+    destination_parent = find_inode_by_path(destination_parent_path);
+    if (destination_parent < 0 ||
+        !remove_inode_from_dir(static_cast<uint32_t>(destination_parent),
+                               static_cast<uint32_t>(destination_ino),
+                               destination_name))
+      return -1;
+    destination_unlinked = true;
+  }
+
+  auto restore_destination = [&]() {
+    if (destination_unlinked)
+      (void)add_inode_to_dir(static_cast<uint32_t>(destination_parent),
+                             static_cast<uint32_t>(destination_ino),
+                             destination_name,
+                             static_cast<uint8_t>(g_inodes[destination_ino].flags));
+  };
+
+  if (!add_inode_to_dir(static_cast<uint32_t>(new_parent),
+                        static_cast<uint32_t>(source_ino), new_name,
+                        static_cast<uint8_t>(source.flags))) {
+    restore_destination();
+    return -1;
+  }
+
+  if (!remove_inode_from_dir(static_cast<uint32_t>(old_parent),
+                             static_cast<uint32_t>(source_ino), old_name)) {
+    (void)remove_inode_from_dir(static_cast<uint32_t>(new_parent),
+                                static_cast<uint32_t>(source_ino), new_name);
+    restore_destination();
+    return -1;
+  }
+
+  if (destination_unlinked) {
+    Inode &destination = g_inodes[destination_ino];
+    if (destination.flags == INODE_FILE && destination.links_count)
+      --destination.links_count;
+    else
+      destination.links_count = 0;
+    g_inode_dirty[destination_ino] = true;
+    if (!inode_has_open_stream(static_cast<uint32_t>(destination_ino)))
+      release_inode(static_cast<uint32_t>(destination_ino));
+  }
+  return 0;
 }
 
 bool VFS::vfs_exists(const char *path) {
