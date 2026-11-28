@@ -5,13 +5,13 @@
 #include <kernel/drivers/pci.h>
 #include <kernel/drivers/tsc_deadline.h>
 #include <kernel/fs/laziofs.h>
-#include <kernel/lib/appcommon.h>
 #include <kernel/lib/math.h>
 #include <kernel/memory/heap.h>
 #include <kernel/net/smoltcp.h>
 #include <kernel/scheduler.h>
 #include <oslib/keyboard.h>
 #include <oslib/mouse.h>
+#include <oslib/app.h>
 #include <oslib/ui.h>
 #include <oslib/win.h>
 

@@ -1,7 +1,7 @@
 #include <cstdint>
 #include <oslib/keyboard.h>
+#include <oslib/app.h>
 #include <oslib/win.h>
-#include <kernel/lib/appcommon.h>
 #include <oslib/ui.h>
 #include <kernel/memory/heap.h>
 #include <kernel/scheduler.h>

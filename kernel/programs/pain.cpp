@@ -1,12 +1,11 @@
+#include <kernel/scheduler.h>
+#include <oslib/ui.h>
+#include <oslib/win.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <kernel/fs/laziofs.h>
-#include <oslib/win.h>
-#include <oslib/ui.h>
-#include <kernel/scheduler.h>
 
 #include <utility>
-
 
 namespace Kernel::Apps::Pain {
 
@@ -41,14 +40,14 @@ inline auto calculate_adler32(const uint8_t *data, size_t length) -> uint32_t {
   return (s2 << 16) | s1;
 }
 
-inline auto save_png(const char *filename, const uint32_t *pixels,
-                     uint32_t width, uint32_t height) -> bool {
-  void *f = Kernel::FS::VFS::vfs_open(filename, "w+");
+auto save_png(const char *filename, const uint32_t *pixels,
+              uint32_t width, uint32_t height) -> bool {
+  FILE *f = fopen(filename, "wb+");
   if (!f)
     return false;
 
   const uint8_t png_sig[8] = {137, 80, 78, 71, 13, 10, 26, 10};
-  Kernel::FS::VFS::vfs_write(png_sig, 1, 8, f);
+  fwrite(png_sig, 1, 8, f);
 
   uint8_t ihdr_data[13] = {static_cast<uint8_t>(width >> 24),
                            static_cast<uint8_t>(width >> 16),
@@ -66,19 +65,23 @@ inline auto save_png(const char *filename, const uint32_t *pixels,
 
   uint32_t net_len = __builtin_bswap32(13);
   uint8_t ihdr_type[4] = {'I', 'H', 'D', 'R'};
-  Kernel::FS::VFS::vfs_write(&net_len, 1, 4, f);
-  Kernel::FS::VFS::vfs_write(ihdr_type, 1, 4, f);
-  Kernel::FS::VFS::vfs_write(ihdr_data, 1, 13, f);
+  fwrite(&net_len, 1, 4, f);
+  fwrite(ihdr_type, 1, 4, f);
+  fwrite(ihdr_data, 1, 13, f);
 
   uint8_t crc_buf[17];
   memcpy(crc_buf, ihdr_type, 4);
   memcpy(crc_buf + 4, ihdr_data, 13);
   uint32_t crc = __builtin_bswap32(calculate_crc32(crc_buf, 17));
-  Kernel::FS::VFS::vfs_write(&crc, 1, 4, f);
+  fwrite(&crc, 1, 4, f);
 
   size_t row_size = width * 4 + 1;
   size_t total_idat_data = height * row_size;
   uint8_t *raw_filtered = static_cast<uint8_t *>(malloc(total_idat_data));
+  if (!raw_filtered) {
+    fclose(f);
+    return false;
+  }
   size_t raw_offset = 0;
 
   for (uint32_t y = 0; y < height; ++y) {
@@ -95,6 +98,11 @@ inline auto save_png(const char *filename, const uint32_t *pixels,
   size_t num_blocks = (total_idat_data + 65534) / 65535;
   size_t zlib_size = 2 + total_idat_data + (num_blocks * 5) + 4;
   uint8_t *zlib_buf = static_cast<uint8_t *>(malloc(zlib_size));
+  if (!zlib_buf) {
+    free(raw_filtered);
+    fclose(f);
+    return false;
+  }
   size_t z_idx = 0;
   zlib_buf[z_idx++] = 0x78;
   zlib_buf[z_idx++] = 0x01;
@@ -127,45 +135,64 @@ inline auto save_png(const char *filename, const uint32_t *pixels,
 
   uint32_t net_idat_len = __builtin_bswap32(z_idx);
   uint8_t idat_type[4] = {'I', 'D', 'A', 'T'};
-  Kernel::FS::VFS::vfs_write(&net_idat_len, 1, 4, f);
-  Kernel::FS::VFS::vfs_write(idat_type, 1, 4, f);
-  Kernel::FS::VFS::vfs_write(zlib_buf, 1, z_idx, f);
+  fwrite(&net_idat_len, 1, 4, f);
+  fwrite(idat_type, 1, 4, f);
+  fwrite(zlib_buf, 1, z_idx, f);
 
   uint8_t *idat_crc_buf = static_cast<uint8_t *>(malloc(4 + z_idx));
+  if (!idat_crc_buf) {
+    free(zlib_buf);
+    fclose(f);
+    return false;
+  }
   memcpy(idat_crc_buf, idat_type, 4);
   memcpy(idat_crc_buf + 4, zlib_buf, z_idx);
   uint32_t idat_crc =
       __builtin_bswap32(calculate_crc32(idat_crc_buf, 4 + z_idx));
-  Kernel::FS::VFS::vfs_write(&idat_crc, 1, 4, f);
+  fwrite(&idat_crc, 1, 4, f);
   free(idat_crc_buf);
   free(zlib_buf);
 
   uint32_t zero_len = 0;
   uint8_t iend_type[4] = {'I', 'E', 'N', 'D'};
-  Kernel::FS::VFS::vfs_write(&zero_len, 1, 4, f);
-  Kernel::FS::VFS::vfs_write(iend_type, 1, 4, f);
+  fwrite(&zero_len, 1, 4, f);
+  fwrite(iend_type, 1, 4, f);
   uint32_t iend_crc = __builtin_bswap32(0xAE426082);
-  Kernel::FS::VFS::vfs_write(&iend_crc, 1, 4, f);
+  fwrite(&iend_crc, 1, 4, f);
 
-  Kernel::FS::VFS::vfs_close(f);
-  return true;
+  bool write_ok = (ferror(f) == 0);
+  fclose(f);
+  return write_ok;
 }
 
-inline auto load_png(const char *filename, uint32_t *pixels, uint32_t width,
-                     uint32_t height) -> bool {
-  void *f = Kernel::FS::VFS::vfs_open(filename, "r");
+auto load_png(const char *filename, uint32_t *pixels, uint32_t width,
+              uint32_t height) -> bool {
+  FILE *f = fopen(filename, "rb");
   if (!f)
     return false;
 
-  size_t filesize = Kernel::FS::VFS::vfs_size(f);
-  if (filesize < 33) {
-    Kernel::FS::VFS::vfs_close(f);
+  if (fseek(f, 0, SEEK_END) != 0) {
+    fclose(f);
     return false;
   }
+  long end_pos = ftell(f);
+  if (end_pos < 33 || fseek(f, 0, SEEK_SET) != 0) {
+    fclose(f);
+    return false;
+  }
+  size_t filesize = static_cast<size_t>(end_pos);
 
   uint8_t *file_data = static_cast<uint8_t *>(malloc(filesize));
-  Kernel::FS::VFS::vfs_read(file_data, 1, filesize, f);
-  Kernel::FS::VFS::vfs_close(f);
+  if (!file_data) {
+    fclose(f);
+    return false;
+  }
+  size_t read_bytes = fread(file_data, 1, filesize, f);
+  fclose(f);
+  if (read_bytes != filesize) {
+    free(file_data);
+    return false;
+  }
 
   const uint8_t png_sig[8] = {137, 80, 78, 71, 13, 10, 26, 10};
   if (memcmp(file_data, png_sig, 8) != 0) {
@@ -191,6 +218,9 @@ inline auto load_png(const char *filename, uint32_t *pixels, uint32_t width,
       size_t z_end = chunk_len;
       size_t row_size = width * 4 + 1;
       auto *raw_filtered = static_cast<uint8_t *>(malloc(height * row_size));
+      if (!raw_filtered) {
+        break;
+      }
       size_t raw_pos = 0;
 
       while (z_pos < z_end - 4) {
@@ -425,8 +455,8 @@ void run() {
   // Action buttons & Sliders (Row 2: y = canvas_h + 42)
   UI::Button btn_save(10, canvas_h + 42, 55, 24, "Save");
   UI::Button btn_open(70, canvas_h + 42, 55, 24, "Open");
-  UI::Button btn_quit(130, canvas_h + 42, 50, 24, "Quit",
-                                    0xFFF38BA8, 0xFF1E1E2E, 0);
+  UI::Button btn_quit(130, canvas_h + 42, 50, 24, "Quit", 0xFFF38BA8,
+                      0xFF1E1E2E, 0);
 
   UI::Label lbl_brush(190, canvas_h + 48, "Size:");
   UI::Slider slider_brush(230, canvas_h + 46, 80, 20, 1, 20, 2);
@@ -442,8 +472,7 @@ void run() {
   UI::Slider slider_b(610, canvas_h + 46, 110, 20, 0, 255, 0);
 
   // Status Bar
-  UI::StatusBar status_bar(10, canvas_h + 82, sw - 20, 28,
-                                         status_msg);
+  UI::StatusBar status_bar(10, canvas_h + 82, sw - 20, 28, status_msg);
   UI::WidgetGroup panel_widgets;
   panel_widgets.add(btn_pencil);
   panel_widgets.add(btn_eraser);
@@ -489,7 +518,7 @@ void run() {
     bool m_left = UI::primary_pressed();
     bool m_released = old_left && !m_left;
     UI::Widget *active_widget =
-      panel_widgets.handle_mouse(mx, my, m_left, m_released);
+        panel_widgets.handle_mouse(mx, my, m_left, m_released);
 
     // Update RGB and brush size from sliders
     cur_r = slider_r.get_value();
@@ -587,50 +616,42 @@ void run() {
         strcpy(status_msg, "Tool: Pencil");
         status_bar.set_status(status_msg);
         panel_redraw_needed = true;
-      }
-      else if (active_widget == &btn_eraser) {
+      } else if (active_widget == &btn_eraser) {
         current_tool = Tool::Eraser;
         strcpy(status_msg, "Tool: Eraser");
         status_bar.set_status(status_msg);
         panel_redraw_needed = true;
-      }
-      else if (active_widget == &btn_line) {
+      } else if (active_widget == &btn_line) {
         current_tool = Tool::Line;
         strcpy(status_msg, "Tool: Line");
         status_bar.set_status(status_msg);
         panel_redraw_needed = true;
-      }
-      else if (active_widget == &btn_rect) {
+      } else if (active_widget == &btn_rect) {
         current_tool = Tool::Rect;
         strcpy(status_msg, "Tool: Rectangle");
         status_bar.set_status(status_msg);
         panel_redraw_needed = true;
-      }
-      else if (active_widget == &btn_fillrect) {
+      } else if (active_widget == &btn_fillrect) {
         current_tool = Tool::FillRect;
         strcpy(status_msg, "Tool: Filled Rectangle");
         status_bar.set_status(status_msg);
         panel_redraw_needed = true;
-      }
-      else if (active_widget == &btn_circle) {
+      } else if (active_widget == &btn_circle) {
         current_tool = Tool::Circle;
         strcpy(status_msg, "Tool: Circle");
         status_bar.set_status(status_msg);
         panel_redraw_needed = true;
-      }
-      else if (active_widget == &btn_fillcircle) {
+      } else if (active_widget == &btn_fillcircle) {
         current_tool = Tool::FillCircle;
         strcpy(status_msg, "Tool: Filled Circle");
         status_bar.set_status(status_msg);
         panel_redraw_needed = true;
-      }
-      else if (active_widget == &btn_bucket) {
+      } else if (active_widget == &btn_bucket) {
         current_tool = Tool::FloodFill;
         strcpy(status_msg, "Tool: Flood Fill Bucket");
         status_bar.set_status(status_msg);
         panel_redraw_needed = true;
-      }
-      else if (active_widget == &btn_drop) {
+      } else if (active_widget == &btn_drop) {
         current_tool = Tool::Eyedropper;
         strcpy(status_msg, "Tool: Eyedropper");
         status_bar.set_status(status_msg);
@@ -640,9 +661,12 @@ void run() {
       else if (active_widget == &btn_save) {
         char filename[64] = "drawing.png";
         if (UI::prompt_filename(win, "Save filename:", filename,
-                                              sizeof(filename))) {
-          save_png(filename, canvas, canvas_w, canvas_h);
-          strcpy(status_msg, "File saved successfully.");
+                                sizeof(filename))) {
+          if (save_png(filename, canvas, canvas_w, canvas_h)) {
+            strcpy(status_msg, "File saved successfully.");
+          } else {
+            strcpy(status_msg, "Error saving file.");
+          }
           status_bar.set_status(status_msg);
         }
         panel_redraw_needed = true;
@@ -651,7 +675,7 @@ void run() {
       else if (active_widget == &btn_open) {
         char filename[64] = "drawing.png";
         if (UI::prompt_filename(win, "Open filename:", filename,
-                                              sizeof(filename))) {
+                                sizeof(filename))) {
           if (load_png(filename, canvas, canvas_w, canvas_h)) {
             memcpy(backup_canvas, canvas,
                    canvas_w * canvas_h * sizeof(uint32_t));

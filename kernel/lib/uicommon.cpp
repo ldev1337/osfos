@@ -1,6 +1,6 @@
 #include <string.h>
+#include <oslib/app.h>
 #include <oslib/keyboard.h>
-#include <kernel/lib/appcommon.h>
 #include <kernel/scheduler.h>
 #include <oslib/ui.h>
 

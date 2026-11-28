@@ -1,10 +1,10 @@
 #include <algorithm>
 #include <cstdint>
 #include <kernel/fs/laziofs.h>
-#include <kernel/lib/appcommon.h>
 #include <kernel/scheduler.h>
 #include <oslib/keyboard.h>
 #include <oslib/mouse.h>
+#include <oslib/app.h>
 #include <oslib/ui.h>
 #include <oslib/win.h>
 #include <string.h>

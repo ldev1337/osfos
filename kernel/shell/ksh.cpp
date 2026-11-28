@@ -5,7 +5,6 @@
 #include <kernel/fs/laziofs.h>
 #include <kernel/graphics/lwm.h>
 #include <kernel/graphics/open_font.h>
-#include <kernel/lib/appcommon.h>
 #include <kernel/memory/heap.h>
 #include <kernel/memory/pmm.h>
 #include <kernel/net/smoltcp.h>
@@ -106,7 +105,7 @@ int execute_program_process(int argc, char **argv, void *context) {
   if (program->app_entry)
     program->app_entry();
   if (program->graphical)
-    Kernel::AppCommon::exit(0);
+    Kernel::Scheduler::process_exit(0);
   return 0;
 }
 
@@ -626,11 +625,14 @@ const ProgramCommand program_commands[] = {
     {"fontview", "Font Viewer", Apps::font_viewer_run, nullptr, nullptr, true},
     {"fileview", "File Viewer", Apps::file_viewer_run, nullptr, nullptr, true},
     {"taskman", "Task Manager", Apps::task_manager_run, nullptr, nullptr, true},
-    {"mema", "Memory Analyzer", Apps::memory_analyzer_run, nullptr, nullptr, true},
+    {"mema", "Memory Analyzer", Apps::memory_analyzer_run, nullptr, nullptr,
+     true},
     {"args", "Argument Test", nullptr, Apps::cli_args_test, nullptr, false},
-    {"exitcode", "Exit Status Test", nullptr, Apps::cli_exitcode_test, nullptr, false},
+    {"exitcode", "Exit Status Test", nullptr, Apps::cli_exitcode_test, nullptr,
+     false},
     {"stdio-test", "stdio Test", nullptr, Apps::cli_stdio_test, nullptr, false},
-    {"memlife", "Memory Lifetime Test", nullptr, Apps::cli_memory_lifetime_test, nullptr, false},
+    {"memlife", "Memory Lifetime Test", nullptr, Apps::cli_memory_lifetime_test,
+     nullptr, false},
 };
 
 const ProgramCommand *find_program(const char *name) {
@@ -642,7 +644,8 @@ const ProgramCommand *find_program(const char *name) {
 
 void execute(char *line) {
   char *argv[32]{};
-  const size_t argc = parse_arguments(line, argv, sizeof(argv) / sizeof(argv[0]));
+  const size_t argc =
+      parse_arguments(line, argv, sizeof(argv) / sizeof(argv[0]));
   if (!argc) {
     for (const char *p = line; *p; ++p)
       if (*p != ' ' && *p != '\t') {
@@ -674,7 +677,8 @@ void execute(char *line) {
   else if (equals(command, "fontcheck"))
     run_fontcheck(args);
   else if (equals(command, "about"))
-    printf("OSFOS kernel shell: ring-0 command interpreter with process wait.\n");
+    printf(
+        "OSFOS kernel shell: ring-0 command interpreter with process wait.\n");
   else if (equals(command, "smpinfo"))
     printf("Online processors: %u\n",
            static_cast<unsigned>(Kernel::SMP::online_cpu_count()));

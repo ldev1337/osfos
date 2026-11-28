@@ -1,7 +1,7 @@
+#include <oslib/app.h>
 #include <oslib/keyboard.h>
 #include <oslib/win.h>
 #include <oslib/ui.h>
-#include <kernel/lib/appcommon.h>
 #include <kernel/scheduler.h>
 #include <stdint.h>
 

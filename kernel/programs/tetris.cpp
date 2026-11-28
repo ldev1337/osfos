@@ -1,7 +1,7 @@
 #include <cstdint>
 #include <kernel/drivers/tsc_deadline.h>
-#include <kernel/lib/appcommon.h>
 #include <kernel/scheduler.h>
+#include <oslib/app.h>
 #include <oslib/keyboard.h>
 #include <oslib/random.h>
 #include <oslib/ui.h>

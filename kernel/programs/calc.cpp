@@ -1,5 +1,5 @@
+#include <oslib/app.h>
 #include <oslib/win.h>
-#include <kernel/lib/appcommon.h>
 #include <kernel/scheduler.h>
 #include <oslib/keyboard.h>
 #include <oslib/ui.h>

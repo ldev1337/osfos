@@ -1,6 +1,6 @@
+#include <oslib/app.h>
 #include <oslib/keyboard.h>
 #include <oslib/win.h>
-#include <kernel/lib/appcommon.h>
 #include <kernel/media/jpeg.h>
 #include <kernel/net/smoltcp.h>
 #include <kernel/programs/youtube.h>

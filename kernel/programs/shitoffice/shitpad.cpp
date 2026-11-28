@@ -1,19 +1,18 @@
+#include <cstdint>
+#include <kernel/scheduler.h>
+#include <oslib/keyboard.h>
+#include <oslib/app.h>
+#include <oslib/ui.h>
+#include <oslib/win.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <cstdint>
-#include <oslib/keyboard.h>
-#include <kernel/fs/laziofs.h>
-#include <oslib/win.h>
-#include <oslib/ui.h>
-#include <kernel/lib/appcommon.h>
-#include <kernel/scheduler.h>
 
 namespace Kernel::Apps {
 namespace {
 using namespace Kernel::AppCommon;
 using oslib::Keyboard;
 
-// Flat classic notepad palette: no gradients, no soft shading.
 constexpr uint32_t BG = 0xFFFFFF;
 constexpr uint32_t FG = 0x000000;
 constexpr uint32_t BAR = 0xFFFFFF;
@@ -162,30 +161,27 @@ void append(char *dst, size_t max_len, size_t &p, const char *s) {
   dst[p] = '\0';
 }
 
-auto save_to_vfs(TextBuffer &buf, const char *filepath) -> bool {
-  if (!Kernel::FS::VFS::is_mounted())
-    return false;
-  void *stream = Kernel::FS::VFS::vfs_open(filepath, "w");
+auto save_to_file(TextBuffer &buf, const char *filepath) -> bool {
+  FILE *stream = fopen(filepath, "w");
   if (stream == nullptr)
     return false;
 
   bool saved = true;
   for (size_t i = 0; i < buf.line_count; ++i) {
     size_t line_length = strlen(buf.lines[i]);
-    if (Kernel::FS::VFS::vfs_write(buf.lines[i], 1, line_length, stream) !=
-            line_length ||
-        Kernel::FS::VFS::vfs_write("\n", 1, 1, stream) != 1) {
+    if (fwrite(buf.lines[i], 1, line_length, stream) != line_length ||
+        fwrite("\n", 1, 1, stream) != 1) {
       saved = false;
       break;
     }
   }
-  return Kernel::FS::VFS::vfs_close(stream) == 0 && saved;
+  if (ferror(stream) != 0)
+    saved = false;
+  return fclose(stream) == 0 && saved;
 }
 
-auto load_from_vfs(TextBuffer &buf, const char *filepath) -> bool {
-  if (!Kernel::FS::VFS::is_mounted())
-    return false;
-  void *stream = Kernel::FS::VFS::vfs_open(filepath, "r");
+auto load_from_file(TextBuffer &buf, const char *filepath) -> bool {
+  FILE *stream = fopen(filepath, "r");
   if (stream == nullptr)
     return false;
 
@@ -197,8 +193,7 @@ auto load_from_vfs(TextBuffer &buf, const char *filepath) -> bool {
   bool ended_with_newline = false;
   bool previous_cr = false;
 
-  while ((bytes_read = Kernel::FS::VFS::vfs_read(read_buf, 1, sizeof(read_buf),
-                                                 stream)) > 0) {
+  while ((bytes_read = fread(read_buf, 1, sizeof(read_buf), stream)) > 0) {
     for (size_t i = 0; i < bytes_read; ++i) {
       char ch = read_buf[i];
       if (ch == '\n' || ch == '\r') {
@@ -225,12 +220,13 @@ auto load_from_vfs(TextBuffer &buf, const char *filepath) -> bool {
     if (cur_line + 1 >= MAX_LINES)
       break;
   }
+  bool read_ok = (ferror(stream) == 0);
   buf.line_count = cur_line + ((ended_with_newline && cur_line > 0) ? 0 : 1);
   if (buf.line_count == 0)
     buf.line_count = 1;
   if (buf.line_count > MAX_LINES)
     buf.line_count = MAX_LINES;
-  return Kernel::FS::VFS::vfs_close(stream) == 0;
+  return fclose(stream) == 0 && read_ok;
 }
 
 bool hit(int mx, int my, int x, int y, int w, int h) {
@@ -282,8 +278,8 @@ int cursor_pixel_offset(const char *line, size_t column) {
   return text_width(prefix);
 }
 
-bool prompt_path(oslib::Win &win, const char *prompt,
-                 char *buf, size_t max_len) {
+bool prompt_path(oslib::Win &win, const char *prompt, char *buf,
+                 size_t max_len) {
   using namespace UI;
   const Rect dialog = FlexLayout::center(
       {0, 0, static_cast<int32_t>(win.width()),
@@ -297,8 +293,8 @@ bool prompt_path(oslib::Win &win, const char *prompt,
   input.set_font_size_pixels(13.0f);
   Button cancel(dialog.x + dialog.width - 176, dialog.y + 72, 76, 28,
                 "Cancel");
-  Button confirm(dialog.x + dialog.width - 90, dialog.y + 72, 76, 28,
-                 "Open", COLOR_BLUE, COLOR_BG, 0);
+  Button confirm(dialog.x + dialog.width - 90, dialog.y + 72, 76, 28, "Open",
+                 COLOR_BLUE, COLOR_BG, 0);
   cancel.set_font_size_pixels(12.0f);
   confirm.set_font_size_pixels(12.0f);
   WidgetGroup controls;
@@ -315,7 +311,7 @@ bool prompt_path(oslib::Win &win, const char *prompt,
     title.draw(win);
     controls.draw(win, false);
     UI::text(win, dialog.x + 14, dialog.y + 104,
-                           "Enter confirms   Esc cancels", MUTED, 11.0f);
+             "Enter confirms   Esc cancels", MUTED, 11.0f);
     win.flush();
 
     const int mx = UI::mouse_x();
@@ -343,8 +339,8 @@ bool prompt_path(oslib::Win &win, const char *prompt,
   }
 }
 
-void draw_menu_item(oslib::Win &win, int x, int y,
-                    int w, int h, const char *label, bool active) {
+void draw_menu_item(oslib::Win &win, int x, int y, int w, int h,
+                    const char *label, bool active) {
   if (active) {
     win.fill_rect(x, y, w, h, INVERT_BG);
     UI::text(win, x + 6, y + (h / 2) - 4, label, INVERT_FG);
@@ -372,7 +368,8 @@ void run_shitty_pad() {
   char current_filepath[64] = "/note1.txt";
   const char *status_msg = "Ready";
 
-  bool prev_up = false, prev_down = false, prev_left = false, prev_right = false;
+  bool prev_up = false, prev_down = false, prev_left = false,
+       prev_right = false;
   bool mouse_down_prev = false;
 
   // Flat text menu: Save | Open | New | Quit
@@ -409,12 +406,13 @@ void run_shitty_pad() {
         if (i == 0) {
           if (prompt_path(win, "Save as:", current_filepath,
                           sizeof(current_filepath)))
-            status_msg = save_to_vfs(*text_buf, current_filepath) ? "Saved"
-                                                                : "Save failed";
+            status_msg = save_to_file(*text_buf, current_filepath)
+                             ? "Saved"
+                             : "Save failed";
         } else if (i == 1) {
           if (prompt_path(win, "Open:", current_filepath,
                           sizeof(current_filepath))) {
-            if (load_from_vfs(*text_buf, current_filepath)) {
+            if (load_from_file(*text_buf, current_filepath)) {
               cursor_r = 0;
               cursor_c = 0;
               view_r = 0;
@@ -475,10 +473,10 @@ void run_shitty_pad() {
         goto done;
       char lc = (c >= 'A' && c <= 'Z') ? static_cast<char>(c + 32) : c;
       if (Keyboard::is_ctrl_pressed() && lc == 's') {
-        status_msg =
-            save_to_vfs(*text_buf, current_filepath) ? "Saved" : "Save failed";
+        status_msg = save_to_file(*text_buf, current_filepath) ? "Saved"
+                                                               : "Save failed";
       } else if (Keyboard::is_ctrl_pressed() && (lc == 'o' || lc == 'l')) {
-        if (load_from_vfs(*text_buf, current_filepath)) {
+        if (load_from_file(*text_buf, current_filepath)) {
           cursor_r = 0;
           cursor_c = 0;
           view_r = 0;
@@ -519,13 +517,12 @@ void run_shitty_pad() {
     // Menu bar: flat text actions, single rule.
     win.fill_rect(0, 0, w, MENU_H, BAR);
     for (int i = 0; i < 4; ++i) {
-      bool active =
-          m_left && hit(mx, my, btn_x[i], btn_y, btn_w[i], btn_h);
+      bool active = m_left && hit(mx, my, btn_x[i], btn_y, btn_w[i], btn_h);
       draw_menu_item(win, btn_x[i], btn_y, btn_w[i], btn_h, btn_label[i],
                      active);
       if (i < 3)
         UI::text(win, btn_x[i] + btn_w[i] - 2, btn_y + (btn_h / 2) - 4, "|",
-             MUTED);
+                 MUTED);
     }
     win.draw_line(0, MENU_H, w, MENU_H, RULE);
 

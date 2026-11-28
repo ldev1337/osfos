@@ -1,11 +1,10 @@
 #include <kernel/graphics/lwm.h>
 #include <kernel/graphics/open_font.h>
-#include <kernel/lib/appcommon.h>
 #include <kernel/memory/heap.h>
 #include <kernel/programs/terminal.h>
 #include <kernel/scheduler.h>
 #include <oslib/mouse.h>
-
+#include <oslib/app.h>
 namespace {
 
 Kernel::Graphics::TrueTypeFont &app_text_font() {
